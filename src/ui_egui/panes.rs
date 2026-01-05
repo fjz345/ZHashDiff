@@ -183,9 +183,7 @@ impl FileExplorerPane {
                     let mut sorted_hashes: Vec<_> = conflict_map.keys().collect();
                     sorted_hashes.sort();
 
-                    if sorted_hashes.is_empty() {
-                        ui.label("No conflicts detected.");
-                    } else {
+                    if !sorted_hashes.is_empty() {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             for hash in sorted_hashes {
                                 let paths = &conflict_map[hash];
@@ -253,6 +251,8 @@ impl FileExplorerPane {
                                 }
                             }
                         });
+                    } else {
+                        ui.label("No conflicts detected.");
                     }
                 },
             );
