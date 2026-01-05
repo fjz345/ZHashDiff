@@ -11,7 +11,10 @@ use std::{
 
 use crate::{
     logger::LogCollector,
-    ui_egui::panes::{FileExplorerPane, LogPane, Pane, TreeBehavior, ZAppPane},
+    ui_egui::{
+        panes::{FileExplorerPane, LogPane, Pane, TreeBehavior, ZAppPane},
+        popup,
+    },
 };
 use eframe::{
     CreationContext,
@@ -150,6 +153,7 @@ impl ZApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |mut ui| {
                 let mut behavior = TreeBehavior {};
+
                 self.tree.ui(&mut behavior, ui);
 
                 // Copy to clipboard

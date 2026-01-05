@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     fs::{DirCache, FsEntry},
     logger::ui_log_window,
-    ui_egui::app::ZColorPickerAppContext,
+    ui_egui::{app::ZColorPickerAppContext, popup},
 };
 pub struct TreeBehavior {}
 
@@ -110,15 +110,13 @@ pub struct FileExplorerPane {
     pub title: Option<String>,
 
     pub root: PathBuf,
-    #[serde(skip)]
     pub expanded: HashMap<PathBuf, bool>,
-    #[serde(skip)]
     pub cache: HashMap<PathBuf, DirCache>,
-    #[serde(skip)]
     pub selected: HashMap<PathBuf, bool>,
-    #[serde(skip)]
     pub file_hashes: Arc<RwLock<HashMap<PathBuf, Option<String>>>>,
 
+    #[serde(skip)]
+    show_diff_popup: bool,
     #[serde(skip)]
     pub open_path_dialog: bool,
 }
@@ -131,6 +129,21 @@ impl ZAppPane for FileExplorerPane {
     fn ui(&mut self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.vertical(|ui| {
+                // Example 1: Settings Popup
+                if self.show_diff_popup {
+                    let mut temp_show_diff_popup = self.show_diff_popup;
+                    popup::show_custom_popup(
+                        ui.ctx(),
+                        &mut temp_show_diff_popup,
+                        "Settings",
+                        |ui| {
+                            ui.label("Manage Explorer Settings");
+                            ui.checkbox(&mut self.open_path_dialog, "Show Path Dialog");
+                        },
+                    );
+                    self.show_diff_popup = temp_show_diff_popup;
+                }
+
                 if ui.button("Open Folder").clicked() {
                     self.open_path_dialog = true;
                 }
@@ -147,6 +160,8 @@ impl ZAppPane for FileExplorerPane {
 
                 if ui.button("Diff").clicked() {
                     log::info!("Selected files for diff");
+
+                    self.show_diff_popup = true;
                 }
             });
         });
