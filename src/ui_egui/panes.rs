@@ -116,6 +116,8 @@ pub struct FileExplorerPane {
     pub file_hashes: Arc<RwLock<HashMap<PathBuf, Option<String>>>>,
 
     #[serde(skip)]
+    pub active_conflict_hash: Option<String>,
+    #[serde(skip)]
     show_diff_popup: bool,
     #[serde(skip)]
     pub open_path_dialog: bool,
@@ -129,20 +131,7 @@ impl ZAppPane for FileExplorerPane {
     fn ui(&mut self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.vertical(|ui| {
-                // Example 1: Settings Popup
-                if self.show_diff_popup {
-                    let mut temp_show_diff_popup = self.show_diff_popup;
-                    popup::show_custom_popup(
-                        ui.ctx(),
-                        &mut temp_show_diff_popup,
-                        "Settings",
-                        |ui| {
-                            ui.label("Manage Explorer Settings");
-                            ui.checkbox(&mut self.open_path_dialog, "Show Path Dialog");
-                        },
-                    );
-                    self.show_diff_popup = temp_show_diff_popup;
-                }
+                self.ui_popups(ui);
 
                 if ui.button("Open Folder").clicked() {
                     self.open_path_dialog = true;
@@ -177,6 +166,132 @@ impl FileExplorerPane {
         FileExplorerPane {
             title,
             ..Default::default()
+        }
+    }
+
+    fn ui_popups(&mut self, ui: &mut egui::Ui) {
+        if self.show_diff_popup {
+            let mut temp_show_diff_popup = self.show_diff_popup;
+
+            popup::show_custom_popup(
+                ui.ctx(),
+                &mut temp_show_diff_popup,
+                "Conflicts Found",
+                |ui| {
+                    let conflict_map = self.get_conflicts_map();
+                    // --- FIX: Get keys and sort them ---
+                    let mut sorted_hashes: Vec<_> = conflict_map.keys().collect();
+                    sorted_hashes.sort();
+
+                    if sorted_hashes.is_empty() {
+                        ui.label("No conflicts detected.");
+                    } else {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for hash in sorted_hashes {
+                                let paths = &conflict_map[hash];
+
+                                // Create a "row" that acts like a button
+                                let response = ui
+                                    .scope(|ui| {
+                                        ui.horizontal(|ui| {
+                                            // 1. Unclickable Checkbox (visual only)
+                                            let icon_size = ui.spacing().icon_width;
+                                            let (rect, _) = ui.allocate_exact_size(
+                                                egui::vec2(icon_size, icon_size),
+                                                egui::Sense::hover(),
+                                            );
+                                            let visuals = ui.visuals().widgets.noninteractive;
+                                            ui.painter().rect_filled(
+                                                rect,
+                                                visuals.corner_radius,
+                                                visuals.bg_fill,
+                                            );
+                                            ui.painter().rect_stroke(
+                                                rect,
+                                                visuals.corner_radius,
+                                                visuals.bg_stroke,
+                                                egui::StrokeKind::Middle,
+                                            );
+                                            // Draw a dash to represent "Partial/Conflict" state
+                                            let dash_rect = egui::Rect::from_center_size(
+                                                rect.center(),
+                                                egui::vec2(icon_size * 0.5, 2.0),
+                                            );
+                                            ui.painter().rect_filled(
+                                                dash_rect,
+                                                0.0,
+                                                visuals.fg_stroke.color,
+                                            );
+
+                                            // 2. Hash and Count
+                                            ui.monospace(format!("[{}]", &hash[0..8]));
+                                            ui.label(format!("{} duplicates", paths.len()));
+                                        });
+                                    })
+                                    .response;
+
+                                // Make the whole row area interactive
+                                let interact_response = ui.interact(
+                                    response.rect,
+                                    ui.id().with(&hash),
+                                    egui::Sense::click(),
+                                );
+                                ui.painter().rect_filled(
+                                    response.rect,
+                                    0.0,
+                                    ui.visuals().widgets.hovered.bg_fill.gamma_multiply(
+                                        if interact_response.hovered() {
+                                            0.1
+                                        } else {
+                                            0.0
+                                        },
+                                    ),
+                                );
+
+                                if interact_response.clicked() {
+                                    self.active_conflict_hash = Some(hash.clone());
+                                }
+                            }
+                        });
+                    }
+                },
+            );
+            self.show_diff_popup = temp_show_diff_popup;
+        }
+
+        if let Some(ref selected_hash) = self.active_conflict_hash {
+            let mut is_open = true;
+            let mut temp_is_open = is_open;
+            let conflict_map = self.get_conflicts_map();
+
+            // Find the specific paths for this hash
+            if let Some(paths) = conflict_map.get(selected_hash) {
+                popup::show_custom_popup(
+                    ui.ctx(),
+                    &mut temp_is_open,
+                    &format!("Conflict Detail: {}", &selected_hash[0..8]),
+                    |ui| {
+                        ui.label(egui::RichText::new("Files sharing this hash:").strong());
+                        ui.add_space(8.0);
+
+                        for path in paths {
+                            ui.horizontal(|ui| {
+                                ui.label("📄");
+                                ui.label(path.to_string_lossy());
+                            });
+                        }
+
+                        if ui.button("Close Detail").clicked() {
+                            is_open = false;
+                        }
+                    },
+                );
+            }
+
+            is_open &= temp_is_open;
+            if !is_open {
+                self.active_conflict_hash = None;
+            }
         }
     }
 
@@ -567,6 +682,28 @@ impl FileExplorerPane {
                 w.insert(path, hash);
             }
         });
+    }
+
+    /// Returns a list of vectors, where each sub-vector contains paths to files
+    /// that are both selected and have identical hashes.
+    pub fn get_conflicts_map(&self) -> HashMap<String, Vec<PathBuf>> {
+        let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        let hashes = self.file_hashes.read().unwrap();
+
+        for (path, &is_selected) in self.selected.iter() {
+            if is_selected && path.is_file() {
+                if let Some(Some(hash_str)) = hashes.get(path) {
+                    groups
+                        .entry(hash_str.clone())
+                        .or_default()
+                        .push(path.clone());
+                }
+            }
+        }
+
+        // Retain only groups that actually have duplicates
+        groups.retain(|_, members| members.len() > 1);
+        groups
     }
 
     fn hash_to_color(hash: &str) -> egui::Color32 {
