@@ -187,7 +187,11 @@ impl FileExplorerPane {
     }
 
     pub fn count_files(&self) -> usize {
-        self.cache.len()
+        if self.root.is_dir() {
+            self.cache.len() - 1
+        } else {
+            self.cache.len()
+        }
     }
 
     fn recursive_expand(&mut self, path: &PathBuf) {
