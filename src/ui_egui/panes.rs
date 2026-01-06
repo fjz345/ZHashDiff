@@ -4,15 +4,10 @@ use std::{
     fs,
     path::PathBuf,
     rc::Rc,
-    str::FromStr,
     sync::{Arc, Mutex, RwLock},
-    thread,
 };
 
-use eframe::{
-    egui::{self, Color32},
-    epaint::tessellator::Path,
-};
+use eframe::egui::{self, Color32};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
 
@@ -51,12 +46,6 @@ impl ZAppPane for Pane {
             Pane::FileExplorer(p) => p.title(),
         }
     }
-    fn update_ctx(&mut self, new_ctx: Rc<RefCell<ZColorPickerAppContext>>) {
-        match self {
-            Pane::Log(pane) => pane.update_ctx(new_ctx),
-            Pane::FileExplorer(p) => p.update_ctx(new_ctx),
-        }
-    }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
         match self {
@@ -68,22 +57,8 @@ impl ZAppPane for Pane {
 
 pub trait ZAppPane {
     fn ui(&mut self, ui: &mut egui::Ui) -> egui_tiles::UiResponse;
-    fn update_ctx(&mut self, new_ctx: Rc<RefCell<ZColorPickerAppContext>>);
     fn title(&self) -> String {
         "Pane".to_string()
-    }
-    fn post_draw(&mut self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
-        let color = egui::epaint::Hsva::new(0.103 as f32, 0.5, 0.5, 1.0);
-        ui.painter().rect_filled(ui.max_rect(), 0.0, color);
-        let dragged = ui
-            .allocate_rect(ui.max_rect(), egui::Sense::click_and_drag())
-            .on_hover_cursor(egui::CursorIcon::Grab)
-            .dragged();
-        if dragged {
-            egui_tiles::UiResponse::DragStarted
-        } else {
-            egui_tiles::UiResponse::None
-        }
     }
 }
 
@@ -101,8 +76,6 @@ impl ZAppPane for LogPane {
         ui_log_window(ui, self.log_buffer.clone(), &mut self.scroll_to_bottom);
         return egui_tiles::UiResponse::None;
     }
-
-    fn update_ctx(&mut self, _new_ctx: Rc<RefCell<ZColorPickerAppContext>>) {}
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -184,8 +157,6 @@ impl ZAppPane for FileExplorerPane {
 
         egui_tiles::UiResponse::None
     }
-
-    fn update_ctx(&mut self, _new_ctx: Rc<RefCell<ZColorPickerAppContext>>) {}
 }
 
 impl FileExplorerPane {
@@ -656,7 +627,7 @@ impl FileExplorerPane {
             match state {
                 FolderSelectState::All => {
                     // Standard checkmark
-                    let mut points = vec![
+                    let points = vec![
                         visual_rect.center() + egui::vec2(-icon_size * 0.25, 0.0),
                         visual_rect.center() + egui::vec2(-icon_size * 0.05, icon_size * 0.2),
                         visual_rect.center() + egui::vec2(icon_size * 0.3, -icon_size * 0.25),

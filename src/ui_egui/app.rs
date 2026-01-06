@@ -94,7 +94,7 @@ impl ZApp {
                 match tile.1 {
                     Tile::Pane(p) => match p {
                         Pane::Log(log_pane) => log_pane.log_buffer = self.log_buffer.clone(),
-                        _ => p.update_ctx(self.app_ctx.clone()),
+                        _ => {}
                     },
                     _ => {}
                 }
