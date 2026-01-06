@@ -799,7 +799,7 @@ impl FileExplorerPane {
             };
 
             if let Ok(mut w) = file_hashes.write() {
-                // w.insert(path_clone, hash);
+                w.insert(path_clone, hash);
             }
         });
     }
