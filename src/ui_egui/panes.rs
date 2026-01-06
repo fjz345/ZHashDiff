@@ -428,58 +428,65 @@ impl FileExplorerPane {
             .inner_margin(0.0) // Set to 0 to prevent the table from shifting right
             .show(ui, |ui| {
                 ui.set_max_width(available_width);
-                self.ui_dir(ui, &self.root.clone());
-            });
-    }
+                let row_height = ui.text_style_height(&egui::TextStyle::Body);
+                let row_height_header = ui.text_style_height(&egui::TextStyle::Heading);
 
-    fn ui_dir(&mut self, ui: &mut egui::Ui, path: &PathBuf) {
-        let row_height = ui.text_style_height(&egui::TextStyle::Body);
-        let row_height_header = ui.text_style_height(&egui::TextStyle::Heading);
+                // Calculate exact width for a 64-char monospace hash + padding
+                let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+                let dummy_hash = "321e84925aecc55ef828a41db03f0ccece66c7a6cd2a31975bcc5d029712db81";
+                let galley = ui.painter().layout_no_wrap(
+                    dummy_hash.into(),
+                    font_id,
+                    egui::Color32::PLACEHOLDER,
+                );
+                let min_hash_width = galley.size().x + 20.0; // Adding margin/padding
 
-        // Calculate exact width for a 64-char monospace hash + padding
-        let font_id = egui::TextStyle::Monospace.resolve(ui.style());
-        let dummy_hash = "321e84925aecc55ef828a41db03f0ccece66c7a6cd2a31975bcc5d029712db81";
-        let galley =
-            ui.painter()
-                .layout_no_wrap(dummy_hash.into(), font_id, egui::Color32::PLACEHOLDER);
-        let min_hash_width = galley.size().x + 20.0; // Adding margin/padding
-
-        TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .auto_shrink([false, true])
-            .column(Column::exact(32.0)) // Increased from 24.0 to prevent culling
-            .column(Column::remainder().at_least(100.0))
-            // HASH: Fixed minimum size, anchored to the right edge.
-            .column(
-                Column::initial(min_hash_width)
-                    .at_least(min_hash_width)
-                    .resizable(false),
-            )
-            .header(row_height_header, |mut header| {
-                header.col(|ui| {
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.centered_and_justified(|ui| {
-                            // Treat the root path like a folder
-                            let state = self.get_folder_selection_state(&self.root);
-                            let root_path = self.root.clone();
-                            self.ui_custom_checkbox(ui, state, &root_path);
+                TableBuilder::new(ui)
+                    .striped(true)
+                    .resizable(true)
+                    .auto_shrink([false, true])
+                    .column(Column::exact(32.0)) // Increased from 24.0 to prevent culling
+                    .column(Column::remainder().at_least(100.0))
+                    // HASH: Fixed minimum size, anchored to the right edge.
+                    .column(
+                        Column::initial(min_hash_width)
+                            .at_least(min_hash_width)
+                            .resizable(false),
+                    )
+                    .header(row_height_header, |mut header| {
+                        header.col(|ui| {
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.centered_and_justified(|ui| {
+                                        // Treat the root path like a folder
+                                        let state = self.get_folder_selection_state(&self.root);
+                                        let root_path = self.root.clone();
+                                        self.ui_custom_checkbox(ui, state, &root_path);
+                                    });
+                                },
+                            );
                         });
+                        header.col(|ui| {
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.label("Name");
+                                },
+                            );
+                        });
+                        header.col(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label("Hash");
+                                },
+                            );
+                        });
+                    })
+                    .body(|mut body: egui_extras::TableBody<'_>| {
+                        self.render_tree_level(&mut body, &self.root.clone(), 0, row_height);
                     });
-                });
-                header.col(|ui| {
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.label("Name");
-                    });
-                });
-                header.col(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label("Hash");
-                    });
-                });
-            })
-            .body(|mut body: egui_extras::TableBody<'_>| {
-                self.render_tree_level(&mut body, path, 0, row_height);
             });
     }
 
