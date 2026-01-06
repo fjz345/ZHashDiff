@@ -113,59 +113,66 @@ impl ZAppPane for FileExplorerPane {
     fn ui(&mut self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
         self.load_dir(&self.root.clone());
 
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.vertical(|ui| {
-                self.ui_popups(ui);
+        // 1. TOP PANEL / HEADER (Static)
+        ui.vertical(|ui| {
+            self.ui_popups(ui);
 
-                ui.horizontal(|ui| {
-                    if ui.button("Open Folder").clicked() {
-                        self.open_dir_window = true;
-                    }
+            ui.horizontal(|ui| {
+                if ui.button("Open Folder").clicked() {
+                    self.open_dir_window = true;
+                }
 
-                    let is_anything_expanded = !self.expanded.is_empty();
-                    let button_text = if is_anything_expanded {
-                        "Collapse All"
+                let is_anything_expanded = !self.expanded.is_empty();
+                let button_text = if is_anything_expanded {
+                    "Collapse All"
+                } else {
+                    "Expand All"
+                };
+
+                if ui.button(button_text).clicked() {
+                    if is_anything_expanded {
+                        self.expanded.clear();
                     } else {
-                        "Expand All"
-                    };
-
-                    if ui.button(button_text).clicked() {
-                        if is_anything_expanded {
-                            self.expanded.clear();
-                        } else {
-                            self.recursive_expand(&self.root.clone());
-                        }
-                    }
-
-                    let cache_text = match self.cache_enabled {
-                        true => "Disable Cache",
-                        false => "Enable Cache",
-                    };
-                    // Toggle for Cache
-                    if ui.button(cache_text).clicked() {
-                        self.cache_enabled = !self.cache_enabled;
-                    }
-                });
-
-                if self.open_dir_window {
-                    self.open_dir_window = false;
-
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        self.load_dir(&path);
-                        self.root = path;
+                        self.recursive_expand(&self.root.clone());
                     }
                 }
 
-                self.ui_table(ui);
-
-                if ui.button("Diff").clicked() {
-                    log::info!("Selected files for diff");
-
-                    self.conflict_map = self.get_conflicts_map();
-                    self.open_diff_popup = true;
+                let cache_text = if self.cache_enabled {
+                    "Disable Cache"
+                } else {
+                    "Enable Cache"
+                };
+                if ui.button(cache_text).clicked() {
+                    self.cache_enabled = !self.cache_enabled;
                 }
             });
         });
+
+        ui.separator(); // Optional: adds a nice line between buttons and list
+
+        // 2. SCROLLABLE CONTENT (The Table)
+        egui::ScrollArea::vertical()
+            .max_height(500.0)
+            .show(ui, |ui| {
+                self.ui_table(ui);
+            });
+
+        // 3. BOTTOM PANEL (Optional: stay fixed at bottom)
+        // If you want the Diff button to always be visible at the bottom:
+        if ui.button("Diff").clicked() {
+            log::info!("Selected files for diff");
+            self.conflict_map = self.get_conflicts_map();
+            self.open_diff_popup = true;
+        }
+
+        // Logic for the file picker (non-UI drawing code)
+        if self.open_dir_window {
+            self.open_dir_window = false;
+            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                self.load_dir(&path);
+                self.root = path;
+            }
+        }
 
         egui_tiles::UiResponse::None
     }
