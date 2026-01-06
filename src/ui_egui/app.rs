@@ -108,8 +108,20 @@ impl ZApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 let mut behavior = TreeBehavior {};
-
                 self.tree.ui(&mut behavior, ui);
+
+                for (_tile_id, tile) in self.tree.tiles.iter() {
+                    if let Tile::Pane(Pane::FileExplorer(file_explorer)) = tile {
+                        let count = file_explorer.count_files();
+
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
+                            "ZHashDiff - {} files",
+                            count
+                        )));
+
+                        break;
+                    }
+                }
             });
         });
     }

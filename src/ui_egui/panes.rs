@@ -85,6 +85,7 @@ pub struct FileExplorerPane {
     pub selected: HashMap<PathBuf, bool>,
     pub file_hashes: Arc<RwLock<HashMap<PathBuf, Option<String>>>>,
 
+    pub cache_enabled: bool,
     #[serde(skip)]
     pub cache: HashMap<PathBuf, DirCache>,
 
@@ -116,24 +117,35 @@ impl ZAppPane for FileExplorerPane {
             ui.vertical(|ui| {
                 self.ui_popups(ui);
 
-                if ui.button("Open Folder").clicked() {
-                    self.open_dir_window = true;
-                }
-
-                let is_anything_expanded = !self.expanded.is_empty();
-                let button_text = if is_anything_expanded {
-                    "Collapse All"
-                } else {
-                    "Expand All"
-                };
-
-                if ui.button(button_text).clicked() {
-                    if is_anything_expanded {
-                        self.expanded.clear();
-                    } else {
-                        self.recursive_expand(&self.root.clone());
+                ui.horizontal(|ui| {
+                    if ui.button("Open Folder").clicked() {
+                        self.open_dir_window = true;
                     }
-                }
+
+                    let is_anything_expanded = !self.expanded.is_empty();
+                    let button_text = if is_anything_expanded {
+                        "Collapse All"
+                    } else {
+                        "Expand All"
+                    };
+
+                    if ui.button(button_text).clicked() {
+                        if is_anything_expanded {
+                            self.expanded.clear();
+                        } else {
+                            self.recursive_expand(&self.root.clone());
+                        }
+                    }
+
+                    let cache_text = match self.cache_enabled {
+                        true => "Disable Cache",
+                        false => "Enable Cache",
+                    };
+                    // Toggle for Cache
+                    if ui.button(cache_text).clicked() {
+                        self.cache_enabled = !self.cache_enabled;
+                    }
+                });
 
                 if self.open_dir_window {
                     self.open_dir_window = false;
@@ -165,6 +177,10 @@ impl FileExplorerPane {
             title,
             ..Default::default()
         }
+    }
+
+    pub fn count_files(&self) -> usize {
+        self.cache.len()
     }
 
     fn recursive_expand(&mut self, path: &PathBuf) {
@@ -773,9 +789,11 @@ impl FileExplorerPane {
     }
 
     fn load_dir(&mut self, path: &PathBuf) {
-        // if self.cache.contains_key(path) {
-        //     return;
-        // }
+        if self.cache_enabled {
+            if self.cache.contains_key(path) {
+                return;
+            }
+        }
 
         let mut entries = vec![];
         if let Ok(read_dir) = fs::read_dir(path) {
