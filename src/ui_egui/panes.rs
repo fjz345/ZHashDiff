@@ -341,6 +341,7 @@ impl FileExplorerPane {
                                 }
                             }
 
+                            self.cache.clear();
                             self.conflict_map.clear();
                             self.conflict_map_resolved.clear();
                             self.show_diff_popup = false;
@@ -834,20 +835,20 @@ impl FileExplorerPane {
         hash.hash(&mut hasher);
         let h = hasher.finish();
 
-        // 1. Golden Ratio Conjugate (~0.618033...)
-        // This helps spread hues more uniformly across the spectrum
-        let golden_ratio_conjugate = 0.618033988749895;
+        // 1. Use a large prime to "scramble" the hash bits further
+        // This ensures even similar hashes result in wildly different numbers
+        let scrambled = h.wrapping_mul(0x9E3779B97F4A7C15);
 
-        // Generate a float [0.0, 1.0] from the hash
-        let hash_float = (h as f64 / u64::MAX as f64);
+        // 2. Map to Hue [0, 1] using a larger step
+        // The Golden Ratio is good, but for small sets, a prime-based jump
+        // often feels more "random" to the human eye.
+        let hue = (scrambled as f64 / u64::MAX as f64) as f32;
 
-        // 2. Use the fractional part to jump around the color wheel
-        let hue = (hash_float + golden_ratio_conjugate).fract() as f32;
-
-        // 3. Subtly vary Saturation and Value based on hash bits
-        // to prevent every group from having the exact same "intensity"
-        let saturation = 0.4 + (h % 30) as f32 / 100.0; // Range: 0.4 - 0.7
-        let value = 0.7 + (h % 20) as f32 / 100.0; // Range: 0.7 - 0.9
+        // 3. Wider Saturation and Value ranges
+        // By allowing saturation to go deeper (0.3 to 0.8),
+        // we distinguish "vibrant" vs "pastel" versions of the same hue.
+        let saturation = 0.3 + ((scrambled >> 8) % 50) as f32 / 100.0;
+        let value = 0.7 + ((scrambled >> 16) % 25) as f32 / 100.0;
 
         egui::Color32::from(egui::ecolor::Hsva::new(hue, saturation, value, 1.0))
     }
