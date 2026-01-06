@@ -146,7 +146,7 @@ impl ZAppPane for FileExplorerPane {
                     self.cache_enabled = !self.cache_enabled;
                 }
 
-                if ui.button("Clear Cache").clicked() {
+                if ui.button("Clear Hashes").clicked() {
                     self.clear_hash();
                 }
             });
