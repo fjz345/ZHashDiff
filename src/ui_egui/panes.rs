@@ -82,24 +82,26 @@ pub struct FileExplorerPane {
 
     pub root: PathBuf,
     pub expanded: HashMap<PathBuf, bool>,
-
     pub selected: HashMap<PathBuf, bool>,
     pub file_hashes: Arc<RwLock<HashMap<PathBuf, Option<String>>>>,
 
     #[serde(skip)]
     pub cache: HashMap<PathBuf, DirCache>,
-    #[serde(skip)]
-    pub selected_conflict_path: Option<PathBuf>,
+
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
     #[serde(skip)]
-    show_diff_popup: bool,
+    pub active_conflict_selected_path: Option<PathBuf>,
+
     #[serde(skip)]
     conflict_map: HashMap<String, (Vec<PathBuf>, bool)>,
     #[serde(skip)]
     conflict_map_resolved: HashMap<String, PathBuf>,
+
     #[serde(skip)]
-    pub open_path_dialog: bool,
+    open_diff_popup: bool,
+    #[serde(skip)]
+    pub open_dir_window: bool,
 }
 
 impl ZAppPane for FileExplorerPane {
@@ -113,7 +115,7 @@ impl ZAppPane for FileExplorerPane {
                 self.ui_popups(ui);
 
                 if ui.button("Open Folder").clicked() {
-                    self.open_path_dialog = true;
+                    self.open_dir_window = true;
                 }
 
                 let is_anything_expanded = !self.expanded.is_empty();
@@ -125,30 +127,27 @@ impl ZAppPane for FileExplorerPane {
 
                 if ui.button(button_text).clicked() {
                     if is_anything_expanded {
-                        // COLLAPSE: Simply clear the set
                         self.expanded.clear();
                     } else {
-                        // EXPAND: Recursively find all directories and add them to the set
-                        let root_path = self.root.clone();
-                        self.recursive_expand_to_set(&root_path);
+                        self.recursive_expand_to_set(&self.root.clone());
                     }
                 }
 
-                if self.open_path_dialog {
-                    self.open_path_dialog = false;
+                if self.open_dir_window {
+                    self.open_dir_window = false;
 
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
                         self.root = path;
                     }
                 }
 
-                self.ui_table(ui, &self.root.clone());
+                self.ui_table(ui);
 
                 if ui.button("Diff").clicked() {
                     log::info!("Selected files for diff");
 
                     self.conflict_map = self.get_conflicts_map();
-                    self.show_diff_popup = true;
+                    self.open_diff_popup = true;
                 }
             });
         });
@@ -190,8 +189,8 @@ impl FileExplorerPane {
     }
 
     fn ui_popups(&mut self, ui: &mut egui::Ui) {
-        if self.show_diff_popup {
-            let mut temp_show_diff_popup = self.show_diff_popup;
+        if self.open_diff_popup {
+            let mut temp_show_diff_popup = self.open_diff_popup;
 
             popup::show_custom_popup(
                 ui.ctx(),
@@ -313,14 +312,14 @@ impl FileExplorerPane {
                             self.cache.clear();
                             self.conflict_map.clear();
                             self.conflict_map_resolved.clear();
-                            self.show_diff_popup = false;
+                            self.open_diff_popup = false;
 
                             self.load_dir(&self.root.clone());
                         }
                     });
                 },
             );
-            self.show_diff_popup = temp_show_diff_popup;
+            self.open_diff_popup = temp_show_diff_popup;
         }
 
         if let Some(ref selected_hash) = self.active_conflict_hash {
@@ -378,7 +377,7 @@ impl FileExplorerPane {
                                     }
 
                                     // Set the temporary tracking variable used by the confirm button
-                                    self.selected_conflict_path = Some(path.clone());
+                                    self.active_conflict_selected_path = Some(path.clone());
                                 }
                             }
                         });
@@ -401,12 +400,12 @@ impl FileExplorerPane {
             is_open &= temp_is_open;
             if !is_open {
                 self.active_conflict_hash = None;
-                self.selected_conflict_path = None;
+                self.active_conflict_selected_path = None;
             }
         }
     }
 
-    fn ui_table(&mut self, ui: &mut egui::Ui, _path: &PathBuf) {
+    fn ui_table(&mut self, ui: &mut egui::Ui) {
         let available_width = ui.available_width();
 
         egui::Frame::new()
