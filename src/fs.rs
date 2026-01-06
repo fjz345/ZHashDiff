@@ -8,6 +8,15 @@ pub enum FsEntry {
     Dir { path: PathBuf },
 }
 
+impl FsEntry {
+    pub fn path(&self) -> &PathBuf {
+        match self {
+            FsEntry::File { path } => path,
+            FsEntry::Dir { path } => path,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct DirCache {
     pub entries: Vec<FsEntry>,

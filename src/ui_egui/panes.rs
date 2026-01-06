@@ -149,6 +149,21 @@ impl ZAppPane for FileExplorerPane {
                 if ui.button("Clear Hashes").clicked() {
                     self.clear_hash();
                 }
+
+                if ui.button("Request All Hash").clicked() {
+                    for folder in self.cache.values() {
+                        if folder.has_files_deep {
+                            for entries in &folder.entries {
+                                self.request_hash(entries.path());
+                            }
+                        }
+                    }
+                }
+
+                if ui.button("Refresh").clicked() {
+                    self.cache.clear();
+                    self.load_dir(&self.root.clone());
+                }
             });
         });
 
