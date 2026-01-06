@@ -480,10 +480,10 @@ impl FileExplorerPane {
             body.row(row_height, |mut row| {
                 row.col(|ui| {
                     ui.centered_and_justified(|ui| {
-                        let has_files = if is_dir { cache.has_files_deep } else { true };
+                        let has_files = cache.has_files_deep;
 
                         if has_files {
-                            let state = if is_dir {
+                            let state: FolderSelectState = if is_dir {
                                 self.get_folder_selection_state(&path)
                             } else {
                                 if *self.selected.get(path).unwrap_or(&false) {
@@ -620,7 +620,7 @@ impl FileExplorerPane {
 
         if response.clicked() {
             let new_val = state != FolderSelectState::All;
-            if path.is_dir() || path == &self.root {
+            if path.is_dir() {
                 self.recursive_selection(path, new_val);
             } else {
                 self.selected.insert(path.clone(), new_val);
@@ -640,6 +640,8 @@ impl FileExplorerPane {
                     }
                 }
             }
+        } else {
+            log::warn!("No cache entry found for path: {:?}", path);
         }
     }
 
@@ -662,12 +664,11 @@ impl FileExplorerPane {
     fn get_folder_selection_state(&self, path: &PathBuf) -> FolderSelectState {
         let cache = match self.cache.get(path) {
             Some(c) => c,
-            None => return FolderSelectState::None,
+            None => {
+                log::warn!("No cache entry found for path: {:?}", path);
+                return FolderSelectState::None;
+            }
         };
-
-        if cache.entries.is_empty() {
-            return FolderSelectState::None;
-        }
 
         let mut has_selected = false;
         let mut has_unselected = false;
