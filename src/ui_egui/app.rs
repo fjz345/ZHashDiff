@@ -30,17 +30,8 @@ enum AppState {
     Exit,
 }
 
-#[derive(Debug)]
-struct MouseClickEvent {
-    mouse_pos: Pos2,
-}
-
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct ZColorPickerAppContext {
-    #[serde(skip)]
-    double_click_event: Option<MouseClickEvent>,
-    #[serde(skip)]
-    middle_click_event: Option<MouseClickEvent>,
     #[serde(skip)]
     open_tabs: HashSet<String>,
 }
@@ -48,8 +39,6 @@ pub struct ZColorPickerAppContext {
 impl ZColorPickerAppContext {
     pub fn default() -> Self {
         Self {
-            double_click_event: None,
-            middle_click_event: None,
             open_tabs: HashSet::default(),
         }
     }
@@ -220,26 +209,16 @@ impl ZApp {
                 }
 
                 // DoubleLeftClick
-                app_ctx.double_click_event = None;
                 if r.pointer.button_double_clicked(PointerButton::Primary) {
                     let mouse_pos = r.pointer.interact_pos().unwrap();
-                    app_ctx.double_click_event = Some(MouseClickEvent { mouse_pos });
                     log::info!("double click @({},{})", mouse_pos.x, mouse_pos.y);
                 }
 
-                app_ctx.middle_click_event = None;
                 if r.pointer.button_clicked(PointerButton::Middle) {
                     let mouse_pos: Pos2 = r.pointer.interact_pos().unwrap();
-                    app_ctx.middle_click_event = Some(MouseClickEvent { mouse_pos });
 
                     log::info!("middle click @({},{})", mouse_pos.x, mouse_pos.y);
                 }
-
-                // Debug toggles
-                app_ctx.double_click_event = None;
-                if r.key_pressed(egui::Key::F12) {}
-                app_ctx.double_click_event = None;
-                if r.key_pressed(egui::Key::F11) {}
             });
         }
 
