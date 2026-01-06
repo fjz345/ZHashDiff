@@ -3,15 +3,17 @@ use std::{
     fs,
     path::PathBuf,
     sync::{Arc, Mutex, RwLock},
+    thread::JoinHandle,
 };
 
-use eframe::egui::{self, Color32};
+use eframe::egui::{self, Color32, Vec2, vec2};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     fs::{DirCache, FsEntry},
     logger::ui_log_window,
+    pool::Pool,
     ui_egui::popup,
 };
 pub struct TreeBehavior {}
@@ -76,14 +78,24 @@ impl ZAppPane for LogPane {
     }
 }
 
-#[derive(Serialize, Deserialize, Default)]
+const MAX_CONCURRENT_HASHES: usize = 100;
+#[derive(Serialize, Deserialize)]
 pub struct FileExplorerPane {
     pub title: Option<String>,
 
     pub root: PathBuf,
-    pub expanded: HashMap<PathBuf, bool>,
-    pub selected: HashMap<PathBuf, bool>,
+
+    #[serde(skip)]
     pub file_hashes: Arc<RwLock<HashMap<PathBuf, Option<String>>>>,
+
+    #[serde(skip)]
+    pub expanded: HashMap<PathBuf, bool>,
+    #[serde(skip)]
+    pub selected: HashMap<PathBuf, bool>,
+
+    pub concurrent_hashes: usize,
+    #[serde(skip)]
+    pub hash_semaphore: Arc<Pool<Option<JoinHandle<()>>, MAX_CONCURRENT_HASHES>>,
 
     pub cache_enabled: bool,
     #[serde(skip)]
@@ -164,6 +176,12 @@ impl ZAppPane for FileExplorerPane {
                     self.cache.clear();
                     self.load_dir(&self.root.clone());
                 }
+
+                ui.label("Concurrent Hashes");
+                ui.add(egui::Slider::new(
+                    &mut self.concurrent_hashes,
+                    0..=MAX_CONCURRENT_HASHES,
+                ));
             });
         });
 
@@ -197,10 +215,19 @@ impl ZAppPane for FileExplorerPane {
     }
 }
 
+impl Default for FileExplorerPane {
+    fn default() -> Self {
+        Self {
+            concurrent_hashes: 1,
+            ..Default::default()
+        }
+    }
+}
 impl FileExplorerPane {
     pub fn new(title: Option<String>) -> Self {
         let new = FileExplorerPane {
             title,
+            concurrent_hashes: 1,
             ..Default::default()
         };
 
@@ -774,25 +801,34 @@ impl FileExplorerPane {
 
     pub fn clear_hash(&mut self) {
         self.file_hashes.write().unwrap().clear();
+        self.hash_semaphore.clear();
     }
 
     fn request_hash(&self, path: &PathBuf) {
-        let mut write_guard = self
-            .file_hashes
-            .write()
-            .expect("Failed to lock for writing");
-
-        // If we are already hashing this or it's done, do nothing
+        let mut write_guard = self.file_hashes.write().expect("Lock failed");
+        // Already queued
         if write_guard.contains_key(path) {
             return;
         }
+        // Limit by user
+        if self.concurrent_hashes != 0 && self.hash_semaphore.len() >= self.concurrent_hashes {
+            return;
+        }
+        // Hard limit
+        let handle = match self.hash_semaphore.allocate() {
+            Some(h) => h,
+            None => return,
+        };
 
-        // Mark as "None" (meaning: Hashing in progress)
         write_guard.insert(path.clone(), None);
+        drop(write_guard);
 
         let file_hashes = self.file_hashes.clone();
         let path_clone = path.clone();
+
         std::thread::spawn(move || {
+            let _permit = handle;
+
             let hash = match crate::hash::hash_file(&path_clone.to_string_lossy()) {
                 Ok(h) => Some(h),
                 Err(_) => Some("error".to_string()),
