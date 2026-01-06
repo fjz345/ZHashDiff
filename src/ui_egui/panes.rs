@@ -876,25 +876,42 @@ impl FileExplorerPane {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
-        // 1. Get the primary Hue from the first two characters of the hash
-        // If the hash is "a3f1...", we take "a3" -> 163 / 255.0
-        let hue = if hash.len() >= 2 {
-            u8::from_str_radix(&hash[..2], 16).unwrap_or(0) as f32 / 255.0
-        } else {
-            0.0
-        };
+        // 1. Strict Anchors
+        let hue_digit = hash
+            .chars()
+            .next()
+            .and_then(|c| c.to_digit(16))
+            .unwrap_or(0) as f32;
+        let shade_digit = hash
+            .chars()
+            .nth(1)
+            .and_then(|c| c.to_digit(16))
+            .unwrap_or(0) as f32;
 
-        // 2. We still want some "scrambling" for Saturation and Value
-        // so that two hashes starting with 'a3' aren't identical colors.
+        // 2. Generate Volatile Jitter
+        // We use a hasher to turn the whole string into 3 different "noise" values
         let mut hasher = DefaultHasher::new();
         hash.hash(&mut hasher);
         let h = hasher.finish();
-        let scrambled = h.wrapping_mul(0x9E3779B97F4A7C15);
 
-        // 3. Keep Saturation and Value slightly dynamic based on the full hash
-        // Range: 0.4 to 0.8 for saturation, 0.7 to 0.9 for brightness (value)
-        let saturation = 0.4 + ((scrambled >> 8) % 40) as f32 / 100.0;
-        let value = 0.7 + ((scrambled >> 16) % 20) as f32 / 100.0;
+        // Create three distinct jitter values from different bits of the hash
+        let jitter_h = ((h & 0xFF) as f32 / 255.0) - 0.5; // -0.5 to 0.5
+        let jitter_s = (((h >> 8) & 0xFF) as f32 / 255.0) - 0.5; // -0.5 to 0.5
+        let jitter_v = (((h >> 16) & 0xFF) as f32 / 255.0) - 0.5; // -0.5 to 0.5
+
+        // 3. Apply Logic
+        // HUE: Purely first letter (16 steps around the wheel)
+        // We don't add jitter here to keep the "color group" perfectly consistent
+        let hue = hue_digit / 16.0;
+
+        // SATURATION & VALUE: Driven by 2nd letter, shaken by Jitter
+        // Base ranges: Sat (0.4-0.8), Val (0.6-0.9)
+        let s_base = 0.4 + (shade_digit / 16.0) * 0.4;
+        let v_base = 0.6 + (1.0 - (shade_digit / 16.0)) * 0.3;
+
+        // The Jitter is "volatile" because it can shift the shade by up to 20%
+        let saturation = (s_base + jitter_s * 0.2).clamp(0.3, 0.95);
+        let value = (v_base + jitter_v * 0.2).clamp(0.4, 0.95);
 
         egui::Color32::from(egui::ecolor::Hsva::new(hue, saturation, value, 1.0))
     }
