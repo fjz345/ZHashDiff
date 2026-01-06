@@ -1,9 +1,7 @@
 use std::{
-    cell::RefCell,
     collections::HashMap,
     fs,
     path::PathBuf,
-    rc::Rc,
     sync::{Arc, Mutex, RwLock},
 };
 
@@ -14,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     fs::{DirCache, FsEntry},
     logger::ui_log_window,
-    ui_egui::{app::ZColorPickerAppContext, popup},
+    ui_egui::popup,
 };
 pub struct TreeBehavior {}
 
@@ -411,7 +409,7 @@ impl FileExplorerPane {
     fn ui_table(&mut self, ui: &mut egui::Ui, _path: &PathBuf) {
         let available_width = ui.available_width();
 
-        egui::Frame::none()
+        egui::Frame::new()
             .fill(egui::Color32::from_gray(20))
             .inner_margin(0.0) // Set to 0 to prevent the table from shifting right
             .show(ui, |ui| {
@@ -429,7 +427,7 @@ impl FileExplorerPane {
         let dummy_hash = "321e84925aecc55ef828a41db03f0ccece66c7a6cd2a31975bcc5d029712db81";
         let galley =
             ui.painter()
-                .layout_no_wrap(dummy_hash.into(), font_id, egui::Color32::TEMPORARY_COLOR);
+                .layout_no_wrap(dummy_hash.into(), font_id, egui::Color32::PLACEHOLDER);
         let min_hash_width = galley.size().x + 20.0; // Adding margin/padding
 
         TableBuilder::new(ui)
@@ -526,7 +524,7 @@ impl FileExplorerPane {
                         if is_dir {
                             let is_open = self.expanded.get(&entry_path).copied().unwrap_or(false);
                             let openness = if is_open { 1.0 } else { 0.0 };
-                            let (rect, response) = ui.allocate_exact_size(
+                            let (_rect, response) = ui.allocate_exact_size(
                                 egui::vec2(12.0, row_height),
                                 egui::Sense::click(),
                             );

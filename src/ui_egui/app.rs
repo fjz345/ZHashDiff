@@ -1,20 +1,10 @@
-use eframe::egui::{self, Layout, PointerButton, Rect, Ui};
+use eframe::egui::{self, Layout, PointerButton};
 use serde::{Deserialize, Serialize};
-use std::{
-    borrow::Cow,
-    cell::RefCell,
-    collections::HashSet,
-    rc::Rc,
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::sync::{Arc, Mutex};
 
 use crate::{
     logger::LogCollector,
-    ui_egui::{
-        panes::{FileExplorerPane, LogPane, Pane, TreeBehavior, ZAppPane},
-        popup,
-    },
+    ui_egui::panes::{FileExplorerPane, LogPane, Pane, TreeBehavior},
 };
 use eframe::{
     CreationContext,
@@ -30,27 +20,12 @@ enum AppState {
     Exit,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
-pub struct ZColorPickerAppContext {
-    #[serde(skip)]
-    open_tabs: HashSet<String>,
-}
-
-impl ZColorPickerAppContext {
-    pub fn default() -> Self {
-        Self {
-            open_tabs: HashSet::default(),
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct ZApp {
     monitor_size: Vec2,
     scale_factor: f32,
     native_pixel_per_point: f32,
     state: AppState,
-    app_ctx: Rc<RefCell<ZColorPickerAppContext>>,
     tree: egui_tiles::Tree<Pane>,
     #[serde(skip)]
     log_buffer: Arc<Mutex<Vec<String>>>,
@@ -69,9 +44,6 @@ impl ZApp {
         const RESOLUTION_REF: f32 = 1080.0;
         let scale_factor: f32 = monitor_size.x.min(monitor_size.y) / RESOLUTION_REF;
 
-        let app_ctx = ZColorPickerAppContext::default();
-        let app_ctx = Rc::new(RefCell::new(app_ctx));
-
         let native_pixel_per_point = cc.egui_ctx.native_pixels_per_point().unwrap_or(1.0);
 
         Self {
@@ -79,8 +51,7 @@ impl ZApp {
             scale_factor: scale_factor,
             native_pixel_per_point: native_pixel_per_point,
             state: AppState::Startup,
-            tree: Self::create_tree(app_ctx.clone(), log_buffer.clone()),
-            app_ctx: app_ctx,
+            tree: Self::create_tree(log_buffer.clone()),
             log_buffer: log_buffer,
         }
     }
@@ -111,12 +82,7 @@ impl ZApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
     }
 
-    fn draw_ui_post(&mut self, ctx: &egui::Context, ui: &mut Ui) {}
-
-    fn create_tree(
-        ctx: Rc<RefCell<ZColorPickerAppContext>>,
-        log_buffer: Arc<Mutex<Vec<String>>>,
-    ) -> egui_tiles::Tree<Pane> {
+    fn create_tree(log_buffer: Arc<Mutex<Vec<String>>>) -> egui_tiles::Tree<Pane> {
         let mut tiles = egui_tiles::Tiles::default();
 
         let mut tabs = vec![];
@@ -138,59 +104,13 @@ impl ZApp {
         egui_tiles::Tree::new("my_tree", root, tiles)
     }
 
-    fn draw_ui_tree(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn draw_ui_tree(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.with_layout(Layout::left_to_right(egui::Align::Min), |mut ui| {
+            ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 let mut behavior = TreeBehavior {};
 
                 self.tree.ui(&mut behavior, ui);
-
-                // Copy to clipboard
-                let middle_mouse_clicked = ctx.input(|i| i.pointer.middle_down());
-                if middle_mouse_clicked {
-                    let interact_pos = ctx.input(|i| i.pointer.interact_pos());
-                    if let Some(pos) = interact_pos {
-                        self.handle_middleclick_event(pos, ui, ctx, frame);
-                    }
-                }
-
-                self.draw_ui_post(ctx, &mut ui);
             });
-        });
-    }
-
-    fn handle_middleclick_event(
-        &mut self,
-        pointer_pos: Pos2,
-        ui: &egui::Ui,
-        ctx: &egui::Context,
-        _frame: &eframe::Frame,
-    ) {
-        let app_ctx = &mut self.app_ctx.borrow_mut();
-        let mut found_rect = None;
-
-        // found_rect = None;
-        // Fallback rect if none found: 1x1 rect at pointer_pos
-        let rect = found_rect.unwrap_or(Rect::from_min_size(
-            pointer_pos.clamp(
-                Pos2 { x: 0.0, y: 0.0 },
-                ctx.screen_rect().max - Vec2 { x: 1.0, y: 1.0 },
-            ),
-            Vec2::new(1.0, 1.0),
-        ));
-
-        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
-        let rect_image = ui.input(|i| {
-            for event in &i.raw.events {
-                if let egui::Event::Screenshot { image, .. } = event {
-                    let pixels_per_point = i.pixels_per_point();
-                    let region = rect;
-                    let rect_image = image.region(&region, Some(pixels_per_point));
-
-                    return Some(rect_image);
-                }
-            }
-            None
         });
     }
 
@@ -201,7 +121,6 @@ impl ZApp {
     fn process_ctx_inputs(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut user_quit: bool = false;
         {
-            let app_ctx = &mut self.app_ctx.borrow_mut();
             let _input_ctx = ctx.input(|r| {
                 // Esc
                 if r.key_down(egui::Key::Escape) {
@@ -252,9 +171,6 @@ impl eframe::App for ZApp {
             }
             AppState::Exit => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            _ => {
-                panic!("Not a valid state {:?}", self.state);
             }
         }
 
