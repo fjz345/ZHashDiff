@@ -799,24 +799,25 @@ impl FileExplorerPane {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
+        // 1. Get the primary Hue from the first two characters of the hash
+        // If the hash is "a3f1...", we take "a3" -> 163 / 255.0
+        let hue = if hash.len() >= 2 {
+            u8::from_str_radix(&hash[..2], 16).unwrap_or(0) as f32 / 255.0
+        } else {
+            0.0
+        };
+
+        // 2. We still want some "scrambling" for Saturation and Value
+        // so that two hashes starting with 'a3' aren't identical colors.
         let mut hasher = DefaultHasher::new();
         hash.hash(&mut hasher);
         let h = hasher.finish();
-
-        // 1. Use a large prime to "scramble" the hash bits further
-        // This ensures even similar hashes result in wildly different numbers
         let scrambled = h.wrapping_mul(0x9E3779B97F4A7C15);
 
-        // 2. Map to Hue [0, 1] using a larger step
-        // The Golden Ratio is good, but for small sets, a prime-based jump
-        // often feels more "random" to the human eye.
-        let hue = (scrambled as f64 / u64::MAX as f64) as f32;
-
-        // 3. Wider Saturation and Value ranges
-        // By allowing saturation to go deeper (0.3 to 0.8),
-        // we distinguish "vibrant" vs "pastel" versions of the same hue.
-        let saturation = 0.3 + ((scrambled >> 8) % 50) as f32 / 100.0;
-        let value = 0.7 + ((scrambled >> 16) % 25) as f32 / 100.0;
+        // 3. Keep Saturation and Value slightly dynamic based on the full hash
+        // Range: 0.4 to 0.8 for saturation, 0.7 to 0.9 for brightness (value)
+        let saturation = 0.4 + ((scrambled >> 8) % 40) as f32 / 100.0;
+        let value = 0.7 + ((scrambled >> 16) % 20) as f32 / 100.0;
 
         egui::Color32::from(egui::ecolor::Hsva::new(hue, saturation, value, 1.0))
     }
