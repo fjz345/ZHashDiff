@@ -94,7 +94,7 @@ pub struct FileExplorerPane {
     pub active_conflict_selected_path: Option<PathBuf>,
 
     #[serde(skip)]
-    conflict_map: HashMap<String, (Vec<PathBuf>, bool)>,
+    conflict_map: HashMap<String, Vec<PathBuf>>,
     #[serde(skip)]
     conflict_map_resolved: HashMap<String, PathBuf>,
 
@@ -110,6 +110,8 @@ impl ZAppPane for FileExplorerPane {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
+        self.load_dir(&self.root.clone());
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.vertical(|ui| {
                 self.ui_popups(ui);
@@ -129,7 +131,7 @@ impl ZAppPane for FileExplorerPane {
                     if is_anything_expanded {
                         self.expanded.clear();
                     } else {
-                        self.recursive_expand_to_set(&self.root.clone());
+                        self.recursive_expand(&self.root.clone());
                     }
                 }
 
@@ -137,6 +139,7 @@ impl ZAppPane for FileExplorerPane {
                     self.open_dir_window = false;
 
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                        self.load_dir(&path);
                         self.root = path;
                     }
                 }
@@ -164,14 +167,9 @@ impl FileExplorerPane {
         }
     }
 
-    fn recursive_expand_to_set(&mut self, path: &PathBuf) {
-        // 1. Ensure the directory is loaded so we know its children
-        self.load_dir(path);
-
-        // 2. Add this path to your existing expansion state
+    fn recursive_expand(&mut self, path: &PathBuf) {
         self.expanded.insert(path.clone(), true);
 
-        // 3. Recurse into subdirectories found in the cache
         if let Some(cache_entry) = self.cache.get(path) {
             let subdirs: Vec<PathBuf> = cache_entry
                 .entries
@@ -183,7 +181,7 @@ impl FileExplorerPane {
                 .collect();
 
             for subdir in subdirs {
-                self.recursive_expand_to_set(&subdir);
+                self.recursive_expand(&subdir);
             }
         }
     }
@@ -215,7 +213,6 @@ impl FileExplorerPane {
                                 let response = ui
                                     .scope(|ui| {
                                         ui.horizontal(|ui| {
-                                            // 1. Visual-only Radio/Checkbox
                                             self.ui_custom_checkbox(
                                                 ui,
                                                 match is_resolved {
@@ -225,12 +222,10 @@ impl FileExplorerPane {
                                                 &PathBuf::default(),
                                             );
 
-                                            // 2. Hash with Color-coded Background
                                             let color = Self::hash_to_color(&hash);
 
-                                            // We use a Frame to draw a "pill" or "tag" behind the hash
                                             egui::Frame::new()
-                                                .fill(color) // Soften the background
+                                                .fill(color)
                                                 .corner_radius(4.0)
                                                 .inner_margin(2.0)
                                                 .show(ui, |ui| {
@@ -239,18 +234,16 @@ impl FileExplorerPane {
                                                             "[{}]",
                                                             &hash[0..8]
                                                         ))
-                                                        .color(Color32::BLACK) // Keep text readable
+                                                        .color(Color32::BLACK)
                                                         .strong(),
                                                     );
                                                 });
 
-                                            // 3. Duplicate Count
-                                            ui.label(format!("{} duplicates", value.0.len()));
+                                            ui.label(format!("{} duplicates", value.len()));
                                         });
                                     })
                                     .response;
 
-                                // Make the whole row area interactive
                                 let interact_response = ui.interact(
                                     response.rect,
                                     ui.id().with(&hash),
@@ -284,10 +277,10 @@ impl FileExplorerPane {
                     let resolve_ready = self.conflict_map.len() > 0
                         && self.conflict_map.len() == self.conflict_map_resolved.len();
                     ui.add_enabled_ui(resolve_ready, |ui| {
-                        if ui.button("Resolve!").clicked() && resolve_ready {
+                        if ui.button("Resolve!").clicked() {
                             log::info!("Resolving conflicts...");
 
-                            for (hash, (paths, _)) in &self.conflict_map {
+                            for (hash, paths) in &self.conflict_map {
                                 if let Some(path_to_keep) = self.conflict_map_resolved.get(hash) {
                                     for path in paths {
                                         if path != path_to_keep {
@@ -313,8 +306,8 @@ impl FileExplorerPane {
                             self.conflict_map.clear();
                             self.conflict_map_resolved.clear();
                             self.open_diff_popup = false;
-
-                            self.load_dir(&self.root.clone());
+                            self.active_conflict_hash = None;
+                            self.active_conflict_selected_path = None;
                         }
                     });
                 },
@@ -322,10 +315,10 @@ impl FileExplorerPane {
             self.open_diff_popup = temp_show_diff_popup;
         }
 
-        if let Some(ref selected_hash) = self.active_conflict_hash {
+        if let Some(selected_hash) = &self.active_conflict_hash {
             let mut is_open = true;
             let mut temp_is_open = is_open;
-            let conflict_map = self.get_conflicts_map();
+            let conflict_map = &self.conflict_map;
 
             if let Some(value) = conflict_map.get(selected_hash) {
                 popup::show_custom_popup(
@@ -336,8 +329,6 @@ impl FileExplorerPane {
                         ui.label(egui::RichText::new("Select the file you wish to keep:").strong());
                         ui.add_space(8.0);
 
-                        // --- 1. THE "NOT RESOLVED" OPTION ---
-                        // We check if the map currently has NO entry for this hash
                         let mut is_unresolved =
                             !self.conflict_map_resolved.contains_key(selected_hash);
                         if ui
@@ -345,17 +336,12 @@ impl FileExplorerPane {
                             .clicked()
                         {
                             self.conflict_map_resolved.remove(selected_hash);
-                            // Also mark the boolean in conflict_map as false
-                            if let Some(entry) = self.conflict_map.get_mut(selected_hash) {
-                                entry.1 = false;
-                            }
                         }
 
                         ui.separator();
 
                         egui::ScrollArea::vertical().show(ui, |ui| {
-                            for path in &value.0 {
-                                // Check if this specific path is the one currently in the resolved map
+                            for path in value {
                                 let mut is_this_path_selected =
                                     self.conflict_map_resolved.get(selected_hash) == Some(path);
 
@@ -367,16 +353,9 @@ impl FileExplorerPane {
                                     )
                                     .clicked()
                                 {
-                                    // Update the resolved map
                                     self.conflict_map_resolved
                                         .insert(selected_hash.clone(), path.clone());
 
-                                    // Update the "resolved" status bit in your conflict_map
-                                    if let Some(entry) = self.conflict_map.get_mut(selected_hash) {
-                                        entry.1 = true;
-                                    }
-
-                                    // Set the temporary tracking variable used by the confirm button
                                     self.active_conflict_selected_path = Some(path.clone());
                                 }
                             }
@@ -441,12 +420,11 @@ impl FileExplorerPane {
                     .at_least(min_hash_width)
                     .resizable(false),
             )
-            // Inside ui_dir(ui, path)
             .header(row_height_header, |mut header| {
                 header.col(|ui| {
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.centered_and_justified(|ui| {
-                            // Treat the root path exactly like a folder
+                            // Treat the root path like a folder
                             let state = self.get_folder_selection_state(&self.root);
                             let root_path = self.root.clone();
                             self.ui_custom_checkbox(ui, state, &root_path);
@@ -464,64 +442,50 @@ impl FileExplorerPane {
                     });
                 });
             })
-            .body(|mut body| {
-                self.render_tree_level(&mut body, path.clone(), 0, row_height);
+            .body(|mut body: egui_extras::TableBody<'_>| {
+                self.render_tree_level(&mut body, path, 0, row_height);
             });
     }
 
     fn render_tree_level(
         &mut self,
         body: &mut egui_extras::TableBody,
-        parent_path: PathBuf,
+        parent_path: &PathBuf,
         depth: usize,
         row_height: f32,
     ) {
-        self.load_dir(&parent_path);
-
-        let entries = self
-            .cache
-            .get(&parent_path)
-            .map(|c| c.entries.clone())
-            .unwrap_or_default();
-
-        for entry in entries {
-            let entry_path = match &entry {
-                FsEntry::Dir { path } => path.clone(),
-                FsEntry::File { path } => path.clone(),
+        let cache = self.cache.get(parent_path).expect("Impossible").clone();
+        for entry in &cache.entries {
+            let (path, is_dir) = match entry {
+                FsEntry::Dir { path } => (path, true),
+                FsEntry::File { path } => (path, false),
             };
-            let is_dir = matches!(entry, FsEntry::Dir { .. });
 
             body.row(row_height, |mut row| {
                 row.col(|ui| {
                     ui.centered_and_justified(|ui| {
-                        // Direct disk check is safer than cache check if cache is lazily populated
-                        let has_files = if is_dir {
-                            self.has_files_recursive(&entry_path)
-                        } else {
-                            true // It's a file, so it's a "file"
-                        };
+                        let has_files = if is_dir { cache.has_files_deep } else { true };
 
                         if has_files {
                             let state = if is_dir {
-                                self.get_folder_selection_state(&entry_path)
+                                self.get_folder_selection_state(&path)
                             } else {
-                                if *self.selected.get(&entry_path).unwrap_or(&false) {
+                                if *self.selected.get(path).unwrap_or(&false) {
                                     FolderSelectState::All
                                 } else {
                                     FolderSelectState::None
                                 }
                             };
-                            self.ui_custom_checkbox(ui, state, &entry_path);
+                            self.ui_custom_checkbox(ui, state, &path);
                         }
                     });
                 });
 
-                // COLUMN 2: Name & Toggle
                 row.col(|ui| {
                     ui.horizontal(|ui| {
                         ui.add_space((depth as f32) * 16.0);
                         if is_dir {
-                            let is_open = self.expanded.get(&entry_path).copied().unwrap_or(false);
+                            let is_open = self.expanded.get(path).copied().unwrap_or(false);
                             let openness = if is_open { 1.0 } else { 0.0 };
                             let (_rect, response) = ui.allocate_exact_size(
                                 egui::vec2(12.0, row_height),
@@ -531,30 +495,29 @@ impl FileExplorerPane {
                             egui::collapsing_header::paint_default_icon(ui, openness, &response);
 
                             if response.clicked() {
-                                self.expanded.insert(entry_path.clone(), !is_open);
+                                self.expanded.insert(path.clone(), !is_open);
                             }
 
                             let label_text = format!(
                                 "📁 {}",
-                                entry_path.file_name().unwrap_or_default().to_string_lossy()
+                                path.file_name().unwrap_or_default().to_string_lossy()
                             );
                             if ui
                                 .label(label_text)
                                 .interact(egui::Sense::click())
                                 .clicked()
                             {
-                                self.expanded.insert(entry_path.clone(), !is_open);
+                                self.expanded.insert(path.clone(), !is_open);
                             }
                         } else {
-                            ui.label(entry_path.file_name().unwrap_or_default().to_string_lossy());
+                            ui.label(path.file_name().unwrap_or_default().to_string_lossy());
                         }
                     });
                 });
 
-                // COLUMN 3: Hash
                 row.col(|ui| {
                     if !is_dir {
-                        let hash_state = self.file_hashes.read().unwrap().get(&entry_path).cloned();
+                        let hash_state = self.file_hashes.read().unwrap().get(path).cloned();
                         match hash_state {
                             Some(Some(hash_str)) => {
                                 let bg_color = Self::hash_to_color(&hash_str);
@@ -575,7 +538,7 @@ impl FileExplorerPane {
                                 ui.weak("hashing...");
                             }
                             None => {
-                                self.request_hash(entry_path.clone());
+                                self.request_hash(path);
                                 ui.weak("pending...");
                             }
                         }
@@ -583,18 +546,16 @@ impl FileExplorerPane {
                 });
             });
 
-            if is_dir && self.expanded.get(&entry_path).copied().unwrap_or(false) {
-                self.render_tree_level(body, entry_path, depth + 1, row_height);
+            if is_dir && self.expanded.get(path).copied().unwrap_or(false) {
+                self.render_tree_level(body, path, depth + 1, row_height);
             }
         }
     }
 
     fn ui_custom_checkbox(&mut self, ui: &mut egui::Ui, state: FolderSelectState, path: &PathBuf) {
-        // 1. Use icon_width for the visual box size to match standard checkboxes
         let icon_size = ui.spacing().icon_width;
         let icon_rect = egui::Vec2::splat(icon_size);
 
-        // 2. Allocate the full interactive area but center the visual icon within it
         let (rect, response) =
             ui.allocate_exact_size(ui.spacing().interact_size, egui::Sense::click());
         let visual_rect = egui::Rect::from_center_size(rect.center(), icon_rect);
@@ -623,7 +584,6 @@ impl FileExplorerPane {
             let stroke = visuals.fg_stroke;
             match state {
                 FolderSelectState::All => {
-                    // Standard checkmark
                     let points = vec![
                         visual_rect.center() + egui::vec2(-icon_size * 0.25, 0.0),
                         visual_rect.center() + egui::vec2(-icon_size * 0.05, icon_size * 0.2),
@@ -632,7 +592,6 @@ impl FileExplorerPane {
                     painter.add(egui::Shape::line(points, stroke));
                 }
                 FolderSelectState::Partial => {
-                    // Centered Dash
                     let dash_rect = egui::Rect::from_center_size(
                         visual_rect.center(),
                         egui::vec2(icon_size * 0.5, 2.0),
@@ -646,18 +605,14 @@ impl FileExplorerPane {
         if response.clicked() {
             let new_val = state != FolderSelectState::All;
             if path.is_dir() || path == &self.root {
-                self.set_selection_recursive(path, new_val);
+                self.recursive_selection(path, new_val);
             } else {
                 self.selected.insert(path.clone(), new_val);
             }
         }
     }
 
-    /// Recursively sets the selection state for a folder and all its contents
-    fn set_selection_recursive(&mut self, path: &PathBuf, value: bool) {
-        // We must ensure the directory is loaded to know what's inside
-        self.load_dir(path);
-
+    fn recursive_selection(&mut self, path: &PathBuf, value: bool) {
         if let Some(cache) = self.cache.get(path).cloned() {
             for entry in &cache.entries {
                 match entry {
@@ -665,7 +620,7 @@ impl FileExplorerPane {
                         self.selected.insert(p.clone(), value);
                     }
                     FsEntry::Dir { path: p } => {
-                        self.set_selection_recursive(p, value);
+                        self.recursive_selection(p, value);
                     }
                 }
             }
@@ -679,7 +634,7 @@ impl FileExplorerPane {
         if let Ok(entries) = std::fs::read_dir(path) {
             for entry in entries.flatten() {
                 let p = entry.path();
-                if p.is_file() || self.has_files_recursive(&p) {
+                if self.has_files_recursive(&p) {
                     return true;
                 }
             }
@@ -700,9 +655,6 @@ impl FileExplorerPane {
 
         let mut has_selected = false;
         let mut has_unselected = false;
-
-        // Note: This only checks one level deep for simplicity in this helper,
-        // but for a truly intuitive UI, it should recurse.
         for entry in &cache.entries {
             match entry {
                 FsEntry::File { path: p } => {
@@ -733,38 +685,36 @@ impl FileExplorerPane {
         }
     }
 
-    fn request_hash(&self, path: PathBuf) {
-        let mut w = self
+    fn request_hash(&self, path: &PathBuf) {
+        let mut write_guard = self
             .file_hashes
             .write()
             .expect("Failed to lock for writing");
 
-        // IMPORTANT: If we are already hashing this or it's done, do nothing
-        if w.contains_key(&path) {
+        // If we are already hashing this or it's done, do nothing
+        if write_guard.contains_key(path) {
             return;
         }
 
         // Mark as "None" (meaning: Hashing in progress)
-        w.insert(path.clone(), None);
+        write_guard.insert(path.clone(), None);
 
         let file_hashes = self.file_hashes.clone();
+        let path_clone = path.clone();
         std::thread::spawn(move || {
-            // Actual file I/O and hashing
-            let hash = match crate::hash::hash_file(&path.to_string_lossy()) {
+            let hash = match crate::hash::hash_file(&path_clone.to_string_lossy()) {
                 Ok(h) => Some(h),
                 Err(_) => Some("error".to_string()),
             };
 
             if let Ok(mut w) = file_hashes.write() {
-                w.insert(path, hash);
+                w.insert(path_clone, hash);
             }
         });
     }
 
-    /// Returns a list of vectors, where each sub-vector contains paths to files
-    /// that are both selected and have identical hashes.
-    pub fn get_conflicts_map(&self) -> HashMap<String, (Vec<PathBuf>, bool)> {
-        let mut groups: HashMap<String, (Vec<PathBuf>, bool)> = HashMap::new();
+    pub fn get_conflicts_map(&self) -> HashMap<String, Vec<PathBuf>> {
+        let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
         let hashes = self.file_hashes.read().unwrap();
 
         // Helper closure for recursive walking
@@ -786,12 +736,12 @@ impl FileExplorerPane {
         for path in all_discovered_paths {
             // We only care about files that have been hashed
             if let Some(Some(hash_str)) = hashes.get(&path) {
-                groups.entry(hash_str.clone()).or_default().0.push(path);
+                groups.entry(hash_str.clone()).or_default().push(path);
             }
         }
 
         // Retain only groups that actually have duplicates
-        groups.retain(|_, members| members.0.len() > 1);
+        groups.retain(|_, members| members.len() > 1);
         groups
     }
 
@@ -831,6 +781,7 @@ impl FileExplorerPane {
         if let Ok(read_dir) = fs::read_dir(path) {
             for entry in read_dir.flatten() {
                 let p = entry.path();
+                self.load_dir(&p);
                 if p.is_dir() {
                     entries.push(FsEntry::Dir { path: p });
                 } else {
