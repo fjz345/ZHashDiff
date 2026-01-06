@@ -12,4 +12,15 @@ pub enum FsEntry {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct DirCache {
     pub entries: Vec<FsEntry>,
+    pub has_files_deep: bool,
+}
+
+impl Default for DirCache {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            // Cache assumes has files until checked
+            has_files_deep: true,
+        }
+    }
 }

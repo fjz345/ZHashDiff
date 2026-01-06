@@ -111,10 +111,12 @@ pub struct FileExplorerPane {
 
     pub root: PathBuf,
     pub expanded: HashMap<PathBuf, bool>,
-    pub cache: HashMap<PathBuf, DirCache>,
+
     pub selected: HashMap<PathBuf, bool>,
     pub file_hashes: Arc<RwLock<HashMap<PathBuf, Option<String>>>>,
 
+    #[serde(skip)]
+    pub cache: HashMap<PathBuf, DirCache>,
     #[serde(skip)]
     pub selected_conflict_path: Option<PathBuf>,
     #[serde(skip)]
@@ -268,6 +270,42 @@ impl FileExplorerPane {
                     } else {
                         ui.label("No conflicts detected.");
                     }
+
+                    let resolve_ready = self.conflict_map.len() > 0
+                        && self.conflict_map.len() == self.conflict_map_resolved.len();
+                    ui.add_enabled_ui(resolve_ready, |ui| {
+                        if ui.button("Resolve!").clicked() && resolve_ready {
+                            log::info!("Resolving conflicts...");
+
+                            for (hash, (paths, _)) in &self.conflict_map {
+                                if let Some(path_to_keep) = self.conflict_map_resolved.get(hash) {
+                                    for path in paths {
+                                        if path != path_to_keep {
+                                            match std::fs::remove_file(path) {
+                                                Ok(_) => {
+                                                    log::info!("Deleted duplicate: {:?}", path);
+                                                    self.selected.remove(path);
+                                                }
+                                                Err(e) => {
+                                                    log::error!(
+                                                        "Failed to delete {:?}: {}",
+                                                        path,
+                                                        e
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            self.conflict_map.clear();
+                            self.conflict_map_resolved.clear();
+                            self.show_diff_popup = false;
+
+                            self.load_dir(&self.root.clone());
+                        }
+                    });
                 },
             );
             self.show_diff_popup = temp_show_diff_popup;
@@ -287,36 +325,48 @@ impl FileExplorerPane {
                         ui.label(egui::RichText::new("Select the file you wish to keep:").strong());
                         ui.add_space(8.0);
 
+                        // --- 1. THE "NOT RESOLVED" OPTION ---
+                        // We check if the map currently has NO entry for this hash
+                        let mut is_unresolved =
+                            !self.conflict_map_resolved.contains_key(selected_hash);
+                        if ui
+                            .radio_value(&mut is_unresolved, true, "Unresolved / None")
+                            .clicked()
+                        {
+                            self.conflict_map_resolved.remove(selected_hash);
+                            // Also mark the boolean in conflict_map as false
+                            if let Some(entry) = self.conflict_map.get_mut(selected_hash) {
+                                entry.1 = false;
+                            }
+                        }
+
+                        ui.separator();
+
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             for path in &value.0 {
-                                let mut current_selection =
-                                    self.conflict_map_resolved.iter().find_map(|f| {
-                                        if *f.0
-                                            == self
-                                                .active_conflict_hash
-                                                .clone()
-                                                .expect("Should always be set within the popup")
-                                        {
-                                            Some(*f.1 == *path)
-                                        } else {
-                                            None
-                                        }
-                                    });
+                                // Check if this specific path is the one currently in the resolved map
+                                let mut is_this_path_selected =
+                                    self.conflict_map_resolved.get(selected_hash) == Some(path);
 
-                                ui.radio_value(
-                                    &mut current_selection,
-                                    Some(true),
-                                    path.to_string_lossy(),
-                                );
+                                if ui
+                                    .radio_value(
+                                        &mut is_this_path_selected,
+                                        true,
+                                        path.to_string_lossy(),
+                                    )
+                                    .clicked()
+                                {
+                                    // Update the resolved map
+                                    self.conflict_map_resolved
+                                        .insert(selected_hash.clone(), path.clone());
 
-                                match current_selection {
-                                    Some(b) => {
-                                        if b {
-                                            self.conflict_map_resolved
-                                                .insert(selected_hash.clone(), path.clone());
-                                        }
+                                    // Update the "resolved" status bit in your conflict_map
+                                    if let Some(entry) = self.conflict_map.get_mut(selected_hash) {
+                                        entry.1 = true;
                                     }
-                                    None => {}
+
+                                    // Set the temporary tracking variable used by the confirm button
+                                    self.selected_conflict_path = Some(path.clone());
                                 }
                             }
                         });
@@ -324,35 +374,11 @@ impl FileExplorerPane {
                         ui.separator();
 
                         ui.horizontal(|ui| {
-                            if ui.button("Confirm Selection").clicked() {
-                                if let Some(ref path_to_keep) = self.selected_conflict_path {
-                                    // Logic to handle other files (delete/unselect) goes here
-                                    let found_bool_ref =
-                                        self.conflict_map.iter_mut().find_map(|f| {
-                                            if *f.0 == *selected_hash {
-                                                Some(&mut f.1.1)
-                                            } else {
-                                                None
-                                            }
-                                        });
-                                    match found_bool_ref {
-                                        Some(bool) => {
-                                            log::info!("Keeping: {:?}", path_to_keep);
-                                            *bool = true;
-                                            self.conflict_map_resolved.insert(
-                                                selected_hash.clone(),
-                                                path_to_keep.clone(),
-                                            );
-                                        }
-                                        None => {
-                                            log::error!("Failed to find conflict entry to update")
-                                        }
-                                    }
-                                }
+                            if ui.button("Confirm & Close").clicked() {
                                 is_open = false;
                             }
 
-                            if ui.button("Close").clicked() {
+                            if ui.button("Cancel").clicked() {
                                 is_open = false;
                             }
                         });
@@ -363,7 +389,7 @@ impl FileExplorerPane {
             is_open &= temp_is_open;
             if !is_open {
                 self.active_conflict_hash = None;
-                self.selected_conflict_path = None; // Reset selection when closing
+                self.selected_conflict_path = None;
             }
         }
     }
@@ -455,21 +481,27 @@ impl FileExplorerPane {
             let is_dir = matches!(entry, FsEntry::Dir { .. });
 
             body.row(row_height, |mut row| {
-                // COLUMN 1: Checkbox
                 row.col(|ui| {
                     ui.centered_and_justified(|ui| {
-                        let state = if is_dir {
-                            self.get_folder_selection_state(&entry_path)
+                        // Direct disk check is safer than cache check if cache is lazily populated
+                        let has_files = if is_dir {
+                            self.has_files_recursive(&entry_path)
                         } else {
-                            if *self.selected.get(&entry_path).unwrap_or(&false) {
-                                FolderSelectState::All
-                            } else {
-                                FolderSelectState::None
-                            }
+                            true // It's a file, so it's a "file"
                         };
 
-                        // Use the unified function for EVERYTHING in this column
-                        self.ui_custom_checkbox(ui, state, &entry_path);
+                        if has_files {
+                            let state = if is_dir {
+                                self.get_folder_selection_state(&entry_path)
+                            } else {
+                                if *self.selected.get(&entry_path).unwrap_or(&false) {
+                                    FolderSelectState::All
+                                } else {
+                                    FolderSelectState::None
+                                }
+                            };
+                            self.ui_custom_checkbox(ui, state, &entry_path);
+                        }
                     });
                 });
 
@@ -610,89 +642,6 @@ impl FileExplorerPane {
         }
     }
 
-    fn ui_radio_icon(ui: &mut egui::Ui, active: bool) {
-        let icon_size = ui.spacing().icon_width;
-        // Allocate space for the icon
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(icon_size, icon_size), egui::Sense::hover());
-
-        let visuals = if active {
-            &ui.visuals().widgets.active
-        } else {
-            &ui.visuals().widgets.inactive
-        };
-
-        let center = rect.center();
-        let radius = rect.width() / 2.0;
-
-        // 1. Draw the outer circle (the ring)
-        ui.painter()
-            .circle_stroke(center, radius, visuals.bg_stroke);
-
-        // 2. Draw the inner dot if active
-        if active {
-            ui.painter().circle_filled(
-                center,
-                radius * 0.5, // Dot size is 50% of the ring
-                visuals.fg_stroke.color,
-            );
-        }
-    }
-
-    fn ui_partial_checkbox(&mut self, ui: &mut egui::Ui, state: FolderSelectState, path: &PathBuf) {
-        // Use egui's standard checkbox size
-        let desired_size = ui.spacing().interact_size.y * egui::vec2(1.0, 1.0);
-        let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
-
-        if ui.is_rect_visible(rect) {
-            let visuals = ui.style().interact(&response);
-            let painter = ui.painter();
-
-            // Match the standard checkbox background and rounding
-            let bg_fill = if response.hovered() {
-                visuals.bg_fill
-            } else {
-                ui.visuals().extreme_bg_color
-            };
-            let rounding = ui.visuals().widgets.active.corner_radius;
-
-            painter.rect_filled(rect.expand(-1.0), rounding, bg_fill);
-            painter.rect_stroke(
-                rect.expand(-1.0),
-                rounding,
-                visuals.bg_stroke,
-                egui::StrokeKind::Middle,
-            );
-
-            match state {
-                FolderSelectState::All => {
-                    // Standard egui checkmark look
-                    let stroke = visuals.fg_stroke;
-                    let mut points = vec![
-                        rect.center() + egui::vec2(-rect.width() * 0.25, 0.0),
-                        rect.center() + egui::vec2(-rect.width() * 0.05, rect.height() * 0.2),
-                        rect.center() + egui::vec2(rect.width() * 0.3, -rect.height() * 0.25),
-                    ];
-                    painter.add(egui::Shape::line(points, stroke));
-                }
-                FolderSelectState::Partial => {
-                    // Centered dash
-                    let stroke = visuals.fg_stroke;
-                    let dash_width = rect.width() * 0.5;
-                    let dash_rect =
-                        egui::Rect::from_center_size(rect.center(), egui::vec2(dash_width, 2.0));
-                    painter.rect_filled(dash_rect, 0.0, stroke.color);
-                }
-                FolderSelectState::None => {}
-            }
-        }
-
-        if response.clicked() {
-            let new_val = state != FolderSelectState::All;
-            self.set_selection_recursive(path, new_val);
-        }
-    }
-
     /// Recursively sets the selection state for a folder and all its contents
     fn set_selection_recursive(&mut self, path: &PathBuf, value: bool) {
         // We must ensure the directory is loaded to know what's inside
@@ -710,6 +659,21 @@ impl FileExplorerPane {
                 }
             }
         }
+    }
+
+    fn has_files_recursive(&self, path: &PathBuf) -> bool {
+        if path.is_file() {
+            return true;
+        }
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() || self.has_files_recursive(&p) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Determines if a folder is empty, all selected, or partially selected
@@ -792,15 +756,26 @@ impl FileExplorerPane {
         let mut groups: HashMap<String, (Vec<PathBuf>, bool)> = HashMap::new();
         let hashes = self.file_hashes.read().unwrap();
 
-        for (path, &is_selected) in self.selected.iter() {
-            if is_selected && path.is_file() {
-                if let Some(Some(hash_str)) = hashes.get(path) {
-                    groups
-                        .entry(hash_str.clone())
-                        .or_default()
-                        .0
-                        .push(path.clone());
+        // Helper closure for recursive walking
+        fn collect_files(path: &PathBuf, all_files: &mut Vec<PathBuf>) {
+            if path.is_file() {
+                all_files.push(path.clone());
+            } else if path.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        collect_files(&entry.path(), all_files);
+                    }
                 }
+            }
+        }
+
+        let mut all_discovered_paths = Vec::new();
+        collect_files(&self.root, &mut all_discovered_paths);
+
+        for path in all_discovered_paths {
+            // We only care about files that have been hashed
+            if let Some(Some(hash_str)) = hashes.get(&path) {
+                groups.entry(hash_str.clone()).or_default().0.push(path);
             }
         }
 
@@ -842,7 +817,13 @@ impl FileExplorerPane {
             }
         }
 
-        self.cache.insert(path.clone(), DirCache { entries });
+        self.cache.insert(
+            path.clone(),
+            DirCache {
+                entries,
+                has_files_deep: self.has_files_recursive(&path),
+            },
+        );
     }
 }
 
