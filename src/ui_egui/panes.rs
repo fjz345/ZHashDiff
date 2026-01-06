@@ -620,6 +620,7 @@ impl FileExplorerPane {
 
         if response.clicked() {
             let new_val = state != FolderSelectState::All;
+
             if path.is_dir() {
                 self.recursive_selection(path, new_val);
             } else {
@@ -660,18 +661,15 @@ impl FileExplorerPane {
         false
     }
 
-    /// Determines if a folder is empty, all selected, or partially selected
     fn get_folder_selection_state(&self, path: &PathBuf) -> FolderSelectState {
         let cache = match self.cache.get(path) {
             Some(c) => c,
-            None => {
-                log::warn!("No cache entry found for path: {:?}", path);
-                return FolderSelectState::None;
-            }
+            None => return FolderSelectState::None,
         };
 
         let mut has_selected = false;
         let mut has_unselected = false;
+
         for entry in &cache.entries {
             match entry {
                 FsEntry::File { path: p } => {
@@ -681,14 +679,19 @@ impl FileExplorerPane {
                         has_unselected = true;
                     }
                 }
-                FsEntry::Dir { path: p } => match self.get_folder_selection_state(p) {
-                    FolderSelectState::All => has_selected = true,
-                    FolderSelectState::None => has_unselected = true,
-                    FolderSelectState::Partial => {
-                        has_selected = true;
-                        has_unselected = true;
+                FsEntry::Dir { path: p } => {
+                    // BUG FIX: Only factor in subdirectories if they actually contain files
+                    if self.cache.get(p).map_or(false, |c| c.has_files_deep) {
+                        match self.get_folder_selection_state(p) {
+                            FolderSelectState::All => has_selected = true,
+                            FolderSelectState::None => has_unselected = true,
+                            FolderSelectState::Partial => {
+                                has_selected = true;
+                                has_unselected = true;
+                            }
+                        }
                     }
-                },
+                }
             }
             if has_selected && has_unselected {
                 return FolderSelectState::Partial;
