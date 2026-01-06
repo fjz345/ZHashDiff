@@ -145,6 +145,24 @@ impl ZAppPane for FileExplorerPane {
                     self.open_path_dialog = true;
                 }
 
+                let is_anything_expanded = !self.expanded.is_empty();
+                let button_text = if is_anything_expanded {
+                    "Collapse All"
+                } else {
+                    "Expand All"
+                };
+
+                if ui.button(button_text).clicked() {
+                    if is_anything_expanded {
+                        // COLLAPSE: Simply clear the set
+                        self.expanded.clear();
+                    } else {
+                        // EXPAND: Recursively find all directories and add them to the set
+                        let root_path = self.root.clone();
+                        self.recursive_expand_to_set(&root_path);
+                    }
+                }
+
                 if self.open_path_dialog {
                     self.open_path_dialog = false;
 
@@ -175,6 +193,30 @@ impl FileExplorerPane {
         FileExplorerPane {
             title,
             ..Default::default()
+        }
+    }
+
+    fn recursive_expand_to_set(&mut self, path: &PathBuf) {
+        // 1. Ensure the directory is loaded so we know its children
+        self.load_dir(path);
+
+        // 2. Add this path to your existing expansion state
+        self.expanded.insert(path.clone(), true);
+
+        // 3. Recurse into subdirectories found in the cache
+        if let Some(cache_entry) = self.cache.get(path) {
+            let subdirs: Vec<PathBuf> = cache_entry
+                .entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    FsEntry::Dir { path: p } => Some(p.clone()),
+                    _ => None,
+                })
+                .collect();
+
+            for subdir in subdirs {
+                self.recursive_expand_to_set(&subdir);
+            }
         }
     }
 
@@ -792,12 +834,22 @@ impl FileExplorerPane {
         hash.hash(&mut hasher);
         let h = hasher.finish();
 
-        // Map the 64-bit hash to a float between 0.0 and 1.0 for Hue
-        let hue = (h % 360) as f32 / 360.0;
+        // 1. Golden Ratio Conjugate (~0.618033...)
+        // This helps spread hues more uniformly across the spectrum
+        let golden_ratio_conjugate = 0.618033988749895;
 
-        // We use a high Value (brightness) so that black text remains readable
-        // and a moderate Saturation so colors aren't too aggressive.
-        egui::Color32::from(egui::ecolor::Hsva::new(hue, 0.5, 0.8, 1.0))
+        // Generate a float [0.0, 1.0] from the hash
+        let hash_float = (h as f64 / u64::MAX as f64);
+
+        // 2. Use the fractional part to jump around the color wheel
+        let hue = (hash_float + golden_ratio_conjugate).fract() as f32;
+
+        // 3. Subtly vary Saturation and Value based on hash bits
+        // to prevent every group from having the exact same "intensity"
+        let saturation = 0.4 + (h % 30) as f32 / 100.0; // Range: 0.4 - 0.7
+        let value = 0.7 + (h % 20) as f32 / 100.0; // Range: 0.7 - 0.9
+
+        egui::Color32::from(egui::ecolor::Hsva::new(hue, saturation, value, 1.0))
     }
 
     fn load_dir(&mut self, path: &PathBuf) {
