@@ -145,6 +145,10 @@ impl ZAppPane for FileExplorerPane {
                 if ui.button(cache_text).clicked() {
                     self.cache_enabled = !self.cache_enabled;
                 }
+
+                if ui.button("Clear Cache").clicked() {
+                    self.clear_hash();
+                }
             });
         });
 
@@ -485,12 +489,12 @@ impl FileExplorerPane {
                         });
                     })
                     .body(|mut body: egui_extras::TableBody<'_>| {
-                        self.render_tree_level(&mut body, &self.root.clone(), 0, row_height);
+                        self.ui_table_row_level(&mut body, &self.root.clone(), 0, row_height);
                     });
             });
     }
 
-    fn render_tree_level(
+    fn ui_table_row_level(
         &mut self,
         body: &mut egui_extras::TableBody,
         parent_path: &PathBuf,
@@ -585,12 +589,30 @@ impl FileExplorerPane {
                                 ui.weak("pending...");
                             }
                         }
+                    } else {
+                        // Count currently hashing files
+                        let hashing_count = self
+                            .file_hashes
+                            .read()
+                            .unwrap()
+                            .keys()
+                            .filter(|p| {
+                                p.starts_with(path)
+                                    && self.file_hashes.read().unwrap().get(*p).is_none()
+                            })
+                            .count();
+
+                        if hashing_count == 0 {
+                            ui.weak("hashing complete!");
+                        } else {
+                            ui.weak(format!("hashing... {} files", hashing_count));
+                        }
                     }
                 });
             });
 
             if is_dir && self.expanded.get(path).copied().unwrap_or(false) {
-                self.render_tree_level(body, path, depth + 1, row_height);
+                self.ui_table_row_level(body, path, depth + 1, row_height);
             }
         }
     }
@@ -732,6 +754,10 @@ impl FileExplorerPane {
         }
     }
 
+    pub fn clear_hash(&mut self) {
+        self.file_hashes.write().unwrap().clear();
+    }
+
     fn request_hash(&self, path: &PathBuf) {
         let mut write_guard = self
             .file_hashes
@@ -755,7 +781,7 @@ impl FileExplorerPane {
             };
 
             if let Ok(mut w) = file_hashes.write() {
-                w.insert(path_clone, hash);
+                // w.insert(path_clone, hash);
             }
         });
     }
