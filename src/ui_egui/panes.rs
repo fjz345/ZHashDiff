@@ -184,10 +184,17 @@ impl ZAppPane for FileExplorerPane {
 
 impl FileExplorerPane {
     pub fn new(title: Option<String>) -> Self {
-        FileExplorerPane {
+        let new = FileExplorerPane {
             title,
             ..Default::default()
+        };
+
+        {
+            let mut guard = new.file_hashes.write().unwrap();
+            guard.retain(|_, value| value.is_some());
         }
+
+        new
     }
 
     pub fn count_files_and_folders(&self) -> usize {
