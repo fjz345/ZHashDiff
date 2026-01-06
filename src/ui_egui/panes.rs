@@ -10,7 +10,7 @@ use std::{
 };
 
 use eframe::{
-    egui::{self},
+    egui::{self, Color32},
     epaint::tessellator::Path,
 };
 use egui_extras::{Column, TableBuilder};
@@ -116,9 +116,15 @@ pub struct FileExplorerPane {
     pub file_hashes: Arc<RwLock<HashMap<PathBuf, Option<String>>>>,
 
     #[serde(skip)]
+    pub selected_conflict_path: Option<PathBuf>,
+    #[serde(skip)]
     pub active_conflict_hash: Option<String>,
     #[serde(skip)]
     show_diff_popup: bool,
+    #[serde(skip)]
+    conflict_map: HashMap<String, (Vec<PathBuf>, bool)>,
+    #[serde(skip)]
+    conflict_map_resolved: HashMap<String, PathBuf>,
     #[serde(skip)]
     pub open_path_dialog: bool,
 }
@@ -150,6 +156,7 @@ impl ZAppPane for FileExplorerPane {
                 if ui.button("Diff").clicked() {
                     log::info!("Selected files for diff");
 
+                    self.conflict_map = self.get_conflicts_map();
                     self.show_diff_popup = true;
                 }
             });
@@ -178,52 +185,55 @@ impl FileExplorerPane {
                 &mut temp_show_diff_popup,
                 "Conflicts Found",
                 |ui| {
-                    let conflict_map = self.get_conflicts_map();
-                    // --- FIX: Get keys and sort them ---
-                    let mut sorted_hashes: Vec<_> = conflict_map.keys().collect();
+                    let mut sorted_hashes: Vec<_> = self.conflict_map.keys().cloned().collect();
                     sorted_hashes.sort();
 
                     if !sorted_hashes.is_empty() {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             for hash in sorted_hashes {
-                                let paths = &conflict_map[hash];
+                                let value = self.conflict_map[&hash].clone();
+
+                                let is_resolved = self
+                                    .conflict_map_resolved
+                                    .iter()
+                                    .find_map(|f| if *f.0 == hash { Some(f.1) } else { None })
+                                    .is_some();
 
                                 // Create a "row" that acts like a button
                                 let response = ui
                                     .scope(|ui| {
                                         ui.horizontal(|ui| {
-                                            // 1. Unclickable Checkbox (visual only)
-                                            let icon_size = ui.spacing().icon_width;
-                                            let (rect, _) = ui.allocate_exact_size(
-                                                egui::vec2(icon_size, icon_size),
-                                                egui::Sense::hover(),
-                                            );
-                                            let visuals = ui.visuals().widgets.noninteractive;
-                                            ui.painter().rect_filled(
-                                                rect,
-                                                visuals.corner_radius,
-                                                visuals.bg_fill,
-                                            );
-                                            ui.painter().rect_stroke(
-                                                rect,
-                                                visuals.corner_radius,
-                                                visuals.bg_stroke,
-                                                egui::StrokeKind::Middle,
-                                            );
-                                            // Draw a dash to represent "Partial/Conflict" state
-                                            let dash_rect = egui::Rect::from_center_size(
-                                                rect.center(),
-                                                egui::vec2(icon_size * 0.5, 2.0),
-                                            );
-                                            ui.painter().rect_filled(
-                                                dash_rect,
-                                                0.0,
-                                                visuals.fg_stroke.color,
+                                            // 1. Visual-only Radio/Checkbox
+                                            self.ui_custom_checkbox(
+                                                ui,
+                                                match is_resolved {
+                                                    true => FolderSelectState::All,
+                                                    false => FolderSelectState::Partial,
+                                                },
+                                                &PathBuf::default(),
                                             );
 
-                                            // 2. Hash and Count
-                                            ui.monospace(format!("[{}]", &hash[0..8]));
-                                            ui.label(format!("{} duplicates", paths.len()));
+                                            // 2. Hash with Color-coded Background
+                                            let color = Self::hash_to_color(&hash);
+
+                                            // We use a Frame to draw a "pill" or "tag" behind the hash
+                                            egui::Frame::new()
+                                                .fill(color) // Soften the background
+                                                .corner_radius(4.0)
+                                                .inner_margin(2.0)
+                                                .show(ui, |ui| {
+                                                    ui.monospace(
+                                                        egui::RichText::new(format!(
+                                                            "[{}]",
+                                                            &hash[0..8]
+                                                        ))
+                                                        .color(Color32::BLACK) // Keep text readable
+                                                        .strong(),
+                                                    );
+                                                });
+
+                                            // 3. Duplicate Count
+                                            ui.label(format!("{} duplicates", value.0.len()));
                                         });
                                     })
                                     .response;
@@ -247,6 +257,10 @@ impl FileExplorerPane {
                                 );
 
                                 if interact_response.clicked() {
+                                    log::info!(
+                                        "Opening conflict detail popup for hash: {}",
+                                        &hash[0..8]
+                                    );
                                     self.active_conflict_hash = Some(hash.clone());
                                 }
                             }
@@ -264,26 +278,84 @@ impl FileExplorerPane {
             let mut temp_is_open = is_open;
             let conflict_map = self.get_conflicts_map();
 
-            // Find the specific paths for this hash
-            if let Some(paths) = conflict_map.get(selected_hash) {
+            if let Some(value) = conflict_map.get(selected_hash) {
                 popup::show_custom_popup(
                     ui.ctx(),
                     &mut temp_is_open,
                     &format!("Conflict Detail: {}", &selected_hash[0..8]),
                     |ui| {
-                        ui.label(egui::RichText::new("Files sharing this hash:").strong());
+                        ui.label(egui::RichText::new("Select the file you wish to keep:").strong());
                         ui.add_space(8.0);
 
-                        for path in paths {
-                            ui.horizontal(|ui| {
-                                ui.label("📄");
-                                ui.label(path.to_string_lossy());
-                            });
-                        }
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for path in &value.0 {
+                                let mut current_selection =
+                                    self.conflict_map_resolved.iter().find_map(|f| {
+                                        if *f.0
+                                            == self
+                                                .active_conflict_hash
+                                                .clone()
+                                                .expect("Should always be set within the popup")
+                                        {
+                                            Some(*f.1 == *path)
+                                        } else {
+                                            None
+                                        }
+                                    });
 
-                        if ui.button("Close Detail").clicked() {
-                            is_open = false;
-                        }
+                                ui.radio_value(
+                                    &mut current_selection,
+                                    Some(true),
+                                    path.to_string_lossy(),
+                                );
+
+                                match current_selection {
+                                    Some(b) => {
+                                        if b {
+                                            self.conflict_map_resolved
+                                                .insert(selected_hash.clone(), path.clone());
+                                        }
+                                    }
+                                    None => {}
+                                }
+                            }
+                        });
+
+                        ui.separator();
+
+                        ui.horizontal(|ui| {
+                            if ui.button("Confirm Selection").clicked() {
+                                if let Some(ref path_to_keep) = self.selected_conflict_path {
+                                    // Logic to handle other files (delete/unselect) goes here
+                                    let found_bool_ref =
+                                        self.conflict_map.iter_mut().find_map(|f| {
+                                            if *f.0 == *selected_hash {
+                                                Some(&mut f.1.1)
+                                            } else {
+                                                None
+                                            }
+                                        });
+                                    match found_bool_ref {
+                                        Some(bool) => {
+                                            log::info!("Keeping: {:?}", path_to_keep);
+                                            *bool = true;
+                                            self.conflict_map_resolved.insert(
+                                                selected_hash.clone(),
+                                                path_to_keep.clone(),
+                                            );
+                                        }
+                                        None => {
+                                            log::error!("Failed to find conflict entry to update")
+                                        }
+                                    }
+                                }
+                                is_open = false;
+                            }
+
+                            if ui.button("Close").clicked() {
+                                is_open = false;
+                            }
+                        });
                     },
                 );
             }
@@ -291,6 +363,7 @@ impl FileExplorerPane {
             is_open &= temp_is_open;
             if !is_open {
                 self.active_conflict_hash = None;
+                self.selected_conflict_path = None; // Reset selection when closing
             }
         }
     }
@@ -445,7 +518,7 @@ impl FileExplorerPane {
 
                                 egui::Frame::canvas(ui.style())
                                     .fill(bg_color)
-                                    .rounding(3.0)
+                                    .corner_radius(3.0)
                                     .inner_margin(egui::Margin::symmetric(4, 2))
                                     .show(ui, |ui| {
                                         ui.label(
@@ -534,6 +607,35 @@ impl FileExplorerPane {
             } else {
                 self.selected.insert(path.clone(), new_val);
             }
+        }
+    }
+
+    fn ui_radio_icon(ui: &mut egui::Ui, active: bool) {
+        let icon_size = ui.spacing().icon_width;
+        // Allocate space for the icon
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(icon_size, icon_size), egui::Sense::hover());
+
+        let visuals = if active {
+            &ui.visuals().widgets.active
+        } else {
+            &ui.visuals().widgets.inactive
+        };
+
+        let center = rect.center();
+        let radius = rect.width() / 2.0;
+
+        // 1. Draw the outer circle (the ring)
+        ui.painter()
+            .circle_stroke(center, radius, visuals.bg_stroke);
+
+        // 2. Draw the inner dot if active
+        if active {
+            ui.painter().circle_filled(
+                center,
+                radius * 0.5, // Dot size is 50% of the ring
+                visuals.fg_stroke.color,
+            );
         }
     }
 
@@ -686,8 +788,8 @@ impl FileExplorerPane {
 
     /// Returns a list of vectors, where each sub-vector contains paths to files
     /// that are both selected and have identical hashes.
-    pub fn get_conflicts_map(&self) -> HashMap<String, Vec<PathBuf>> {
-        let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    pub fn get_conflicts_map(&self) -> HashMap<String, (Vec<PathBuf>, bool)> {
+        let mut groups: HashMap<String, (Vec<PathBuf>, bool)> = HashMap::new();
         let hashes = self.file_hashes.read().unwrap();
 
         for (path, &is_selected) in self.selected.iter() {
@@ -696,13 +798,14 @@ impl FileExplorerPane {
                     groups
                         .entry(hash_str.clone())
                         .or_default()
+                        .0
                         .push(path.clone());
                 }
             }
         }
 
         // Retain only groups that actually have duplicates
-        groups.retain(|_, members| members.len() > 1);
+        groups.retain(|_, members| members.0.len() > 1);
         groups
     }
 
