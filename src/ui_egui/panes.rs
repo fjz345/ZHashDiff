@@ -597,17 +597,13 @@ impl FileExplorerPane {
                             }
                         }
                     } else {
-                        // Count currently hashing files
-                        let hashing_count = self
-                            .file_hashes
-                            .read()
-                            .unwrap()
-                            .keys()
-                            .filter(|p| {
-                                p.starts_with(path)
-                                    && self.file_hashes.read().unwrap().get(*p).is_none()
-                            })
-                            .count();
+                        let hashing_count = {
+                            let file_hashes = self.file_hashes.read().unwrap();
+                            file_hashes
+                                .iter()
+                                .filter(|(p, hash)| p.starts_with(path) && hash.is_none())
+                                .count()
+                        };
 
                         if hashing_count == 0 {
                             ui.weak("hashing complete!");
