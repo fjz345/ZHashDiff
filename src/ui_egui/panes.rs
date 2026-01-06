@@ -186,12 +186,21 @@ impl FileExplorerPane {
         }
     }
 
-    pub fn count_files(&self) -> usize {
+    pub fn count_files_and_folders(&self) -> usize {
         if self.root.is_dir() {
             self.cache.len() - 1
         } else {
             self.cache.len()
         }
+    }
+
+    pub fn count_hash_queue(&self) -> usize {
+        self.file_hashes
+            .read()
+            .unwrap()
+            .values()
+            .filter(|v| v.is_none())
+            .count()
     }
 
     fn recursive_expand(&mut self, path: &PathBuf) {

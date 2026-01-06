@@ -112,11 +112,12 @@ impl ZApp {
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::FileExplorer(file_explorer)) = tile {
-                        let count = file_explorer.count_files();
+                        let count = file_explorer.count_files_and_folders();
 
                         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-                            "ZHashDiff - {} files",
-                            count
+                            "ZHashDiff - {} files&folders ({} in hash queue)",
+                            count,
+                            file_explorer.count_hash_queue()
                         )));
 
                         break;
