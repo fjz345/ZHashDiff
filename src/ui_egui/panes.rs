@@ -99,7 +99,7 @@ pub struct FileExplorerPane {
 
     pub cache_enabled: bool,
     #[serde(skip)]
-    pub cache: HashMap<PathBuf, DirCache>,
+    pub root_dir_cache: HashMap<PathBuf, Arc<DirCache>>,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -123,8 +123,6 @@ impl ZAppPane for FileExplorerPane {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
-        self.load_dir(&self.root.clone());
-
         // 1. TOP PANEL / HEADER (Static)
         ui.vertical(|ui| {
             self.ui_popups(ui);
@@ -163,7 +161,7 @@ impl ZAppPane for FileExplorerPane {
                 }
 
                 if ui.button("Request All Hash").clicked() {
-                    for folder in self.cache.values() {
+                    for folder in self.root_dir_cache.values() {
                         if folder.has_files_deep {
                             for entries in &folder.entries {
                                 self.request_hash(entries.path());
@@ -172,8 +170,10 @@ impl ZAppPane for FileExplorerPane {
                     }
                 }
 
-                if ui.button("Refresh").clicked() {
-                    self.cache.clear();
+                if ui.button("Clear Cache").clicked() {
+                    self.root_dir_cache.clear();
+                }
+                if ui.button("Reload Root Dir").clicked() {
                     self.load_dir(&self.root.clone());
                 }
 
@@ -191,7 +191,11 @@ impl ZAppPane for FileExplorerPane {
         egui::ScrollArea::vertical()
             .max_height(500.0)
             .show(ui, |ui| {
-                self.ui_table(ui);
+                if self.root.is_dir() {
+                    self.ui_table(ui);
+                } else {
+                    ui.label("No root dir set...");
+                }
             });
 
         // 3. BOTTOM PANEL (Optional: stay fixed at bottom)
@@ -241,9 +245,9 @@ impl FileExplorerPane {
 
     pub fn count_files_and_folders(&self) -> usize {
         if self.root.is_dir() {
-            self.cache.len() - 1
+            self.root_dir_cache.len() - 1
         } else {
-            self.cache.len()
+            self.root_dir_cache.len()
         }
     }
 
@@ -259,7 +263,7 @@ impl FileExplorerPane {
     fn recursive_expand(&mut self, path: &PathBuf) {
         self.expanded.insert(path.clone(), true);
 
-        if let Some(cache_entry) = self.cache.get(path) {
+        if let Some(cache_entry) = self.root_dir_cache.get(path) {
             let subdirs: Vec<PathBuf> = cache_entry
                 .entries
                 .iter()
@@ -391,7 +395,7 @@ impl FileExplorerPane {
                                 }
                             }
 
-                            self.cache.clear();
+                            self.root_dir_cache.clear();
                             self.conflict_map.clear();
                             self.conflict_map_resolved.clear();
                             self.open_diff_popup = false;
@@ -550,8 +554,13 @@ impl FileExplorerPane {
         depth: usize,
         row_height: f32,
     ) {
-        let cache = self.cache.get(parent_path).expect("Impossible").clone();
-        for entry in &cache.entries {
+        let dir_cache = if let Some(dir_cache) = self.root_dir_cache.get(parent_path) {
+            dir_cache.clone()
+        } else {
+            self.load_dir(&parent_path).clone()
+        };
+
+        for entry in &dir_cache.entries {
             let (path, is_dir) = match entry {
                 FsEntry::Dir { path } => (path, true),
                 FsEntry::File { path } => (path, false),
@@ -560,7 +569,7 @@ impl FileExplorerPane {
             body.row(row_height, |mut row| {
                 row.col(|ui| {
                     ui.centered_and_justified(|ui| {
-                        let has_files = cache.has_files_deep;
+                        let has_files = dir_cache.has_files_deep;
 
                         if has_files {
                             let state: FolderSelectState = if is_dir {
@@ -639,13 +648,7 @@ impl FileExplorerPane {
                             }
                         }
                     } else {
-                        let hashing_count = {
-                            let file_hashes = self.file_hashes.read().unwrap();
-                            file_hashes
-                                .iter()
-                                .filter(|(p, hash)| p.starts_with(path) && hash.is_none())
-                                .count()
-                        };
+                        let hashing_count = dir_cache.hashing_count;
 
                         if hashing_count == 0 {
                             ui.weak("hashing complete!");
@@ -657,7 +660,7 @@ impl FileExplorerPane {
             });
 
             if is_dir && self.expanded.get(path).copied().unwrap_or(false) {
-                self.ui_table_row_level(body, path, depth + 1, row_height);
+                self.ui_table_row_level(body, &path, depth + 1, row_height);
             }
         }
     }
@@ -724,7 +727,7 @@ impl FileExplorerPane {
     }
 
     fn recursive_selection(&mut self, path: &PathBuf, value: bool) {
-        if let Some(cache) = self.cache.get(path).cloned() {
+        if let Some(cache) = self.root_dir_cache.get(path).cloned() {
             for entry in &cache.entries {
                 match entry {
                     FsEntry::File { path: p } => {
@@ -756,7 +759,7 @@ impl FileExplorerPane {
     }
 
     fn get_folder_selection_state(&self, path: &PathBuf) -> FolderSelectState {
-        let cache = match self.cache.get(path) {
+        let cache = match self.root_dir_cache.get(path) {
             Some(c) => c,
             None => return FolderSelectState::None,
         };
@@ -775,7 +778,11 @@ impl FileExplorerPane {
                 }
                 FsEntry::Dir { path: p } => {
                     // BUG FIX: Only factor in subdirectories if they actually contain files
-                    if self.cache.get(p).map_or(false, |c| c.has_files_deep) {
+                    if self
+                        .root_dir_cache
+                        .get(p)
+                        .map_or(false, |c| c.has_files_deep)
+                    {
                         match self.get_folder_selection_state(p) {
                             FolderSelectState::All => has_selected = true,
                             FolderSelectState::None => has_unselected = true,
@@ -916,10 +923,10 @@ impl FileExplorerPane {
         egui::Color32::from(egui::ecolor::Hsva::new(hue, saturation, value, 1.0))
     }
 
-    fn load_dir(&mut self, path: &PathBuf) {
+    fn load_dir(&mut self, path: &PathBuf) -> &Arc<DirCache> {
         if self.cache_enabled {
-            if self.cache.contains_key(path) {
-                return;
+            if self.root_dir_cache.contains_key(path) {
+                return self.root_dir_cache.get(path).unwrap();
             }
         }
 
@@ -936,13 +943,22 @@ impl FileExplorerPane {
             }
         }
 
-        self.cache.insert(
+        let hashing_count = {
+            let file_hashes = self.file_hashes.read().unwrap();
+            file_hashes
+                .iter()
+                .filter(|(p, hash)| p.starts_with(path) && hash.is_none())
+                .count()
+        };
+        self.root_dir_cache.insert(
             path.clone(),
-            DirCache {
+            Arc::new(DirCache {
                 entries,
                 has_files_deep: self.has_files_recursive(&path),
-            },
+                hashing_count: hashing_count,
+            }),
         );
+        self.root_dir_cache.get(path).unwrap()
     }
 }
 

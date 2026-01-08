@@ -17,10 +17,11 @@ impl FsEntry {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize)]
 pub struct DirCache {
     pub entries: Vec<FsEntry>,
     pub has_files_deep: bool,
+    pub hashing_count: usize,
 }
 
 impl Default for DirCache {
@@ -29,6 +30,7 @@ impl Default for DirCache {
             entries: Vec::new(),
             // Cache assumes has files until checked
             has_files_deep: true,
+            hashing_count: 0,
         }
     }
 }
