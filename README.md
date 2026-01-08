@@ -6,6 +6,7 @@ I need to resolve and delete duplicated files with different file names.
 
 
 ## TODO:
+* Fix request all hash to propperly queue all files/folders (currently capped within request_hash function)
 * Fix file watcher or limit update
 * Clicking hash auto collapses all folders, then opens all folders and selects all files with same hash
 * Performance optimize some more
