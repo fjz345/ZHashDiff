@@ -227,6 +227,14 @@ impl Default for FileExplorerPane {
         }
     }
 }
+
+struct VisibleRow {
+    path: PathBuf,
+    is_dir: bool,
+    depth: usize,
+    parent_has_files: bool,
+}
+
 impl FileExplorerPane {
     pub fn new(title: Option<String>) -> Self {
         let new = FileExplorerPane {
@@ -478,6 +486,9 @@ impl FileExplorerPane {
     }
 
     fn ui_table(&mut self, ui: &mut egui::Ui) {
+        let mut visible_rows = Vec::new();
+        self.build_visible_rows(&self.root.clone(), 0, &mut visible_rows);
+        let row_count = visible_rows.len();
         let available_width = ui.available_width();
 
         egui::Frame::new()
@@ -504,7 +515,6 @@ impl FileExplorerPane {
                     .auto_shrink([false, true])
                     .column(Column::exact(32.0)) // Increased from 24.0 to prevent culling
                     .column(Column::remainder().at_least(100.0))
-                    // HASH: Fixed minimum size, anchored to the right edge.
                     .column(
                         Column::initial(min_hash_width)
                             .at_least(min_hash_width)
@@ -541,24 +551,28 @@ impl FileExplorerPane {
                             );
                         });
                     })
-                    .body(|mut body: egui_extras::TableBody<'_>| {
-                        self.ui_table_row_level(&mut body, &self.root.clone(), 0, row_height);
+                    .body(|body| {
+                        body.rows(row_height, row_count, |mut row| {
+                            let entry = &visible_rows[row.index()];
+                            self.render_row(&mut row, entry, row_height);
+                        });
                     });
             });
     }
 
-    fn ui_table_row_level(
+    fn build_visible_rows(
         &mut self,
-        body: &mut egui_extras::TableBody,
-        parent_path: &PathBuf,
+        current_path: &PathBuf,
         depth: usize,
-        row_height: f32,
+        out: &mut Vec<VisibleRow>,
     ) {
-        let dir_cache = if let Some(dir_cache) = self.root_dir_cache.get(parent_path) {
-            dir_cache.clone()
+        let dir_cache = if let Some(cache) = self.root_dir_cache.get(current_path) {
+            cache.clone()
         } else {
-            self.load_dir(&parent_path).clone()
+            self.load_dir(current_path).clone()
         };
+
+        let has_files_deep = dir_cache.has_files_deep;
 
         for entry in &dir_cache.entries {
             let (path, is_dir) = match entry {
@@ -566,103 +580,112 @@ impl FileExplorerPane {
                 FsEntry::File { path } => (path, false),
             };
 
-            body.row(row_height, |mut row| {
-                row.col(|ui| {
-                    ui.centered_and_justified(|ui| {
-                        let has_files = dir_cache.has_files_deep;
-
-                        if has_files {
-                            let state: FolderSelectState = if is_dir {
-                                self.get_folder_selection_state(&path)
-                            } else {
-                                if *self.selected.get(path).unwrap_or(&false) {
-                                    FolderSelectState::All
-                                } else {
-                                    FolderSelectState::None
-                                }
-                            };
-                            self.ui_custom_checkbox(ui, state, &path);
-                        }
-                    });
-                });
-
-                row.col(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.add_space((depth as f32) * 16.0);
-                        if is_dir {
-                            let is_open = self.expanded.get(path).copied().unwrap_or(false);
-                            let openness = if is_open { 1.0 } else { 0.0 };
-                            let (_rect, response) = ui.allocate_exact_size(
-                                egui::vec2(12.0, row_height),
-                                egui::Sense::click(),
-                            );
-
-                            egui::collapsing_header::paint_default_icon(ui, openness, &response);
-
-                            if response.clicked() {
-                                self.expanded.insert(path.clone(), !is_open);
-                            }
-
-                            let label_text = format!(
-                                "📁 {}",
-                                path.file_name().unwrap_or_default().to_string_lossy()
-                            );
-                            if ui
-                                .label(label_text)
-                                .interact(egui::Sense::click())
-                                .clicked()
-                            {
-                                self.expanded.insert(path.clone(), !is_open);
-                            }
-                        } else {
-                            ui.label(path.file_name().unwrap_or_default().to_string_lossy());
-                        }
-                    });
-                });
-
-                row.col(|ui| {
-                    if !is_dir {
-                        let hash_state = self.file_hashes.read().unwrap().get(path).cloned();
-                        match hash_state {
-                            Some(Some(hash_str)) => {
-                                let bg_color = Self::hash_to_color(&hash_str);
-
-                                egui::Frame::canvas(ui.style())
-                                    .fill(bg_color)
-                                    .corner_radius(3.0)
-                                    .inner_margin(egui::Margin::symmetric(4, 2))
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new(&hash_str)
-                                                .monospace()
-                                                .color(egui::Color32::BLACK), // Contrast text
-                                        );
-                                    });
-                            }
-                            Some(None) => {
-                                ui.weak("hashing...");
-                            }
-                            None => {
-                                self.request_hash(path);
-                                ui.weak("pending...");
-                            }
-                        }
-                    } else {
-                        let hashing_count = dir_cache.hashing_count;
-
-                        if hashing_count == 0 {
-                            ui.weak("hashing complete!");
-                        } else {
-                            ui.weak(format!("hashing... {} files", hashing_count));
-                        }
-                    }
-                });
+            out.push(VisibleRow {
+                path: path.clone(),
+                is_dir,
+                depth,
+                parent_has_files: has_files_deep,
             });
 
             if is_dir && self.expanded.get(path).copied().unwrap_or(false) {
-                self.ui_table_row_level(body, &path, depth + 1, row_height);
+                self.build_visible_rows(path, depth + 1, out);
             }
         }
+    }
+
+    fn render_row(&mut self, row: &mut egui_extras::TableRow, entry: &VisibleRow, row_height: f32) {
+        let path = &entry.path;
+        let is_dir = entry.is_dir;
+
+        // Column 1: Checkbox
+        row.col(|ui| {
+            ui.centered_and_justified(|ui| {
+                if entry.parent_has_files {
+                    let state = if is_dir {
+                        self.get_folder_selection_state(path)
+                    } else {
+                        if *self.selected.get(path).unwrap_or(&false) {
+                            FolderSelectState::All
+                        } else {
+                            FolderSelectState::None
+                        }
+                    };
+                    self.ui_custom_checkbox(ui, state, path);
+                }
+            });
+        });
+
+        // Column 2: Name & Expand Icon
+        row.col(|ui| {
+            ui.horizontal(|ui| {
+                ui.add_space((entry.depth as f32) * 16.0);
+                if is_dir {
+                    let is_open = self.expanded.get(path).copied().unwrap_or(false);
+                    let openness = if is_open { 1.0 } else { 0.0 };
+                    let (_rect, response) =
+                        ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
+                    egui::collapsing_header::paint_default_icon(ui, openness, &response);
+
+                    if response.clicked() {
+                        self.expanded.insert(path.clone(), !is_open);
+                    }
+
+                    let label = format!(
+                        "📁 {}",
+                        path.file_name().unwrap_or_default().to_string_lossy()
+                    );
+                    if ui.label(label).interact(egui::Sense::click()).clicked() {
+                        self.expanded.insert(path.clone(), !is_open);
+                    }
+                } else {
+                    ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+                }
+            });
+        });
+
+        // Column 3: Hashing
+        row.col(|ui| {
+            if !is_dir {
+                let hash_state = {
+                    let lock = self.file_hashes.read().unwrap();
+                    lock.get(path).cloned()
+                };
+
+                match hash_state {
+                    Some(Some(hash_str)) => {
+                        let bg_color = Self::hash_to_color(&hash_str);
+                        egui::Frame::canvas(ui.style())
+                            .fill(bg_color)
+                            .corner_radius(3.0)
+                            .inner_margin(egui::Margin::symmetric(4, 2))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(&hash_str)
+                                        .monospace()
+                                        .color(egui::Color32::BLACK),
+                                );
+                            });
+                    }
+                    Some(None) => {
+                        ui.weak("hashing...");
+                    }
+                    None => {
+                        // This triggers the background worker
+                        self.request_hash(&path.clone());
+                        ui.weak("pending...");
+                    }
+                }
+            } else {
+                if let Some(cache) = self.root_dir_cache.get(path) {
+                    let count = cache.hashing_count;
+                    if count == 0 {
+                        ui.weak("hashing complete!");
+                    } else {
+                        ui.weak(format!("hashing... {} files", count));
+                    }
+                }
+            }
+        });
     }
 
     fn ui_custom_checkbox(&mut self, ui: &mut egui::Ui, state: FolderSelectState, path: &PathBuf) {
