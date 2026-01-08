@@ -123,7 +123,6 @@ impl ZAppPane for FileExplorerPane {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
-        // 1. TOP PANEL / HEADER (Static)
         ui.vertical(|ui| {
             self.ui_popups(ui);
 
@@ -185,9 +184,8 @@ impl ZAppPane for FileExplorerPane {
             });
         });
 
-        ui.separator(); // Optional: adds a nice line between buttons and list
+        ui.separator();
 
-        // 2. SCROLLABLE CONTENT (The Table)
         egui::ScrollArea::vertical()
             .max_height(500.0)
             .show(ui, |ui| {
@@ -198,15 +196,12 @@ impl ZAppPane for FileExplorerPane {
                 }
             });
 
-        // 3. BOTTOM PANEL (Optional: stay fixed at bottom)
-        // If you want the Diff button to always be visible at the bottom:
         if ui.button("Diff").clicked() {
             log::info!("Selected files for diff");
             self.conflict_map = self.get_conflicts_map();
             self.open_diff_popup = true;
         }
 
-        // Logic for the file picker (non-UI drawing code)
         if self.open_dir_window {
             self.open_dir_window = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
@@ -677,11 +672,17 @@ impl FileExplorerPane {
                 }
             } else {
                 if let Some(cache) = self.root_dir_cache.get(path) {
-                    let count = cache.hashing_count;
-                    if count == 0 {
+                    let hashing_count = {
+                        let file_hashes = self.file_hashes.read().unwrap();
+                        file_hashes
+                            .iter()
+                            .filter(|(p, hash)| p.starts_with(path) && hash.is_none())
+                            .count()
+                    };
+                    if hashing_count == 0 {
                         ui.weak("hashing complete!");
                     } else {
-                        ui.weak(format!("hashing... {} files", count));
+                        ui.weak(format!("hashing... {} files", hashing_count));
                     }
                 }
             }
@@ -800,7 +801,6 @@ impl FileExplorerPane {
                     }
                 }
                 FsEntry::Dir { path: p } => {
-                    // BUG FIX: Only factor in subdirectories if they actually contain files
                     if self
                         .root_dir_cache
                         .get(p)
@@ -966,19 +966,11 @@ impl FileExplorerPane {
             }
         }
 
-        let hashing_count = {
-            let file_hashes = self.file_hashes.read().unwrap();
-            file_hashes
-                .iter()
-                .filter(|(p, hash)| p.starts_with(path) && hash.is_none())
-                .count()
-        };
         self.root_dir_cache.insert(
             path.clone(),
             Arc::new(DirCache {
                 entries,
                 has_files_deep: self.has_files_recursive(&path),
-                hashing_count: hashing_count,
             }),
         );
         self.root_dir_cache.get(path).unwrap()

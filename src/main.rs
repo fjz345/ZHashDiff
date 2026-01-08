@@ -28,7 +28,6 @@ fn main() -> eframe::Result {
         "ZHashDiff",
         native_options,
         Box::new(move |cc: &eframe::CreationContext<'_>| {
-            // This gives us image support:
             egui_extras::install_image_loaders(&cc.egui_ctx);
 
             #[cfg(feature = "serde")]
