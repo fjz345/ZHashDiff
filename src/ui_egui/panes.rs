@@ -173,7 +173,7 @@ impl ZAppPane for FileExplorerPane {
                     self.root_dir_cache.clear();
                 }
                 if ui.button("Reload Root Dir").clicked() {
-                    self.load_dir(&self.root.clone());
+                    self.load_dir_recursive(&self.root.clone());
                 }
 
                 ui.label("Concurrent Hashes");
@@ -205,7 +205,7 @@ impl ZAppPane for FileExplorerPane {
         if self.open_dir_window {
             self.open_dir_window = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                self.load_dir(&path);
+                self.load_dir_recursive(&path);
                 self.root = path;
             }
         }
@@ -564,7 +564,7 @@ impl FileExplorerPane {
         let dir_cache = if let Some(cache) = self.root_dir_cache.get(current_path) {
             cache.clone()
         } else {
-            self.load_dir(current_path).clone()
+            self.load_dir_recursive(current_path).clone()
         };
 
         let has_files_deep = dir_cache.has_files_deep;
@@ -751,19 +751,17 @@ impl FileExplorerPane {
     }
 
     fn recursive_selection(&mut self, path: &PathBuf, value: bool) {
-        if let Some(cache) = self.root_dir_cache.get(path).cloned() {
-            for entry in &cache.entries {
-                match entry {
-                    FsEntry::File { path: p } => {
-                        self.selected.insert(p.clone(), value);
-                    }
-                    FsEntry::Dir { path: p } => {
-                        self.recursive_selection(p, value);
-                    }
+        let cache = self.load_dir(path);
+
+        for entry in &cache.entries {
+            match entry {
+                FsEntry::File { path: p } => {
+                    self.selected.insert(p.clone(), value);
+                }
+                FsEntry::Dir { path: p } => {
+                    self.recursive_selection(p, value);
                 }
             }
-        } else {
-            log::warn!("No cache entry found for path: {:?}", path);
         }
     }
 
@@ -792,31 +790,38 @@ impl FileExplorerPane {
         let mut has_unselected = false;
 
         for entry in &cache.entries {
-            match entry {
-                FsEntry::File { path: p } => {
-                    if *self.selected.get(p).unwrap_or(&false) {
-                        has_selected = true;
-                    } else {
-                        has_unselected = true;
-                    }
+            let (p, is_dir) = match entry {
+                FsEntry::File { path: p } => (p, false),
+                FsEntry::Dir { path: p } => (p, true),
+            };
+
+            let state = if is_dir {
+                // Check if directory has files before recursing to save cycles
+                if self
+                    .root_dir_cache
+                    .get(p)
+                    .map_or(false, |c| c.has_files_deep)
+                {
+                    self.get_folder_selection_state(p)
+                } else {
+                    FolderSelectState::None
                 }
-                FsEntry::Dir { path: p } => {
-                    if self
-                        .root_dir_cache
-                        .get(p)
-                        .map_or(false, |c| c.has_files_deep)
-                    {
-                        match self.get_folder_selection_state(p) {
-                            FolderSelectState::All => has_selected = true,
-                            FolderSelectState::None => has_unselected = true,
-                            FolderSelectState::Partial => {
-                                has_selected = true;
-                                has_unselected = true;
-                            }
-                        }
-                    }
+            } else {
+                if *self.selected.get(p).unwrap_or(&false) {
+                    FolderSelectState::All
+                } else {
+                    FolderSelectState::None
+                }
+            };
+
+            match state {
+                FolderSelectState::All => has_selected = true,
+                FolderSelectState::None => has_unselected = true,
+                FolderSelectState::Partial => {
+                    return FolderSelectState::Partial; // Early exit
                 }
             }
+
             if has_selected && has_unselected {
                 return FolderSelectState::Partial;
             }
@@ -835,6 +840,14 @@ impl FileExplorerPane {
     }
 
     fn request_hash(&self, path: &PathBuf) {
+        // Fast path
+        {
+            let read_guard = self.file_hashes.read().unwrap();
+            if read_guard.contains_key(path) {
+                return;
+            }
+        }
+
         let mut write_guard = self.file_hashes.write().expect("Lock failed");
         // Already queued
         if write_guard.contains_key(path) {
@@ -874,30 +887,18 @@ impl FileExplorerPane {
         let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
         let hashes = self.file_hashes.read().unwrap();
 
-        // Helper closure for recursive walking
-        fn collect_files(path: &PathBuf, all_files: &mut Vec<PathBuf>) {
-            if path.is_file() {
-                all_files.push(path.clone());
-            } else if path.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(path) {
-                    for entry in entries.flatten() {
-                        collect_files(&entry.path(), all_files);
-                    }
+        // Instead of collect_files (disk I/O), iterate over the CACHED hashes
+        for (path, hash_option) in hashes.iter() {
+            if let Some(hash_str) = hash_option {
+                if hash_str != "error" {
+                    groups
+                        .entry(hash_str.clone())
+                        .or_default()
+                        .push(path.clone());
                 }
             }
         }
 
-        let mut all_discovered_paths = Vec::new();
-        collect_files(&self.root, &mut all_discovered_paths);
-
-        for path in all_discovered_paths {
-            // We only care about files that have been hashed
-            if let Some(Some(hash_str)) = hashes.get(&path) {
-                groups.entry(hash_str.clone()).or_default().push(path);
-            }
-        }
-
-        // Retain only groups that actually have duplicates
         groups.retain(|_, members| members.len() > 1);
         groups
     }
@@ -946,18 +947,17 @@ impl FileExplorerPane {
         egui::Color32::from(egui::ecolor::Hsva::new(hue, saturation, value, 1.0))
     }
 
-    fn load_dir(&mut self, path: &PathBuf) -> &Arc<DirCache> {
+    fn load_dir(&mut self, path: &PathBuf) -> Arc<DirCache> {
         if self.cache_enabled {
-            if self.root_dir_cache.contains_key(path) {
-                return self.root_dir_cache.get(path).unwrap();
+            if let Some(cache) = self.root_dir_cache.get(path) {
+                return Arc::clone(cache);
             }
         }
 
         let mut entries = vec![];
-        if let Ok(read_dir) = fs::read_dir(path) {
+        if let Ok(read_dir) = std::fs::read_dir(path) {
             for entry in read_dir.flatten() {
                 let p = entry.path();
-                self.load_dir(&p);
                 if p.is_dir() {
                     entries.push(FsEntry::Dir { path: p });
                 } else {
@@ -966,14 +966,26 @@ impl FileExplorerPane {
             }
         }
 
-        self.root_dir_cache.insert(
-            path.clone(),
-            Arc::new(DirCache {
-                entries,
-                has_files_deep: self.has_files_recursive(&path),
-            }),
-        );
-        self.root_dir_cache.get(path).unwrap()
+        let new_cache = Arc::new(DirCache {
+            entries,
+            has_files_deep: self.has_files_recursive(path),
+        });
+
+        self.root_dir_cache
+            .insert(path.clone(), Arc::clone(&new_cache));
+        new_cache
+    }
+
+    fn load_dir_recursive(&mut self, path: &PathBuf) -> Arc<DirCache> {
+        let dir_cache = self.load_dir(path);
+
+        if dir_cache.has_files_deep {
+            for entry in dir_cache.entries.iter() {
+                self.load_dir(&entry.path());
+            }
+        }
+
+        dir_cache
     }
 }
 
