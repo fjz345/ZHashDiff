@@ -8,9 +8,8 @@ use std::{
     },
 };
 
-use eframe::egui::{self, Color32};
+use eframe::egui::{self};
 use egui_extras::{Column, TableBuilder};
-use env_logger::fmt::Color;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -68,7 +67,7 @@ pub trait ZAppPane {
 pub struct LogPane {
     pub title: Option<String>,
     pub log_buffer: Arc<Mutex<Vec<String>>>,
-    pub scroll_to_bottom: bool, // to remove, LogPane variable
+    pub scroll_to_bottom: bool,
 }
 impl ZAppPane for LogPane {
     fn title(&self) -> String {
@@ -1040,7 +1039,7 @@ impl FileExplorerPane {
 
     fn hash_to_color(hash: &str) -> egui::Color32 {
         use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
+        use std::hash::Hash;
 
         // 1. Strict Anchors
         let hue_digit = hash

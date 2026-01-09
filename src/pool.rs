@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -6,7 +7,7 @@ use std::sync::{
 pub struct Pool<T, const N: usize> {
     data: [T; N],
     free_list: [AtomicBool; N],
-    generation: AtomicUsize, // Increments every time we clear
+    generation: AtomicUsize,
 }
 
 impl<T: Default, const N: usize> Default for Pool<T, N> {
