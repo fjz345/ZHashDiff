@@ -11,3 +11,4 @@ I need to resolve and delete duplicated files with different file names.
 * conflicts found window, highlight current selection
 * Allow restoring of resolved files (maybe mark file names as red?)
 * Fix hitch for recursive checkbox check
+* Replace println! with log::

@@ -10,6 +10,7 @@ use std::{
 
 use eframe::egui::{self, Color32};
 use egui_extras::{Column, TableBuilder};
+use env_logger::fmt::Color;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -532,10 +533,12 @@ impl FileExplorerPane {
             let mut temp_is_open = is_open;
 
             if let Some(value) = self.conflict_map.get(&selected_hash) {
-                popup::show_custom_popup(
+                let hash_color = Self::hash_to_color(&selected_hash);
+                popup::show_custom_popup_with_color(
                     ui.ctx(),
                     &mut temp_is_open,
                     &format!("Conflict Detail: {}", &selected_hash[0..8]),
+                    hash_color,
                     |ui| {
                         ui.label(egui::RichText::new("Select the file you wish to keep:").strong());
                         ui.add_space(8.0);
