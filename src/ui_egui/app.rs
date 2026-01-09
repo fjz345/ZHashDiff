@@ -65,7 +65,9 @@ impl ZApp {
                 match tile.1 {
                     Tile::Pane(p) => match p {
                         Pane::Log(log_pane) => log_pane.log_buffer = self.log_buffer.clone(),
-                        _ => {}
+                        Pane::FileExplorer(pane) => {
+                            pane.update_worker_count(pane.concurrent_hashes)
+                        }
                     },
                     _ => {}
                 }
@@ -92,6 +94,7 @@ impl ZApp {
             log_buffer: log_buffer.clone(),
             scroll_to_bottom: true,
         }));
+
         let tile_file_explorer = tiles.insert_pane(Pane::FileExplorer(FileExplorerPane::new(
             Some("File Explorer".to_string()),
         )));

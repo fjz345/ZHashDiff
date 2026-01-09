@@ -2,7 +2,10 @@ use std::{
     collections::HashMap,
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex, RwLock},
+    sync::{
+        Arc, Mutex, RwLock,
+        mpsc::{Receiver, Sender},
+    },
     thread::JoinHandle,
 };
 
@@ -78,7 +81,7 @@ impl ZAppPane for LogPane {
     }
 }
 
-const MAX_CONCURRENT_HASHES: usize = 100;
+const MAX_CONCURRENT_HASHES: usize = 16;
 #[derive(Serialize, Deserialize)]
 pub struct FileExplorerPane {
     pub title: Option<String>,
@@ -87,6 +90,10 @@ pub struct FileExplorerPane {
 
     #[serde(skip)]
     pub file_hashes: Arc<RwLock<HashMap<PathBuf, Option<String>>>>,
+    #[serde(skip)]
+    hash_request_tx: Option<Sender<PathBuf>>,
+    #[serde(skip)]
+    hash_request_rx: Option<Arc<Mutex<std::sync::mpsc::Receiver<PathBuf>>>>,
 
     #[serde(skip)]
     pub expanded: HashMap<PathBuf, bool>,
@@ -94,8 +101,6 @@ pub struct FileExplorerPane {
     pub selected: HashMap<PathBuf, bool>,
 
     pub concurrent_hashes: usize,
-    #[serde(skip)]
-    pub hash_semaphore: Arc<Pool<Option<JoinHandle<()>>, MAX_CONCURRENT_HASHES>>,
 
     pub cache_enabled: bool,
     #[serde(skip)]
@@ -146,6 +151,39 @@ impl ZAppPane for FileExplorerPane {
                     }
                 }
 
+                if ui.button("Request All Hash").clicked() {
+                    self.load_dir_recursive(&self.root.clone());
+
+                    let all_paths: Vec<PathBuf> = self
+                        .root_dir_cache
+                        .values()
+                        .flat_map(|folder| folder.entries.iter())
+                        .filter_map(|entry| {
+                            if let FsEntry::File { path } = entry {
+                                Some(path.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    for path in all_paths {
+                        self.request_hash(&path);
+                    }
+                }
+
+                if ui.button("Clear Hashes").clicked() {
+                    self.clear_hash();
+                }
+
+                if ui.button("Reload Root Dir").clicked() {
+                    self.load_dir_recursive(&self.root.clone());
+                }
+
+                if ui.button("Clear Cache").clicked() {
+                    self.root_dir_cache.clear();
+                }
+
                 let cache_text = if self.cache_enabled {
                     "Disable Cache"
                 } else {
@@ -155,32 +193,17 @@ impl ZAppPane for FileExplorerPane {
                     self.cache_enabled = !self.cache_enabled;
                 }
 
-                if ui.button("Clear Hashes").clicked() {
-                    self.clear_hash();
-                }
-
-                if ui.button("Request All Hash").clicked() {
-                    for folder in self.root_dir_cache.values() {
-                        if folder.has_files_deep {
-                            for entries in &folder.entries {
-                                self.request_hash(entries.path());
-                            }
-                        }
-                    }
-                }
-
-                if ui.button("Clear Cache").clicked() {
-                    self.root_dir_cache.clear();
-                }
-                if ui.button("Reload Root Dir").clicked() {
-                    self.load_dir_recursive(&self.root.clone());
-                }
-
                 ui.label("Concurrent Hashes");
-                ui.add(egui::Slider::new(
-                    &mut self.concurrent_hashes,
-                    0..=MAX_CONCURRENT_HASHES,
-                ));
+                let mut slider_concurrent_hashes = self.concurrent_hashes;
+                if ui
+                    .add(egui::Slider::new(
+                        &mut slider_concurrent_hashes,
+                        0..=MAX_CONCURRENT_HASHES,
+                    ))
+                    .changed()
+                {
+                    self.update_worker_count(slider_concurrent_hashes);
+                }
             });
         });
 
@@ -193,6 +216,9 @@ impl ZAppPane for FileExplorerPane {
                     self.ui_table(ui);
                 } else {
                     ui.label("No root dir set...");
+                    if ui.button("Open Folder").clicked() {
+                        self.open_dir_window = true;
+                    }
                 }
             });
 
@@ -214,15 +240,6 @@ impl ZAppPane for FileExplorerPane {
     }
 }
 
-impl Default for FileExplorerPane {
-    fn default() -> Self {
-        Self {
-            concurrent_hashes: 1,
-            ..Default::default()
-        }
-    }
-}
-
 struct VisibleRow {
     path: PathBuf,
     is_dir: bool,
@@ -232,18 +249,61 @@ struct VisibleRow {
 
 impl FileExplorerPane {
     pub fn new(title: Option<String>) -> Self {
-        let new = FileExplorerPane {
+        let concurrent_hashes = 1;
+
+        let mut new = Self {
             title,
-            concurrent_hashes: 1,
-            ..Default::default()
+            root: PathBuf::default(),
+            file_hashes: Arc::new(RwLock::new(HashMap::new())),
+            hash_request_tx: None,
+            hash_request_rx: None,
+            concurrent_hashes: concurrent_hashes,
+            expanded: HashMap::new(),
+            selected: HashMap::new(),
+            cache_enabled: false,
+            root_dir_cache: HashMap::new(),
+            active_conflict_hash: None,
+            active_conflict_selected_path: None,
+            conflict_map: HashMap::new(),
+            conflict_map_resolved: HashMap::new(),
+            open_diff_popup: false,
+            open_dir_window: false,
         };
 
-        {
-            let mut guard = new.file_hashes.write().unwrap();
-            guard.retain(|_, value| value.is_some());
-        }
-
         new
+    }
+
+    pub fn update_worker_count(&mut self, new_count: usize) {
+        println!("Update worker count: New: {}", new_count);
+        self.concurrent_hashes = new_count;
+
+        let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+        let shared_rx = Arc::new(Mutex::new(rx));
+
+        self.hash_request_tx = Some(tx);
+        self.hash_request_rx = Some(shared_rx.clone());
+
+        // 4. Spawn the exact number of new workers
+        let file_hashes = self.file_hashes.clone();
+
+        for i in 0..new_count {
+            let rx_clone = Arc::clone(&shared_rx);
+            let hashes_clone = Arc::clone(&file_hashes);
+
+            std::thread::spawn(move || {
+                println!("New Worker {} started", i);
+                while let Ok(path) = {
+                    let guard = rx_clone.lock().unwrap();
+                    guard.recv()
+                } {
+                    let hash = crate::hash::hash_file(&path.to_string_lossy()).ok();
+                    if let Ok(mut w) = hashes_clone.write() {
+                        w.insert(path, hash);
+                    }
+                }
+                println!("Old Worker {} shutting down safely", i);
+            });
+        }
     }
 
     pub fn count_files_and_folders(&self) -> usize {
@@ -836,51 +896,56 @@ impl FileExplorerPane {
 
     pub fn clear_hash(&mut self) {
         self.file_hashes.write().unwrap().clear();
-        self.hash_semaphore.clear();
     }
 
-    fn request_hash(&self, path: &PathBuf) {
+    fn queue_single_file_hash(&self, path: &PathBuf) {
         // Fast path
         {
-            let read_guard = self.file_hashes.read().unwrap();
+            let read_guard = self.file_hashes.read().expect("Lock poisoned");
             if read_guard.contains_key(path) {
                 return;
             }
         }
 
-        let mut write_guard = self.file_hashes.write().expect("Lock failed");
-        // Already queued
-        if write_guard.contains_key(path) {
-            return;
-        }
-        // Limit by user
-        if self.concurrent_hashes != 0 && self.hash_semaphore.len() >= self.concurrent_hashes {
-            return;
-        }
-        // Hard limit
-        let handle = match self.hash_semaphore.allocate() {
-            Some(h) => h,
-            None => return,
-        };
-
-        write_guard.insert(path.clone(), None);
-        drop(write_guard);
-
-        let file_hashes = self.file_hashes.clone();
-        let path_clone = path.clone();
-
-        std::thread::spawn(move || {
-            let _permit = handle;
-
-            let hash = match crate::hash::hash_file(&path_clone.to_string_lossy()) {
-                Ok(h) => Some(h),
-                Err(_) => Some("error".to_string()),
-            };
-
-            if let Ok(mut w) = file_hashes.write() {
-                w.insert(path_clone, hash);
+        {
+            let mut write_guard = self.file_hashes.write().expect("Lock poisoned");
+            if write_guard.contains_key(path) {
+                return;
             }
-        });
+            write_guard.insert(path.clone(), None);
+        }
+
+        if let Some(tx) = &self.hash_request_tx {
+            if let Err(_) = tx.send(path.clone()) {
+                // Cleanup on failure
+                if let Ok(mut w) = self.file_hashes.write() {
+                    w.remove(path);
+                }
+            }
+        }
+    }
+
+    fn request_hash(&mut self, path: &PathBuf) {
+        // recursive
+        if path.is_dir() {
+            let dir_cache = self.load_dir(path);
+
+            for entry in dir_cache.entries.clone() {
+                match entry {
+                    FsEntry::Dir { path: ref subdir } => {
+                        self.request_hash(subdir);
+                    }
+                    FsEntry::File {
+                        path: ref file_path,
+                    } => {
+                        self.queue_single_file_hash(file_path);
+                    }
+                }
+            }
+            return;
+        }
+
+        self.queue_single_file_hash(path);
     }
 
     pub fn get_conflicts_map(&self) -> HashMap<String, Vec<PathBuf>> {
