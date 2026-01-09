@@ -1,23 +1,20 @@
 use std::{
     collections::HashMap,
-    fs,
     path::PathBuf,
     sync::{
         Arc, Mutex, RwLock,
         atomic::{AtomicUsize, Ordering},
-        mpsc::{Receiver, Sender},
+        mpsc::Sender,
     },
-    thread::JoinHandle,
 };
 
-use eframe::egui::{self, Color32, Vec2, vec2};
+use eframe::egui::{self, Color32};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     fs::{DirCache, FsEntry},
     logger::ui_log_window,
-    pool::Pool,
     ui_egui::popup,
 };
 pub struct TreeBehavior {}
@@ -250,18 +247,10 @@ struct VisibleRow {
     parent_has_files: bool,
 }
 
-struct ConflictEntry {
-    hash: String,
-    paths: Vec<PathBuf>,
-    is_resolved: bool,
-    color: egui::Color32,
-}
-
 impl FileExplorerPane {
     pub fn new(title: Option<String>) -> Self {
         let concurrent_hashes = 1;
-
-        let mut new = Self {
+        Self {
             title,
             root: PathBuf::default(),
             file_hashes: Arc::new(RwLock::new(HashMap::new())),
@@ -279,9 +268,7 @@ impl FileExplorerPane {
             open_diff_popup: false,
             open_dir_window: false,
             hashes_in_progress: Arc::new(AtomicUsize::new(0)),
-        };
-
-        new
+        }
     }
 
     pub fn update_worker_count(&mut self, new_count: usize) {
@@ -374,7 +361,7 @@ impl FileExplorerPane {
                 })
                 .collect();
 
-            conflicts.sort_by(|a, b| a.0.cmp(&b.0)); // Sort by hash string
+            conflicts.sort_by(|a, b| a.0.cmp(&b.0));
 
             let total_conflicts = conflicts.len();
             let resolved_count = self.conflict_map_resolved.len();
@@ -390,7 +377,6 @@ impl FileExplorerPane {
                 if !conflicts.is_empty() {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for (hash, paths, is_resolved) in &conflicts {
-                            // Create the row
                             let response = ui
                                 .scope(|ui| {
                                     ui.horizontal(|ui| {
@@ -513,7 +499,6 @@ impl FileExplorerPane {
             let mut is_open = true;
             let mut temp_is_open = is_open;
 
-            // Use the map only for the specific hash detail
             if let Some(value) = self.conflict_map.get(&selected_hash) {
                 popup::show_custom_popup(
                     ui.ctx(),
@@ -1016,7 +1001,7 @@ impl FileExplorerPane {
         let h = hasher.finish();
 
         // Create three distinct jitter values from different bits of the hash
-        let jitter_h = ((h & 0xFF) as f32 / 255.0) - 0.5; // -0.5 to 0.5
+        // let jitter_h = ((h & 0xFF) as f32 / 255.0) - 0.5; // -0.5 to 0.5
         let jitter_s = (((h >> 8) & 0xFF) as f32 / 255.0) - 0.5; // -0.5 to 0.5
         let jitter_v = (((h >> 16) & 0xFF) as f32 / 255.0) - 0.5; // -0.5 to 0.5
 
