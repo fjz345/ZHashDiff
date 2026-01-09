@@ -12,7 +12,6 @@ dependencies = [
  "egui_tiles",
  "env_logger",
  "log",
- "memmap2",
  "rfd",
  "serde",
  "serde_json",
@@ -495,6 +494,7 @@ dependencies = [
  "cc",
  "cfg-if",
  "constant_time_eq",
+ "memmap2",
  "rayon-core",
 ]
 
