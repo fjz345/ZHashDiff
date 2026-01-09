@@ -1036,12 +1036,6 @@ impl FileExplorerPane {
         // We use a hasher to turn the whole string into 3 different "noise" values
         let mut hasher = DefaultHasher::new();
         hash.hash(&mut hasher);
-        let h = hasher.finish();
-
-        // Create three distinct jitter values from different bits of the hash
-        // let jitter_h = ((h & 0xFF) as f32 / 255.0) - 0.5; // -0.5 to 0.5
-        let jitter_s = (((h >> 8) & 0xFF) as f32 / 255.0) - 0.5; // -0.5 to 0.5
-        let jitter_v = (((h >> 16) & 0xFF) as f32 / 255.0) - 0.5; // -0.5 to 0.5
 
         // 3. Apply Logic
         // HUE: Purely first letter (16 steps around the wheel)
@@ -1054,8 +1048,8 @@ impl FileExplorerPane {
         let v_base = 0.6 + (1.0 - (shade_digit / 16.0)) * 0.3;
 
         // The Jitter is "volatile" because it can shift the shade by up to 20%
-        let saturation = (s_base + jitter_s * 0.2).clamp(0.3, 0.95);
-        let value = (v_base + jitter_v * 0.2).clamp(0.4, 0.95);
+        let saturation = (s_base).clamp(0.3, 0.95);
+        let value = (v_base).clamp(0.4, 0.95);
 
         egui::Color32::from(egui::ecolor::Hsva::new(hue, saturation, value, 1.0))
     }
