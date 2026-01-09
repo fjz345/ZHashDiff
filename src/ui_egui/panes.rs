@@ -4,6 +4,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex, RwLock,
+        atomic::{AtomicUsize, Ordering},
         mpsc::{Receiver, Sender},
     },
     thread::JoinHandle,
@@ -94,6 +95,8 @@ pub struct FileExplorerPane {
     hash_request_tx: Option<Sender<PathBuf>>,
     #[serde(skip)]
     hash_request_rx: Option<Arc<Mutex<std::sync::mpsc::Receiver<PathBuf>>>>,
+    #[serde(skip)]
+    pub hashes_in_progress: Arc<AtomicUsize>,
 
     #[serde(skip)]
     pub expanded: HashMap<PathBuf, bool>,
@@ -268,6 +271,7 @@ impl FileExplorerPane {
             conflict_map_resolved: HashMap::new(),
             open_diff_popup: false,
             open_dir_window: false,
+            hashes_in_progress: Arc::new(AtomicUsize::new(0)),
         };
 
         new
@@ -283,12 +287,13 @@ impl FileExplorerPane {
         self.hash_request_tx = Some(tx);
         self.hash_request_rx = Some(shared_rx.clone());
 
-        // 4. Spawn the exact number of new workers
+        let in_progress = Arc::clone(&self.hashes_in_progress);
         let file_hashes = self.file_hashes.clone();
 
         for i in 0..new_count {
             let rx_clone = Arc::clone(&shared_rx);
             let hashes_clone = Arc::clone(&file_hashes);
+            let in_progress_clone = Arc::clone(&in_progress);
 
             std::thread::spawn(move || {
                 println!("New Worker {} started", i);
@@ -296,10 +301,13 @@ impl FileExplorerPane {
                     let guard = rx_clone.lock().unwrap();
                     guard.recv()
                 } {
+                    in_progress_clone.fetch_add(1, Ordering::SeqCst);
+
                     let hash = crate::hash::hash_file(&path.to_string_lossy()).ok();
                     if let Ok(mut w) = hashes_clone.write() {
                         w.insert(path, hash);
                     }
+                    in_progress_clone.fetch_sub(1, Ordering::SeqCst);
                 }
                 println!("Old Worker {} shutting down safely", i);
             });
@@ -314,13 +322,13 @@ impl FileExplorerPane {
         }
     }
 
+    pub fn count_active_hashes(&self) -> usize {
+        self.hashes_in_progress.load(Ordering::SeqCst)
+    }
+
     pub fn count_hash_queue(&self) -> usize {
-        self.file_hashes
-            .read()
-            .unwrap()
-            .values()
-            .filter(|v| v.is_none())
-            .count()
+        let hashes = self.file_hashes.read().unwrap();
+        hashes.values().filter(|v| v.is_none()).count()
     }
 
     fn recursive_expand(&mut self, path: &PathBuf) {

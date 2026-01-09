@@ -117,10 +117,12 @@ impl ZApp {
                     if let Tile::Pane(Pane::FileExplorer(file_explorer)) = tile {
                         let count = file_explorer.count_files_and_folders();
 
+                        let active = file_explorer.count_active_hashes();
+                        let total_pending = file_explorer.count_hash_queue();
+                        let waiting = total_pending.saturating_sub(active);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-                            "ZHashDiff - {} files&folders ({} in hash queue)",
-                            count,
-                            file_explorer.count_hash_queue()
+                            "ZHashDiff - {} files/folders ({} active, {} queued)",
+                            count, active, waiting
                         )));
 
                         break;
