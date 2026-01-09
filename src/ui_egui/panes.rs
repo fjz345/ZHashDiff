@@ -250,6 +250,13 @@ struct VisibleRow {
     parent_has_files: bool,
 }
 
+struct ConflictEntry {
+    hash: String,
+    paths: Vec<PathBuf>,
+    is_resolved: bool,
+    color: egui::Color32,
+}
+
 impl FileExplorerPane {
     pub fn new(title: Option<String>) -> Self {
         let concurrent_hashes = 1;
@@ -353,138 +360,161 @@ impl FileExplorerPane {
     fn ui_popups(&mut self, ui: &mut egui::Ui) {
         if self.open_diff_popup {
             let mut temp_show_diff_popup = self.open_diff_popup;
+            let mut did_resolve = false;
 
-            popup::show_custom_popup(
-                ui.ctx(),
-                &mut temp_show_diff_popup,
-                "Conflicts Found",
-                |ui| {
-                    let mut sorted_hashes: Vec<_> = self.conflict_map.keys().cloned().collect();
-                    sorted_hashes.sort();
+            let mut conflicts: Vec<_> = self
+                .conflict_map
+                .iter()
+                .map(|(hash, paths)| {
+                    (
+                        hash.clone(),
+                        paths.clone(),
+                        self.conflict_map_resolved.contains_key(hash),
+                    )
+                })
+                .collect();
 
-                    if !sorted_hashes.is_empty() {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            for hash in sorted_hashes {
-                                let value = self.conflict_map[&hash].clone();
+            conflicts.sort_by(|a, b| a.0.cmp(&b.0)); // Sort by hash string
 
-                                let is_resolved = self
-                                    .conflict_map_resolved
-                                    .iter()
-                                    .find_map(|f| if *f.0 == hash { Some(f.1) } else { None })
-                                    .is_some();
+            let total_conflicts = conflicts.len();
+            let resolved_count = self.conflict_map_resolved.len();
 
-                                // Create a "row" that acts like a button
-                                let response = ui
-                                    .scope(|ui| {
-                                        ui.horizontal(|ui| {
-                                            self.ui_custom_checkbox(
-                                                ui,
-                                                match is_resolved {
-                                                    true => FolderSelectState::All,
-                                                    false => FolderSelectState::Partial,
-                                                },
-                                                &PathBuf::default(),
-                                            );
+            popup::show_custom_popup(ui.ctx(), &mut temp_show_diff_popup, "Conflicts", |ui| {
+                ui.label(format!(
+                    "Conflicts: ({}/{})",
+                    resolved_count, total_conflicts
+                ));
 
-                                            let color = Self::hash_to_color(&hash);
+                ui.separator();
 
-                                            egui::Frame::new()
-                                                .fill(color)
-                                                .corner_radius(4.0)
-                                                .inner_margin(2.0)
-                                                .show(ui, |ui| {
-                                                    ui.monospace(
-                                                        egui::RichText::new(format!(
-                                                            "[{}]",
-                                                            &hash[0..8]
-                                                        ))
-                                                        .color(Color32::BLACK)
-                                                        .strong(),
-                                                    );
-                                                });
+                if !conflicts.is_empty() {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for (hash, paths, is_resolved) in &conflicts {
+                            // Create the row
+                            let response = ui
+                                .scope(|ui| {
+                                    ui.horizontal(|ui| {
+                                        self.ui_custom_checkbox(
+                                            ui,
+                                            if *is_resolved {
+                                                FolderSelectState::All
+                                            } else {
+                                                FolderSelectState::Partial
+                                            },
+                                            &PathBuf::default(),
+                                        );
 
-                                            ui.label(format!("{} duplicates", value.len()));
-                                        });
-                                    })
-                                    .response;
+                                        let color = Self::hash_to_color(hash);
+                                        egui::Frame::new()
+                                            .fill(color)
+                                            .corner_radius(4.0)
+                                            .inner_margin(2.0)
+                                            .show(ui, |ui| {
+                                                ui.monospace(
+                                                    egui::RichText::new(format!(
+                                                        "[{}]",
+                                                        &hash[0..8]
+                                                    ))
+                                                    .color(Color32::BLACK)
+                                                    .strong(),
+                                                );
+                                            });
 
-                                let interact_response = ui.interact(
-                                    response.rect,
-                                    ui.id().with(&hash),
-                                    egui::Sense::click(),
-                                );
+                                        ui.label(format!("{} duplicates", paths.len()));
+                                    });
+                                })
+                                .response;
+
+                            let interact_response = ui.interact(
+                                response.rect,
+                                ui.id().with(hash),
+                                egui::Sense::click(),
+                            );
+
+                            if interact_response.hovered() {
                                 ui.painter().rect_filled(
                                     response.rect,
                                     0.0,
-                                    ui.visuals().widgets.hovered.bg_fill.gamma_multiply(
-                                        if interact_response.hovered() {
-                                            0.1
-                                        } else {
-                                            0.0
-                                        },
-                                    ),
+                                    ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.1),
                                 );
-
-                                if interact_response.clicked() {
-                                    log::info!(
-                                        "Opening conflict detail popup for hash: {}",
-                                        &hash[0..8]
-                                    );
-                                    self.active_conflict_hash = Some(hash.clone());
-                                }
-                            }
-                        });
-                    } else {
-                        ui.label("No conflicts detected.");
-                    }
-
-                    let resolve_ready = self.conflict_map.len() > 0
-                        && self.conflict_map.len() == self.conflict_map_resolved.len();
-                    ui.add_enabled_ui(resolve_ready, |ui| {
-                        if ui.button("Resolve!").clicked() {
-                            log::info!("Resolving conflicts...");
-
-                            for (hash, paths) in &self.conflict_map {
-                                if let Some(path_to_keep) = self.conflict_map_resolved.get(hash) {
-                                    for path in paths {
-                                        if path != path_to_keep {
-                                            match std::fs::remove_file(path) {
-                                                Ok(_) => {
-                                                    log::info!("Deleted duplicate: {:?}", path);
-                                                    self.selected.remove(path);
-                                                }
-                                                Err(e) => {
-                                                    log::error!(
-                                                        "Failed to delete {:?}: {}",
-                                                        path,
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
                             }
 
-                            self.root_dir_cache.clear();
-                            self.conflict_map.clear();
-                            self.conflict_map_resolved.clear();
-                            self.open_diff_popup = false;
-                            self.active_conflict_hash = None;
-                            self.active_conflict_selected_path = None;
+                            if interact_response.clicked() {
+                                self.active_conflict_hash = Some(hash.clone());
+                            }
                         }
                     });
-                },
-            );
+                } else {
+                    ui.label("No conflicts detected.");
+                }
+
+                ui.add_enabled_ui(
+                    total_conflicts > 0 && resolved_count == total_conflicts,
+                    |ui| {
+                        if ui.button("Resolve!").clicked() {
+                            self.execute_resolution();
+                            did_resolve = true;
+                        }
+                    },
+                );
+            });
+
             self.open_diff_popup = temp_show_diff_popup;
+            if did_resolve {
+                self.open_diff_popup = false;
+            }
         }
 
-        if let Some(selected_hash) = &self.active_conflict_hash {
+        self.ui_conflict_details(ui);
+    }
+
+    fn execute_resolution(&mut self) {
+        log::info!("Starting file resolution process...");
+
+        let conflicts = self.conflict_map.clone();
+        let resolutions = self.conflict_map_resolved.clone();
+
+        for (hash, paths) in conflicts {
+            if let Some(path_to_keep) = resolutions.get(&hash) {
+                for path in paths {
+                    if &path != path_to_keep {
+                        match std::fs::remove_file(&path) {
+                            Ok(_) => {
+                                log::info!("Deleted duplicate: {:?}", path);
+                                self.selected.remove(&path);
+
+                                if let Ok(mut hashes) = self.file_hashes.write() {
+                                    hashes.remove(&path);
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Failed to delete {:?}: {}", path, e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.root_dir_cache.clear();
+
+        self.conflict_map.clear();
+        self.conflict_map_resolved.clear();
+
+        self.open_diff_popup = false;
+        self.active_conflict_hash = None;
+        self.active_conflict_selected_path = None;
+
+        log::info!("Resolution complete. UI state reset.");
+    }
+
+    fn ui_conflict_details(&mut self, ui: &mut egui::Ui) {
+        if let Some(selected_hash) = self.active_conflict_hash.clone() {
             let mut is_open = true;
             let mut temp_is_open = is_open;
-            let conflict_map = &self.conflict_map;
 
-            if let Some(value) = conflict_map.get(selected_hash) {
+            // Use the map only for the specific hash detail
+            if let Some(value) = self.conflict_map.get(&selected_hash) {
                 popup::show_custom_popup(
                     ui.ctx(),
                     &mut temp_is_open,
@@ -494,45 +524,33 @@ impl FileExplorerPane {
                         ui.add_space(8.0);
 
                         let mut is_unresolved =
-                            !self.conflict_map_resolved.contains_key(selected_hash);
+                            !self.conflict_map_resolved.contains_key(&selected_hash);
                         if ui
                             .radio_value(&mut is_unresolved, true, "Unresolved / None")
                             .clicked()
                         {
-                            self.conflict_map_resolved.remove(selected_hash);
+                            self.conflict_map_resolved.remove(&selected_hash);
                         }
 
                         ui.separator();
 
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             for path in value {
-                                let mut is_this_path_selected =
-                                    self.conflict_map_resolved.get(selected_hash) == Some(path);
-
+                                let is_this_path_selected =
+                                    self.conflict_map_resolved.get(&selected_hash) == Some(path);
                                 if ui
-                                    .radio_value(
-                                        &mut is_this_path_selected,
-                                        true,
-                                        path.to_string_lossy(),
-                                    )
+                                    .selectable_label(is_this_path_selected, path.to_string_lossy())
                                     .clicked()
                                 {
                                     self.conflict_map_resolved
                                         .insert(selected_hash.clone(), path.clone());
-
-                                    self.active_conflict_selected_path = Some(path.clone());
                                 }
                             }
                         });
 
                         ui.separator();
-
                         ui.horizontal(|ui| {
-                            if ui.button("Confirm & Close").clicked() {
-                                is_open = false;
-                            }
-
-                            if ui.button("Cancel").clicked() {
+                            if ui.button("Close").clicked() {
                                 is_open = false;
                             }
                         });
@@ -540,10 +558,8 @@ impl FileExplorerPane {
                 );
             }
 
-            is_open &= temp_is_open;
-            if !is_open {
+            if !temp_is_open || !is_open {
                 self.active_conflict_hash = None;
-                self.active_conflict_selected_path = None;
             }
         }
     }
@@ -960,14 +976,15 @@ impl FileExplorerPane {
         let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
         let hashes = self.file_hashes.read().unwrap();
 
-        // Instead of collect_files (disk I/O), iterate over the CACHED hashes
         for (path, hash_option) in hashes.iter() {
-            if let Some(hash_str) = hash_option {
-                if hash_str != "error" {
-                    groups
-                        .entry(hash_str.clone())
-                        .or_default()
-                        .push(path.clone());
+            if self.selected.get(path).copied().unwrap_or(false) {
+                if let Some(hash_str) = hash_option {
+                    if hash_str != "error" {
+                        groups
+                            .entry(hash_str.clone())
+                            .or_default()
+                            .push(path.clone());
+                    }
                 }
             }
         }
