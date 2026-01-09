@@ -349,6 +349,7 @@ impl FileExplorerPane {
             let mut temp_show_diff_popup = self.open_diff_popup;
             let mut did_resolve = false;
 
+            // 1. Prepare data (Snapshot approach)
             let mut conflicts: Vec<_> = self
                 .conflict_map
                 .iter()
@@ -360,89 +361,120 @@ impl FileExplorerPane {
                     )
                 })
                 .collect();
-
             conflicts.sort_by(|a, b| a.0.cmp(&b.0));
 
             let total_conflicts = conflicts.len();
             let resolved_count = self.conflict_map_resolved.len();
 
             popup::show_custom_popup(ui.ctx(), &mut temp_show_diff_popup, "Conflicts", |ui| {
-                ui.label(format!(
-                    "Conflicts: ({}/{})",
-                    resolved_count, total_conflicts
-                ));
+                ui.vertical(|ui| {
+                    ui.label(format!(
+                        "Conflicts: ({}/{})",
+                        resolved_count, total_conflicts
+                    ));
+                    ui.separator();
 
-                ui.separator();
+                    // Define sizing
+                    let row_height = 24.0;
+                    let header_height = 30.0;
+                    // Constraints to prevent off-screen growth
+                    let table_height = ui.available_height() - 100.0;
 
-                if !conflicts.is_empty() {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for (hash, paths, is_resolved) in &conflicts {
-                            let response = ui
-                                .scope(|ui| {
-                                    ui.horizontal(|ui| {
-                                        self.ui_custom_checkbox(
-                                            ui,
-                                            if *is_resolved {
-                                                FolderSelectState::All
-                                            } else {
-                                                FolderSelectState::Partial
-                                            },
-                                            &PathBuf::default(),
-                                        );
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_gray(25))
+                        .inner_margin(0.0)
+                        .show(ui, |ui| {
+                            use egui_extras::{Column, TableBuilder};
 
-                                        let color = Self::hash_to_color(hash);
-                                        egui::Frame::new()
-                                            .fill(color)
-                                            .corner_radius(4.0)
-                                            .inner_margin(2.0)
-                                            .show(ui, |ui| {
-                                                ui.monospace(
-                                                    egui::RichText::new(format!(
-                                                        "[{}]",
-                                                        &hash[0..8]
-                                                    ))
-                                                    .color(Color32::BLACK)
-                                                    .strong(),
-                                                );
-                                            });
-
-                                        ui.label(format!("{} duplicates", paths.len()));
+                            TableBuilder::new(ui)
+                                .striped(true)
+                                .resizable(false) // Keep it clean inside a popup
+                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                .column(Column::exact(32.0)) // Checkbox
+                                .column(Column::exact(80.0)) // Hash (Short)
+                                .column(Column::remainder()) // Duplicates count
+                                .min_scrolled_height(100.0)
+                                .max_scroll_height(table_height)
+                                .header(header_height, |mut header| {
+                                    header.col(|ui| {
+                                        ui.centered_and_justified(|ui| {
+                                            ui.label("✔");
+                                        });
+                                    });
+                                    header.col(|ui| {
+                                        ui.label("Hash ID");
+                                    });
+                                    header.col(|ui| {
+                                        ui.label("Occurrences");
                                     });
                                 })
-                                .response;
+                                .body(|body| {
+                                    body.rows(row_height, total_conflicts, |mut row| {
+                                        let index = row.index();
+                                        let (hash, paths, is_resolved) = &conflicts[index];
 
-                            let interact_response = ui.interact(
-                                response.rect,
-                                ui.id().with(hash),
-                                egui::Sense::click(),
-                            );
+                                        row.col(|ui| {
+                                            ui.centered_and_justified(|ui| {
+                                                self.ui_custom_checkbox(
+                                                    ui,
+                                                    if *is_resolved {
+                                                        FolderSelectState::All
+                                                    } else {
+                                                        FolderSelectState::Partial
+                                                    },
+                                                    &PathBuf::default(),
+                                                );
+                                            });
+                                        });
 
-                            if interact_response.hovered() {
-                                ui.painter().rect_filled(
-                                    response.rect,
-                                    0.0,
-                                    ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.1),
-                                );
+                                        row.col(|ui| {
+                                            let color = Self::hash_to_color(hash);
+                                            let response = egui::Frame::new()
+                                                .fill(color)
+                                                .corner_radius(4.0)
+                                                .inner_margin(2.0)
+                                                .show(ui, |ui| {
+                                                    ui.monospace(
+                                                        egui::RichText::new(&hash[0..8])
+                                                            .color(egui::Color32::BLACK)
+                                                            .strong(),
+                                                    )
+                                                })
+                                                .response;
+
+                                            if ui
+                                                .interact(
+                                                    response.rect.expand(10.0),
+                                                    ui.id().with(hash),
+                                                    egui::Sense::click(),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.active_conflict_hash = Some(hash.clone());
+                                            }
+                                        });
+
+                                        row.col(|ui| {
+                                            let label_text = format!("{} files", paths.len());
+                                            if ui.selectable_label(false, label_text).clicked() {
+                                                self.active_conflict_hash = Some(hash.clone());
+                                            }
+                                        });
+                                    });
+                                });
+                        });
+
+                    ui.separator();
+
+                    ui.add_enabled_ui(resolved_count > 0, |ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Resolve All Selected").clicked() {
+                                self.execute_resolution();
+                                did_resolve = true;
                             }
-
-                            if interact_response.clicked() {
-                                self.active_conflict_hash = Some(hash.clone());
-                            }
-                        }
+                        });
                     });
-                } else {
-                    ui.label("No conflicts detected.");
-                }
-
-                ui.add_enabled_ui(
-                    total_conflicts > 0 && resolved_count == total_conflicts,
-                    |ui| {
-                        if ui.button("Resolve!").clicked() {
-                            self.execute_resolution();
-                            did_resolve = true;
-                        }
-                    },
-                );
+                });
             });
 
             self.open_diff_popup = temp_show_diff_popup;
@@ -519,19 +551,25 @@ impl FileExplorerPane {
 
                         ui.separator();
 
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            for path in value {
-                                let is_this_path_selected =
-                                    self.conflict_map_resolved.get(&selected_hash) == Some(path);
-                                if ui
-                                    .selectable_label(is_this_path_selected, path.to_string_lossy())
-                                    .clicked()
-                                {
-                                    self.conflict_map_resolved
-                                        .insert(selected_hash.clone(), path.clone());
+                        egui::ScrollArea::vertical()
+                            .max_height(200.0)
+                            .show(ui, |ui| {
+                                for path in value {
+                                    let is_this_path_selected =
+                                        self.conflict_map_resolved.get(&selected_hash)
+                                            == Some(path);
+                                    if ui
+                                        .selectable_label(
+                                            is_this_path_selected,
+                                            path.to_string_lossy(),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.conflict_map_resolved
+                                            .insert(selected_hash.clone(), path.clone());
+                                    }
                                 }
-                            }
-                        });
+                            });
 
                         ui.separator();
                         ui.horizontal(|ui| {
