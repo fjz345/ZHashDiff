@@ -778,20 +778,39 @@ impl FileExplorerPane {
                     }
                 }
             } else {
-                if let Some(cache) = self.root_dir_cache.get(path) {
-                    let hashing_count = {
-                        let file_hashes = self.file_hashes.read().unwrap();
-                        file_hashes
-                            .iter()
-                            .filter(|(p, hash)| p.starts_with(path) && hash.is_none())
-                            .count()
-                    };
-                    if hashing_count == 0 {
-                        ui.weak("hashing complete!");
+                let (progress, label) = if let Some(_cache) = self.root_dir_cache.get(path) {
+                    let file_hashes = self.file_hashes.read().unwrap();
+
+                    let subtree_files: Vec<_> = file_hashes
+                        .iter()
+                        .filter(|(p, _)| p.starts_with(path))
+                        .collect();
+
+                    let total = subtree_files.len();
+                    if total > 0 {
+                        let hashed = subtree_files.iter().filter(|(_, h)| h.is_some()).count();
+
+                        let p = hashed as f32 / total as f32;
+                        (p, format!("{}/{}", hashed, total))
                     } else {
-                        ui.weak(format!("hashing... {} files", hashing_count));
+                        (0.0, "0/0".to_string())
                     }
-                }
+                } else {
+                    (0.0, "initializing...".to_string())
+                };
+
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::ProgressBar::new(progress)
+                            .show_percentage()
+                            .desired_width(120.0),
+                    );
+
+                    if progress < 1.0 {
+                        ui.add_space(4.0);
+                        ui.weak(label);
+                    }
+                });
             }
         });
     }
