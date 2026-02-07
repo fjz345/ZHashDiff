@@ -8,10 +8,7 @@ use eframe::egui::{self};
 
 use crate::{logger::LogCollector, ui_egui::app::ZApp};
 
-mod fs;
-mod hash;
 mod logger;
-mod pool;
 mod ui_egui;
 
 fn main() -> eframe::Result {

@@ -3,22 +3,6 @@
 version = 4
 
 [[package]]
-name = "ZHashDiff"
-version = "1.0.8"
-dependencies = [
- "blake3",
- "eframe",
- "egui_extras",
- "egui_tiles",
- "env_logger",
- "log",
- "rfd",
- "serde",
- "serde_json",
- "winapi",
-]
-
-[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4446,6 +4430,22 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "zhashdiff"
+version = "1.0.8"
+dependencies = [
+ "blake3",
+ "eframe",
+ "egui_extras",
+ "egui_tiles",
+ "env_logger",
+ "log",
+ "rfd",
+ "serde",
+ "serde_json",
+ "winapi",
 ]
 
 [[package]]

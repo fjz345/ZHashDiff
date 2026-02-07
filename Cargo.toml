@@ -1,7 +1,11 @@
 [package]
-name = "ZHashDiff"
+name = "zhashdiff"
 version = "1.0.8"
 edition = "2024"
+
+[[bin]]
+name = "zhashdiff-gui"
+path = "src/gui/main.rs"
 
 [dependencies]
 eframe = {version = "0.31.0", features = ["serde", "persistence"]}
