@@ -237,6 +237,7 @@ impl ZAppPane for FileExplorerPane {
         if self.open_dir_window {
             self.open_dir_window = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                self.root_dir_cache.clear();
                 self.load_dir_recursive(&path);
                 self.root = path;
             }
