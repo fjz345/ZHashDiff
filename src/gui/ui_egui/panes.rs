@@ -320,7 +320,6 @@ impl FileExplorerPane {
             let mut temp_show_diff_popup = self.open_diff_popup;
             let mut did_resolve = false;
 
-            // 1. Prepare data (Snapshot approach)
             let mut conflicts: Vec<_> = self
                 .conflict_map
                 .iter()
@@ -345,10 +344,8 @@ impl FileExplorerPane {
                     ));
                     ui.separator();
 
-                    // Define sizing
                     let row_height = 24.0;
                     let header_height = 30.0;
-                    // Constraints to prevent off-screen growth
                     let table_height = ui.available_height() - 100.0;
 
                     egui::Frame::new()
@@ -359,11 +356,11 @@ impl FileExplorerPane {
 
                             TableBuilder::new(ui)
                                 .striped(true)
-                                .resizable(false) // Keep it clean inside a popup
+                                .resizable(false)
                                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                                 .column(Column::exact(32.0)) // Checkbox
                                 .column(Column::exact(80.0)) // Hash (Short)
-                                .column(Column::remainder()) // Duplicates count
+                                .column(Column::remainder())
                                 .min_scrolled_height(100.0)
                                 .max_scroll_height(table_height)
                                 .header(header_height, |mut header| {
@@ -570,7 +567,7 @@ impl FileExplorerPane {
 
         egui::Frame::new()
             .fill(egui::Color32::from_gray(20))
-            .inner_margin(0.0) // Set to 0 to prevent the table from shifting right
+            .inner_margin(0.0)
             .show(ui, |ui| {
                 ui.set_max_width(available_width);
                 let row_height = ui.text_style_height(&egui::TextStyle::Body);
@@ -585,13 +582,13 @@ impl FileExplorerPane {
                     font_id,
                     egui::Color32::PLACEHOLDER,
                 );
-                let min_hash_width = galley.size().x + 20.0; // Adding margin/padding
+                let min_hash_width = galley.size().x + 20.0;
 
                 TableBuilder::new(ui)
                     .striped(true)
                     .resizable(true)
                     .auto_shrink([false, true])
-                    .column(Column::exact(32.0)) // Increased from 24.0 to prevent culling
+                    .column(Column::exact(32.0))
                     .column(Column::remainder().at_least(100.0))
                     .column(
                         Column::initial(min_hash_width)
@@ -604,7 +601,6 @@ impl FileExplorerPane {
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
                                     ui.centered_and_justified(|ui| {
-                                        // Treat the root path like a folder
                                         let state = self.get_folder_selection_state(&self.root);
                                         let root_path = self.root.clone();
                                         self.ui_custom_checkbox(ui, state, &root_path);
@@ -903,7 +899,6 @@ impl FileExplorerPane {
             };
 
             let state = if is_dir {
-                // Check if directory has files before recursing to save cycles
                 if self
                     .root_dir_cache
                     .get(p)
@@ -925,7 +920,7 @@ impl FileExplorerPane {
                 FolderSelectState::All => has_selected = true,
                 FolderSelectState::None => has_unselected = true,
                 FolderSelectState::Partial => {
-                    return FolderSelectState::Partial; // Early exit
+                    return FolderSelectState::Partial;
                 }
             }
 
@@ -945,7 +940,6 @@ impl FileExplorerPane {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::Hash;
 
-        // 1. Strict Anchors
         let hue_digit = hash
             .chars()
             .next()
@@ -957,22 +951,14 @@ impl FileExplorerPane {
             .and_then(|c| c.to_digit(16))
             .unwrap_or(0) as f32;
 
-        // 2. Generate Volatile Jitter
-        // We use a hasher to turn the whole string into 3 different "noise" values
         let mut hasher = DefaultHasher::new();
         hash.hash(&mut hasher);
 
-        // 3. Apply Logic
-        // HUE: Purely first letter (16 steps around the wheel)
-        // We don't add jitter here to keep the "color group" perfectly consistent
         let hue = hue_digit / 16.0;
 
-        // SATURATION & VALUE: Driven by 2nd letter, shaken by Jitter
-        // Base ranges: Sat (0.4-0.8), Val (0.6-0.9)
         let s_base = 0.4 + (shade_digit / 16.0) * 0.4;
         let v_base = 0.6 + (1.0 - (shade_digit / 16.0)) * 0.3;
 
-        // The Jitter is "volatile" because it can shift the shade by up to 20%
         let saturation = (s_base).clamp(0.3, 0.95);
         let value = (v_base).clamp(0.4, 0.95);
 
