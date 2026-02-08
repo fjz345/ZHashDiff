@@ -1,6 +1,7 @@
 use eframe::egui::{self, Layout, PointerButton};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
+use zhashdiff::hash::HashService;
 
 use crate::{
     logger::LogCollector,
@@ -66,7 +67,12 @@ impl ZApp {
                     Tile::Pane(p) => match p {
                         Pane::Log(log_pane) => log_pane.log_buffer = self.log_buffer.clone(),
                         Pane::FileExplorer(pane) => {
-                            pane.update_worker_count(pane.concurrent_hashes)
+                            if pane.hash_service.is_none() {
+                                pane.hash_service = Some(HashService::new(4));
+                            }
+                            pane.update_worker_count(
+                                pane.hash_service.as_ref().unwrap().count_threads(),
+                            );
                         }
                     },
                     _ => {}
