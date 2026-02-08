@@ -1,20 +1,15 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{
-        Arc, Mutex, RwLock,
-        atomic::{AtomicUsize, Ordering},
-        mpsc::Sender,
-    },
+    sync::{Arc, Mutex},
 };
 
-use blake3::Hash;
 use eframe::egui::{self};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
 use zhashdiff::{
     fs::{DirCache, FsEntry},
-    hash::{HashService, find_conflicts, hash_file},
+    hash::{HashService, find_conflicts},
 };
 
 use crate::{logger::ui_log_window, ui_egui::popup};
@@ -80,6 +75,13 @@ impl ZAppPane for LogPane {
     }
 }
 
+#[derive(PartialEq, Eq)]
+enum FolderSelectState {
+    None,
+    All,
+    Partial,
+}
+
 const MAX_CONCURRENT_HASHES: usize = 16;
 #[derive(Serialize, Deserialize)]
 pub struct FileExplorerPane {
@@ -87,7 +89,7 @@ pub struct FileExplorerPane {
 
     pub root: PathBuf,
 
-    #[serde(skip)]
+    #[serde(skip, default = "FileExplorerPane::default_hash_service")]
     pub hash_service: Option<HashService>,
 
     #[serde(skip)]
@@ -113,6 +115,12 @@ pub struct FileExplorerPane {
     open_diff_popup: bool,
     #[serde(skip)]
     pub open_dir_window: bool,
+}
+
+impl FileExplorerPane {
+    fn default_hash_service() -> Option<HashService> {
+        Some(HashService::new(4))
+    }
 }
 
 impl ZAppPane for FileExplorerPane {
@@ -570,9 +578,10 @@ impl FileExplorerPane {
 
                 // Calculate exact width for a 64-char monospace hash + padding
                 let font_id = egui::TextStyle::Monospace.resolve(ui.style());
-                let dummy_hash = "321e84925aecc55ef828a41db03f0ccece66c7a6cd2a31975bcc5d029712db81";
+                const DUMMY_HASH: &str =
+                    "321e84925aecc55ef828a41db03f0ccece66c7a6cd2a31975bcc5d029712db81";
                 let galley = ui.painter().layout_no_wrap(
-                    dummy_hash.into(),
+                    DUMMY_HASH.into(),
                     font_id,
                     egui::Color32::PLACEHOLDER,
                 );
@@ -712,7 +721,7 @@ impl FileExplorerPane {
             });
         });
 
-        // Column 3: Hashing
+        // Column 3: Hash
         row.col(|ui| {
             let hash_service = match self.hash_service.as_ref() {
                 Some(svc) => svc,
@@ -1010,11 +1019,4 @@ impl FileExplorerPane {
 
         dir_cache
     }
-}
-
-#[derive(PartialEq, Eq)]
-enum FolderSelectState {
-    None,
-    All,
-    Partial,
 }

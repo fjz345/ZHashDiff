@@ -197,24 +197,5 @@ impl eframe::App for ZApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
-
-        // let screen_size_px = [ctx.used_size().x as u32, ctx.used_size().y as u32];
-        // if let Some(event) = &mut self.app_ctx.clipboard_event {
-        //     let pixel_read = read_pixels_from_frame(
-        //         frame,
-        //         screen_size_px,
-        //         self.native_pixel_per_point,
-        //         self.scale_factor,
-        //         event.frame_rect.min.x,
-        //         event.frame_rect.max.y,
-        //         event.frame_rect.size().x,
-        //         event.frame_rect.size().y,
-        //     );
-        //     if pixel_read.data.len() > 0 {
-        //         event.frame_pixels = Some(pixel_read);
-        //     } else {
-        //         event.frame_pixels = None;
-        //     }
-        // }
     }
 }
