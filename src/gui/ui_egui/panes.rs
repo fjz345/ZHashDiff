@@ -9,13 +9,19 @@ use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
 use zhashdiff::{
     fs::{DirCache, FsEntry},
-    hash::{HashService, find_conflicts},
+    hash::{
+        HashService, HashServiceSnapshot, ResolveConflictsInput, execute_resolution, find_conflicts,
+    },
 };
 
 use crate::{logger::ui_log_window, ui_egui::popup};
-pub struct TreeBehavior {}
+pub struct TreeBehavior<'a> {
+    pub log_buffer: Arc<Mutex<Vec<String>>>,
 
-impl egui_tiles::Behavior<Pane> for TreeBehavior {
+    pub file_explorerer_ctx: FileExplorerPaneCtx<'a>,
+}
+
+impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
     fn tab_title_for_pane(&mut self, pane: &Pane) -> egui::WidgetText {
         pane.title().into()
     }
@@ -26,7 +32,28 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
         _tile_id: egui_tiles::TileId,
         pane: &mut Pane,
     ) -> egui_tiles::UiResponse {
-        pane.ui(ui)
+        match pane {
+            Pane::Log(pane) => {
+                let response = pane.ui(ui, &mut self.log_buffer);
+                egui_tiles::UiResponse::from(response)
+            }
+            Pane::FileExplorer(pane) => {
+                let mut ctx = FileExplorerPaneCtx {
+                    hash_service: self.file_explorerer_ctx.hash_service,
+                    root: self.file_explorerer_ctx.root,
+                    expanded: self.file_explorerer_ctx.expanded,
+                    selected: self.file_explorerer_ctx.selected,
+                    cache_enabled: self.file_explorerer_ctx.cache_enabled,
+                    root_dir_cache: self.file_explorerer_ctx.root_dir_cache,
+                    active_conflict_hash: self.file_explorerer_ctx.active_conflict_hash,
+                    conflict_map: self.file_explorerer_ctx.conflict_map,
+                    conflict_map_resolved: self.file_explorerer_ctx.conflict_map_resolved,
+                    diff_action_pressed: self.file_explorerer_ctx.diff_action_pressed,
+                };
+                let response = pane.ui(ui, &mut ctx);
+                egui_tiles::UiResponse::from(response)
+            }
+        }
     }
 }
 
@@ -36,24 +63,16 @@ pub enum Pane {
     FileExplorer(FileExplorerPane),
 }
 
-impl ZAppPane for Pane {
-    fn title(&self) -> String {
+impl Pane {
+    pub fn title(&self) -> String {
         match self {
             Pane::Log(pane) => pane.title().into(),
             Pane::FileExplorer(p) => p.title(),
         }
     }
-
-    fn ui(&mut self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
-        match self {
-            Pane::Log(pane) => pane.ui(ui),
-            Pane::FileExplorer(p) => p.ui(ui),
-        }
-    }
 }
 
 pub trait ZAppPane {
-    fn ui(&mut self, ui: &mut egui::Ui) -> egui_tiles::UiResponse;
     fn title(&self) -> String {
         "Pane".to_string()
     }
@@ -62,15 +81,23 @@ pub trait ZAppPane {
 #[derive(Serialize, Deserialize)]
 pub struct LogPane {
     pub title: Option<String>,
-    pub log_buffer: Arc<Mutex<Vec<String>>>,
+    #[serde(default)]
     pub scroll_to_bottom: bool,
 }
 impl ZAppPane for LogPane {
     fn title(&self) -> String {
         self.title.clone().unwrap_or(format!("Pane"))
     }
-    fn ui(&mut self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
-        ui_log_window(ui, self.log_buffer.clone(), &mut self.scroll_to_bottom);
+}
+
+impl LogPane {
+    fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        log_buffer: &Arc<Mutex<Vec<String>>>,
+    ) -> egui_tiles::UiResponse {
+        ui_log_window(ui, log_buffer.clone(), &mut self.scroll_to_bottom);
+
         return egui_tiles::UiResponse::None;
     }
 }
@@ -87,57 +114,67 @@ const MAX_CONCURRENT_HASHES: usize = 16;
 pub struct FileExplorerPane {
     pub title: Option<String>,
 
-    pub root: PathBuf,
-
-    #[serde(skip, default = "FileExplorerPane::default_hash_service")]
-    pub hash_service: Option<HashService>,
-
-    #[serde(skip)]
-    pub expanded: HashMap<PathBuf, bool>,
-    #[serde(skip)]
-    pub selected: HashMap<PathBuf, bool>,
-
-    pub cache_enabled: bool,
-    #[serde(skip)]
-    pub root_dir_cache: HashMap<PathBuf, Arc<DirCache>>,
-
-    #[serde(skip)]
-    pub active_conflict_hash: Option<String>,
-    #[serde(skip)]
-    pub active_conflict_selected_path: Option<PathBuf>,
-
-    #[serde(skip)]
-    conflict_map: HashMap<String, Vec<PathBuf>>,
-    #[serde(skip)]
-    conflict_map_resolved: HashMap<String, PathBuf>,
-
     #[serde(skip)]
     open_diff_popup: bool,
     #[serde(skip)]
     pub open_dir_window: bool,
 }
 
-impl FileExplorerPane {
-    fn default_hash_service() -> Option<HashService> {
-        Some(HashService::new(4))
-    }
-}
-
 impl ZAppPane for FileExplorerPane {
     fn title(&self) -> String {
         self.title.clone().unwrap_or("File Explorer".into())
     }
+}
 
-    fn ui(&mut self, ui: &mut egui::Ui) -> egui_tiles::UiResponse {
+struct VisibleRow {
+    path: PathBuf,
+    is_dir: bool,
+    depth: usize,
+    parent_has_files: bool,
+}
+
+pub struct FileExplorerPaneCtx<'a> {
+    pub hash_service: &'a mut HashService,
+
+    pub root: &'a mut PathBuf,
+
+    pub expanded: &'a mut HashMap<PathBuf, bool>,
+    pub selected: &'a mut HashMap<PathBuf, bool>,
+
+    pub cache_enabled: &'a mut bool,
+    pub root_dir_cache: &'a mut HashMap<PathBuf, Arc<DirCache>>,
+
+    pub active_conflict_hash: &'a mut Option<String>,
+
+    pub conflict_map: &'a mut HashMap<String, Vec<PathBuf>>,
+    pub conflict_map_resolved: &'a mut HashMap<String, PathBuf>,
+
+    pub diff_action_pressed: &'a mut bool,
+}
+
+impl FileExplorerPane {
+    pub fn new(title: Option<String>) -> Self {
+        Self {
+            title,
+            open_diff_popup: false,
+            open_dir_window: false,
+        }
+    }
+
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &mut FileExplorerPaneCtx,
+    ) -> egui_tiles::UiResponse {
         ui.vertical(|ui| {
-            self.ui_popups(ui);
+            self.ui_popups(ui, ctx);
 
             ui.horizontal(|ui| {
                 if ui.button("Open Folder").clicked() {
                     self.open_dir_window = true;
                 }
 
-                let is_anything_expanded = !self.expanded.is_empty();
+                let is_anything_expanded = !ctx.expanded.is_empty();
                 let button_text = if is_anything_expanded {
                     "Collapse All"
                 } else {
@@ -146,16 +183,16 @@ impl ZAppPane for FileExplorerPane {
 
                 if ui.button(button_text).clicked() {
                     if is_anything_expanded {
-                        self.expanded.clear();
+                        ctx.expanded.clear();
                     } else {
-                        self.recursive_expand(&self.root.clone());
+                        Self::recursive_expand(ctx, &ctx.root.clone());
                     }
                 }
 
                 if ui.button("Request All Hash").clicked() {
-                    self.load_dir_recursive(&self.root.clone());
+                    self.load_dir_recursive(ctx, &ctx.root.clone());
 
-                    let all_paths: Vec<PathBuf> = self
+                    let all_paths: Vec<PathBuf> = ctx
                         .root_dir_cache
                         .values()
                         .flat_map(|folder| folder.entries.iter())
@@ -169,45 +206,39 @@ impl ZAppPane for FileExplorerPane {
                         .collect();
 
                     for path in all_paths {
-                        self.hash_service
-                            .as_ref()
-                            .expect("hash_service was none")
-                            .request(path.clone());
+                        ctx.hash_service.request(path.clone());
                     }
                 }
 
                 if ui.button("Clear Hashes").clicked() {
-                    self.hash_service.as_mut().unwrap().clear();
+                    ctx.hash_service.clear();
                 }
 
                 if ui.button("Reload Root Dir").clicked() {
-                    self.load_dir_recursive(&self.root.clone());
+                    self.load_dir_recursive(ctx, &ctx.root.clone());
                 }
 
                 if ui.button("Clear Cache").clicked() {
-                    self.root_dir_cache.clear();
+                    ctx.root_dir_cache.clear();
                 }
 
-                let cache_text = if self.cache_enabled {
+                let cache_text = if *ctx.cache_enabled {
                     "Disable Cache"
                 } else {
                     "Enable Cache"
                 };
                 if ui.button(cache_text).clicked() {
-                    self.cache_enabled = !self.cache_enabled;
+                    *ctx.cache_enabled = !*ctx.cache_enabled;
                 }
 
                 ui.label("Concurrent Hashes");
-                let mut slider_concurrent_hashes =
-                    self.hash_service.as_ref().unwrap().count_threads();
-                if ui
-                    .add(egui::Slider::new(
-                        &mut slider_concurrent_hashes,
-                        0..=MAX_CONCURRENT_HASHES,
-                    ))
-                    .changed()
-                {
-                    self.update_worker_count(slider_concurrent_hashes);
+                let mut slider_concurrent_hashes = ctx.hash_service.count_threads();
+                let slider_response = ui.add(egui::Slider::new(
+                    &mut slider_concurrent_hashes,
+                    0..=MAX_CONCURRENT_HASHES,
+                ));
+                if slider_response.changed() {
+                    ctx.hash_service.resize_workers(slider_concurrent_hashes);
                 }
             });
         });
@@ -217,8 +248,8 @@ impl ZAppPane for FileExplorerPane {
         egui::ScrollArea::vertical()
             .max_height(500.0)
             .show(ui, |ui| {
-                if self.root.is_dir() {
-                    self.ui_table(ui);
+                if ctx.root.is_dir() {
+                    self.ui_table(ui, ctx);
                 } else {
                     ui.label("No root dir set...");
                     if ui.button("Open Folder").clicked() {
@@ -229,78 +260,28 @@ impl ZAppPane for FileExplorerPane {
 
         if ui.button("Diff").clicked() {
             log::info!("Selected files for diff");
-            let snapshot = self.hash_service.as_ref().unwrap().snapshot();
-            self.conflict_map = find_conflicts(&snapshot.hashes, &self.selected);
+            let snapshot = ctx.hash_service.snapshot();
+            *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.selected);
+            *ctx.diff_action_pressed = true;
             self.open_diff_popup = true;
         }
 
         if self.open_dir_window {
             self.open_dir_window = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                self.root_dir_cache.clear();
-                self.load_dir_recursive(&path);
-                self.root = path;
+                ctx.root_dir_cache.clear();
+                self.load_dir_recursive(ctx, &path);
+                *ctx.root = path;
             }
         }
 
         egui_tiles::UiResponse::None
     }
-}
 
-struct VisibleRow {
-    path: PathBuf,
-    is_dir: bool,
-    depth: usize,
-    parent_has_files: bool,
-}
+    fn recursive_expand(ctx: &mut FileExplorerPaneCtx, path: &PathBuf) {
+        ctx.expanded.insert(path.clone(), true);
 
-impl FileExplorerPane {
-    pub fn new(title: Option<String>) -> Self {
-        let concurrent_hashes = 1;
-        Self {
-            title,
-            root: PathBuf::default(),
-            expanded: HashMap::new(),
-            selected: HashMap::new(),
-            cache_enabled: false,
-            root_dir_cache: HashMap::new(),
-            active_conflict_hash: None,
-            active_conflict_selected_path: None,
-            conflict_map: HashMap::new(),
-            conflict_map_resolved: HashMap::new(),
-            open_diff_popup: false,
-            open_dir_window: false,
-            hash_service: Some(HashService::new(concurrent_hashes)),
-        }
-    }
-
-    pub fn count_active_hashes(&self) -> usize {
-        self.hash_service.as_ref().unwrap().count_active_hashes()
-    }
-
-    pub fn count_hash_queue(&self) -> usize {
-        self.hash_service.as_ref().unwrap().count_active_hashes()
-    }
-
-    pub fn update_worker_count(&mut self, new_count: usize) {
-        self.hash_service
-            .as_mut()
-            .expect("hash_service was none")
-            .resize_workers(new_count);
-    }
-
-    pub fn count_files_and_folders(&self) -> usize {
-        if self.root.is_dir() {
-            self.root_dir_cache.len() - 1
-        } else {
-            self.root_dir_cache.len()
-        }
-    }
-
-    fn recursive_expand(&mut self, path: &PathBuf) {
-        self.expanded.insert(path.clone(), true);
-
-        if let Some(cache_entry) = self.root_dir_cache.get(path) {
+        if let Some(cache_entry) = ctx.root_dir_cache.get(path) {
             let subdirs: Vec<PathBuf> = cache_entry
                 .entries
                 .iter()
@@ -311,31 +292,31 @@ impl FileExplorerPane {
                 .collect();
 
             for subdir in subdirs {
-                self.recursive_expand(&subdir);
+                Self::recursive_expand(ctx, &subdir);
             }
         }
     }
 
-    fn ui_popups(&mut self, ui: &mut egui::Ui) {
+    fn ui_popups(&mut self, ui: &mut egui::Ui, ctx: &mut FileExplorerPaneCtx) {
         if self.open_diff_popup {
-            let mut temp_show_diff_popup = self.open_diff_popup;
+            let mut temp_show_diff_popup: bool = self.open_diff_popup;
             let mut did_resolve = false;
 
-            let mut conflicts: Vec<_> = self
+            let mut conflicts: Vec<_> = ctx
                 .conflict_map
                 .iter()
                 .map(|(hash, paths)| {
                     (
                         hash.clone(),
                         paths.clone(),
-                        self.conflict_map_resolved.contains_key(hash),
+                        ctx.conflict_map_resolved.contains_key(hash),
                     )
                 })
                 .collect();
             conflicts.sort_by(|a, b| a.0.cmp(&b.0));
 
             let total_conflicts = conflicts.len();
-            let resolved_count = self.conflict_map_resolved.len();
+            let resolved_count = ctx.conflict_map_resolved.len();
 
             popup::show_custom_popup(ui.ctx(), &mut temp_show_diff_popup, "Conflicts", |ui| {
                 ui.vertical(|ui| {
@@ -386,6 +367,7 @@ impl FileExplorerPane {
                                             ui.centered_and_justified(|ui| {
                                                 self.ui_custom_checkbox(
                                                     ui,
+                                                    ctx,
                                                     if *is_resolved {
                                                         FolderSelectState::All
                                                     } else {
@@ -419,14 +401,14 @@ impl FileExplorerPane {
                                                 )
                                                 .clicked()
                                             {
-                                                self.active_conflict_hash = Some(hash.clone());
+                                                *ctx.active_conflict_hash = Some(hash.clone());
                                             }
                                         });
 
                                         row.col(|ui| {
                                             let label_text = format!("{} files", paths.len());
                                             if ui.selectable_label(false, label_text).clicked() {
-                                                self.active_conflict_hash = Some(hash.clone());
+                                                *ctx.active_conflict_hash = Some(hash.clone());
                                             }
                                         });
                                     });
@@ -438,8 +420,27 @@ impl FileExplorerPane {
                     ui.add_enabled_ui(resolved_count > 0, |ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("Resolve All Selected").clicked() {
-                                self.execute_resolution();
-                                did_resolve = true;
+                                let resolution_input = ResolveConflictsInput {
+                                    conflict_map: ctx.conflict_map.clone(),
+                                    conflict_map_resolved: ctx.conflict_map_resolved.clone(),
+                                };
+                                let removed_files =
+                                    execute_resolution(&resolution_input).removed_files;
+                                if removed_files.len() > 0 {
+                                    // HashService needs to remove hashes for deleted files
+                                    for (path) in removed_files {
+                                        ctx.hash_service.remove(&path);
+                                    }
+                                    // Directory view is now stale
+                                    ctx.root_dir_cache.clear();
+                                    // Reset diff UI state
+                                    ctx.conflict_map.clear();
+                                    ctx.conflict_map_resolved.clear();
+                                    *ctx.active_conflict_hash = None;
+                                    *ctx.active_conflict_hash = None;
+                                    self.open_diff_popup = false;
+                                    did_resolve = true;
+                                }
                             }
                         });
                     });
@@ -452,57 +453,15 @@ impl FileExplorerPane {
             }
         }
 
-        self.ui_conflict_details(ui);
+        self.ui_conflict_details(ui, ctx);
     }
 
-    fn execute_resolution(&mut self) {
-        log::info!("Starting file resolution process...");
-
-        let conflicts = self.conflict_map.clone();
-        let resolutions = self.conflict_map_resolved.clone();
-
-        for (hash, paths) in conflicts {
-            if let Some(path_to_keep) = resolutions.get(&hash) {
-                for path in paths {
-                    if &path != path_to_keep {
-                        match std::fs::remove_file(&path) {
-                            Ok(_) => {
-                                log::info!("Deleted duplicate: {:?}", path);
-
-                                // UI state
-                                self.selected.remove(&path);
-
-                                // Hash engine state
-                                self.hash_service.as_ref().unwrap().remove(&path);
-                            }
-                            Err(e) => {
-                                log::error!("Failed to delete {:?}: {}", path, e);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Directory view is now stale
-        self.root_dir_cache.clear();
-
-        // Reset diff UI state
-        self.conflict_map.clear();
-        self.conflict_map_resolved.clear();
-        self.open_diff_popup = false;
-        self.active_conflict_hash = None;
-        self.active_conflict_selected_path = None;
-
-        log::info!("Resolution complete. UI state reset.");
-    }
-
-    fn ui_conflict_details(&mut self, ui: &mut egui::Ui) {
-        if let Some(selected_hash) = self.active_conflict_hash.clone() {
+    fn ui_conflict_details(&mut self, ui: &mut egui::Ui, ctx: &mut FileExplorerPaneCtx) {
+        if let Some(selected_hash) = ctx.active_conflict_hash.clone() {
             let mut is_open = true;
             let mut temp_is_open = is_open;
 
-            if let Some(value) = self.conflict_map.get(&selected_hash) {
+            if let Some(value) = ctx.conflict_map.get(&selected_hash) {
                 let hash_color = Self::hash_to_color(&selected_hash);
                 popup::show_custom_popup_with_color(
                     ui.ctx(),
@@ -514,12 +473,12 @@ impl FileExplorerPane {
                         ui.add_space(8.0);
 
                         let mut is_unresolved =
-                            !self.conflict_map_resolved.contains_key(&selected_hash);
+                            !ctx.conflict_map_resolved.contains_key(&selected_hash);
                         if ui
                             .radio_value(&mut is_unresolved, true, "Unresolved / None")
                             .clicked()
                         {
-                            self.conflict_map_resolved.remove(&selected_hash);
+                            ctx.conflict_map_resolved.remove(&selected_hash);
                         }
 
                         ui.separator();
@@ -529,8 +488,7 @@ impl FileExplorerPane {
                             .show(ui, |ui| {
                                 for path in value {
                                     let is_this_path_selected =
-                                        self.conflict_map_resolved.get(&selected_hash)
-                                            == Some(path);
+                                        ctx.conflict_map_resolved.get(&selected_hash) == Some(path);
                                     if ui
                                         .selectable_label(
                                             is_this_path_selected,
@@ -538,7 +496,7 @@ impl FileExplorerPane {
                                         )
                                         .clicked()
                                     {
-                                        self.conflict_map_resolved
+                                        ctx.conflict_map_resolved
                                             .insert(selected_hash.clone(), path.clone());
                                     }
                                 }
@@ -555,14 +513,14 @@ impl FileExplorerPane {
             }
 
             if !temp_is_open || !is_open {
-                self.active_conflict_hash = None;
+                *ctx.active_conflict_hash = None;
             }
         }
     }
 
-    fn ui_table(&mut self, ui: &mut egui::Ui) {
+    fn ui_table(&mut self, ui: &mut egui::Ui, ctx: &mut FileExplorerPaneCtx) {
         let mut visible_rows = Vec::new();
-        self.build_visible_rows(&self.root.clone(), 0, &mut visible_rows);
+        self.build_visible_rows(ctx, &ctx.root.clone(), 0, &mut visible_rows);
         let row_count = visible_rows.len();
         let available_width = ui.available_width();
 
@@ -602,9 +560,10 @@ impl FileExplorerPane {
                                 egui::Layout::left_to_right(egui::Align::Center),
                                 |ui| {
                                     ui.centered_and_justified(|ui| {
-                                        let state = self.get_folder_selection_state(&self.root);
-                                        let root_path = self.root.clone();
-                                        self.ui_custom_checkbox(ui, state, &root_path);
+                                        let state =
+                                            self.get_folder_selection_state(ctx, &ctx.root.clone());
+                                        let root_path = ctx.root.clone();
+                                        self.ui_custom_checkbox(ui, ctx, state, &root_path);
                                     });
                                 },
                             );
@@ -629,7 +588,7 @@ impl FileExplorerPane {
                     .body(|body| {
                         body.rows(row_height, row_count, |mut row| {
                             let entry = &visible_rows[row.index()];
-                            self.render_row(&mut row, entry, row_height);
+                            self.render_row(ctx, &mut row, entry, row_height);
                         });
                     });
             });
@@ -637,14 +596,15 @@ impl FileExplorerPane {
 
     fn build_visible_rows(
         &mut self,
+        ctx: &mut FileExplorerPaneCtx,
         current_path: &PathBuf,
         depth: usize,
         out: &mut Vec<VisibleRow>,
     ) {
-        let dir_cache = if let Some(cache) = self.root_dir_cache.get(current_path) {
+        let dir_cache = if let Some(cache) = ctx.root_dir_cache.get(current_path) {
             cache.clone()
         } else {
-            self.load_dir_recursive(current_path).clone()
+            self.load_dir_recursive(ctx, current_path).clone()
         };
 
         let has_files_deep = dir_cache.has_files_deep;
@@ -662,13 +622,19 @@ impl FileExplorerPane {
                 parent_has_files: has_files_deep,
             });
 
-            if is_dir && self.expanded.get(path).copied().unwrap_or(false) {
-                self.build_visible_rows(path, depth + 1, out);
+            if is_dir && ctx.expanded.get(path).copied().unwrap_or(false) {
+                self.build_visible_rows(ctx, path, depth + 1, out);
             }
         }
     }
 
-    fn render_row(&mut self, row: &mut egui_extras::TableRow, entry: &VisibleRow, row_height: f32) {
+    fn render_row(
+        &mut self,
+        ctx: &mut FileExplorerPaneCtx,
+        row: &mut egui_extras::TableRow,
+        entry: &VisibleRow,
+        row_height: f32,
+    ) {
         let path = &entry.path;
         let is_dir = entry.is_dir;
 
@@ -677,15 +643,15 @@ impl FileExplorerPane {
             ui.centered_and_justified(|ui| {
                 if entry.parent_has_files {
                     let state = if is_dir {
-                        self.get_folder_selection_state(path)
+                        self.get_folder_selection_state(ctx, path)
                     } else {
-                        if *self.selected.get(path).unwrap_or(&false) {
+                        if *ctx.selected.get(path).unwrap_or(&false) {
                             FolderSelectState::All
                         } else {
                             FolderSelectState::None
                         }
                     };
-                    self.ui_custom_checkbox(ui, state, path);
+                    self.ui_custom_checkbox(ui, ctx, state, path);
                 }
             });
         });
@@ -695,14 +661,14 @@ impl FileExplorerPane {
             ui.horizontal(|ui| {
                 ui.add_space((entry.depth as f32) * 16.0);
                 if is_dir {
-                    let is_open = self.expanded.get(path).copied().unwrap_or(false);
+                    let is_open = ctx.expanded.get(path).copied().unwrap_or(false);
                     let openness = if is_open { 1.0 } else { 0.0 };
                     let (_rect, response) =
                         ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
                     egui::collapsing_header::paint_default_icon(ui, openness, &response);
 
                     if response.clicked() {
-                        self.expanded.insert(path.clone(), !is_open);
+                        ctx.expanded.insert(path.clone(), !is_open);
                     }
 
                     let label = format!(
@@ -710,7 +676,7 @@ impl FileExplorerPane {
                         path.file_name().unwrap_or_default().to_string_lossy()
                     );
                     if ui.label(label).interact(egui::Sense::click()).clicked() {
-                        self.expanded.insert(path.clone(), !is_open);
+                        ctx.expanded.insert(path.clone(), !is_open);
                     }
                 } else {
                     ui.label(path.file_name().unwrap_or_default().to_string_lossy());
@@ -720,16 +686,8 @@ impl FileExplorerPane {
 
         // Column 3: Hash
         row.col(|ui| {
-            let hash_service = match self.hash_service.as_ref() {
-                Some(svc) => svc,
-                None => {
-                    ui.weak("hash service unavailable");
-                    return;
-                }
-            };
-
             if !is_dir {
-                let hash_state = hash_service.get(path);
+                let hash_state = ctx.hash_service.get(path);
 
                 match hash_state {
                     Some(Some(hash_str)) => {
@@ -750,13 +708,13 @@ impl FileExplorerPane {
                         ui.weak("hashing...");
                     }
                     None => {
-                        hash_service.request(path.clone());
+                        ctx.hash_service.request(path.clone());
                         ui.weak("pending...");
                     }
                 }
             } else {
-                let (progress, label) = if self.root_dir_cache.contains_key(path) {
-                    let snapshot = hash_service.snapshot();
+                let (progress, label) = if ctx.root_dir_cache.contains_key(path) {
+                    let snapshot = ctx.hash_service.snapshot();
 
                     let subtree_files: Vec<_> = snapshot
                         .hashes
@@ -794,7 +752,13 @@ impl FileExplorerPane {
         });
     }
 
-    fn ui_custom_checkbox(&mut self, ui: &mut egui::Ui, state: FolderSelectState, path: &PathBuf) {
+    fn ui_custom_checkbox(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &mut FileExplorerPaneCtx,
+        state: FolderSelectState,
+        path: &PathBuf,
+    ) {
         let icon_size = ui.spacing().icon_width;
         let icon_rect = egui::Vec2::splat(icon_size);
 
@@ -848,23 +812,23 @@ impl FileExplorerPane {
             let new_val = state != FolderSelectState::All;
 
             if path.is_dir() {
-                self.recursive_selection(path, new_val);
+                self.recursive_selection(ctx, path, new_val);
             } else {
-                self.selected.insert(path.clone(), new_val);
+                ctx.selected.insert(path.clone(), new_val);
             }
         }
     }
 
-    fn recursive_selection(&mut self, path: &PathBuf, value: bool) {
-        let cache = self.load_dir(path);
+    fn recursive_selection(&mut self, ctx: &mut FileExplorerPaneCtx, path: &PathBuf, value: bool) {
+        let cache = self.load_dir(ctx, path);
 
         for entry in &cache.entries {
             match entry {
                 FsEntry::File { path: p } => {
-                    self.selected.insert(p.clone(), value);
+                    ctx.selected.insert(p.clone(), value);
                 }
                 FsEntry::Dir { path: p } => {
-                    self.recursive_selection(p, value);
+                    self.recursive_selection(ctx, p, value);
                 }
             }
         }
@@ -885,9 +849,13 @@ impl FileExplorerPane {
         false
     }
 
-    fn get_folder_selection_state(&self, path: &PathBuf) -> FolderSelectState {
-        let cache = match self.root_dir_cache.get(path) {
-            Some(c) => c,
+    fn get_folder_selection_state(
+        &self,
+        ctx: &mut FileExplorerPaneCtx,
+        path: &PathBuf,
+    ) -> FolderSelectState {
+        let cache = match ctx.root_dir_cache.get(path) {
+            Some(c) => c.clone(),
             None => return FolderSelectState::None,
         };
 
@@ -901,17 +869,17 @@ impl FileExplorerPane {
             };
 
             let state = if is_dir {
-                if self
+                if ctx
                     .root_dir_cache
                     .get(p)
                     .map_or(false, |c| c.has_files_deep)
                 {
-                    self.get_folder_selection_state(p)
+                    self.get_folder_selection_state(ctx, &p)
                 } else {
                     FolderSelectState::None
                 }
             } else {
-                if *self.selected.get(p).unwrap_or(&false) {
+                if *ctx.selected.get(p).unwrap_or(&false) {
                     FolderSelectState::All
                 } else {
                     FolderSelectState::None
@@ -967,9 +935,9 @@ impl FileExplorerPane {
         egui::Color32::from(egui::ecolor::Hsva::new(hue, saturation, value, 1.0))
     }
 
-    fn load_dir(&mut self, path: &PathBuf) -> Arc<DirCache> {
-        if self.cache_enabled {
-            if let Some(cache) = self.root_dir_cache.get(path) {
+    fn load_dir(&mut self, ctx: &mut FileExplorerPaneCtx, path: &PathBuf) -> Arc<DirCache> {
+        if *ctx.cache_enabled {
+            if let Some(cache) = ctx.root_dir_cache.get(path) {
                 return Arc::clone(cache);
             }
         }
@@ -991,17 +959,21 @@ impl FileExplorerPane {
             has_files_deep: self.has_files_recursive(path),
         });
 
-        self.root_dir_cache
+        ctx.root_dir_cache
             .insert(path.clone(), Arc::clone(&new_cache));
         new_cache
     }
 
-    fn load_dir_recursive(&mut self, path: &PathBuf) -> Arc<DirCache> {
-        let dir_cache = self.load_dir(path);
+    fn load_dir_recursive(
+        &mut self,
+        ctx: &mut FileExplorerPaneCtx,
+        path: &PathBuf,
+    ) -> Arc<DirCache> {
+        let dir_cache = self.load_dir(ctx, path);
 
         if dir_cache.has_files_deep {
             for entry in dir_cache.entries.iter() {
-                self.load_dir(&entry.path());
+                self.load_dir(ctx, &entry.path());
             }
         }
 

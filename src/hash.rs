@@ -17,6 +17,7 @@ pub fn hash_file(path: &str) -> io::Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+#[derive(Debug, Clone)]
 pub struct HashServiceSnapshot {
     pub hashes: HashMap<PathBuf, Option<String>>,
     pub active_count: usize,
@@ -24,6 +25,7 @@ pub struct HashServiceSnapshot {
     pub num_workers: usize,
 }
 
+#[derive(Debug)]
 pub struct HashService {
     hashes: Arc<RwLock<HashMap<PathBuf, Option<String>>>>,
     tx: Sender<PathBuf>,
@@ -32,6 +34,7 @@ pub struct HashService {
     workers: Vec<WorkerHandle>,
 }
 
+#[derive(Debug)]
 struct WorkerHandle {
     handle: thread::JoinHandle<()>,
     stop_flag: Arc<AtomicBool>,
@@ -183,4 +186,48 @@ pub fn find_conflicts(
     }
     groups.retain(|_, v| v.len() > 1);
     groups
+}
+
+pub struct ResolveConflictsInput {
+    pub conflict_map: HashMap<String, Vec<PathBuf>>,
+    pub conflict_map_resolved: HashMap<String, PathBuf>,
+}
+
+pub struct ResolveConflictsOutput {
+    pub removed_files: Vec<PathBuf>,
+}
+
+pub fn execute_resolution(input: &ResolveConflictsInput) -> ResolveConflictsOutput {
+    let mut output = ResolveConflictsOutput {
+        removed_files: Vec::new(),
+    };
+
+    log::info!("Starting file resolution process...");
+
+    let conflicts = &input.conflict_map;
+    let resolutions = &input.conflict_map_resolved;
+
+    for (hash, paths) in conflicts {
+        if let Some(path_to_keep) = resolutions.get(hash) {
+            for path in paths {
+                if path != path_to_keep {
+                    match std::fs::remove_file(&path) {
+                        Ok(_) => {
+                            log::info!("Deleted duplicate: {:?}", path);
+                            output.removed_files.push(path.clone());
+                        }
+                        Err(e) => {
+                            log::error!("Failed to delete {:?}: {}", path, e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    log::info!(
+        "Resolution complete. Removed {} files.",
+        output.removed_files.len()
+    );
+    output
 }

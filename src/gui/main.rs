@@ -41,7 +41,8 @@ fn main() -> eframe::Result {
                 }
             }
 
-            let app = ZApp::new(cc, log_buffer.clone());
+            let mut app = ZApp::new(cc, log_buffer.clone());
+            app.request_init();
             Ok(Box::<ZApp>::new(app))
         }),
     )
