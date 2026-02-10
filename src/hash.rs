@@ -17,6 +17,13 @@ pub fn hash_file(path: &str) -> io::Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+pub struct HashServiceSnapshot {
+    pub hashes: HashMap<PathBuf, Option<String>>,
+    pub active_count: usize,
+    pub queue_count: usize,
+    pub num_workers: usize,
+}
+
 pub struct HashService {
     hashes: Arc<RwLock<HashMap<PathBuf, Option<String>>>>,
     tx: Sender<PathBuf>,
@@ -152,8 +159,13 @@ impl HashService {
         pending.saturating_sub(active)
     }
 
-    pub fn snapshot(&self) -> HashMap<PathBuf, Option<String>> {
-        self.hashes.read().unwrap().clone()
+    pub fn snapshot(&self) -> HashServiceSnapshot {
+        HashServiceSnapshot {
+            hashes: self.hashes.read().unwrap().clone(),
+            active_count: self.count_active_hashes(),
+            queue_count: self.count_hash_queue(),
+            num_workers: self.count_threads(),
+        }
     }
 }
 

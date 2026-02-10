@@ -230,7 +230,7 @@ impl ZAppPane for FileExplorerPane {
         if ui.button("Diff").clicked() {
             log::info!("Selected files for diff");
             let snapshot = self.hash_service.as_ref().unwrap().snapshot();
-            self.conflict_map = find_conflicts(&snapshot, &self.selected);
+            self.conflict_map = find_conflicts(&snapshot.hashes, &self.selected);
             self.open_diff_popup = true;
         }
 
@@ -759,6 +759,7 @@ impl FileExplorerPane {
                     let snapshot = hash_service.snapshot();
 
                     let subtree_files: Vec<_> = snapshot
+                        .hashes
                         .iter()
                         .filter(|(p, _)| p.starts_with(path))
                         .collect();
