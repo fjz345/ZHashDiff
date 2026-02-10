@@ -1,7 +1,4 @@
-use eframe::{
-    App,
-    egui::{self, Layout, PointerButton},
-};
+use eframe::egui::{self, Layout, PointerButton};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -10,10 +7,7 @@ use std::{
 };
 use zhashdiff::{fs::DirCache, hash::HashService};
 
-use crate::{
-    logger::LogCollector,
-    ui_egui::panes::{FileExplorerPane, FileExplorerPaneCtx, LogPane, Pane, TreeBehavior},
-};
+use crate::ui_egui::panes::{FileExplorerPane, FileExplorerPaneCtx, LogPane, Pane, TreeBehavior};
 use eframe::{
     CreationContext,
     epaint::{Pos2, Vec2},
@@ -115,7 +109,7 @@ impl ZApp {
             scale_factor: scale_factor,
             native_pixel_per_point: native_pixel_per_point,
             state: AppState::default(),
-            tree: Self::create_tree(log_buffer.clone()),
+            tree: Self::create_tree(),
             log_buffer: log_buffer,
         }
     }
@@ -131,7 +125,7 @@ impl ZApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
     }
 
-    fn create_tree(log_buffer: Arc<Mutex<Vec<String>>>) -> egui_tiles::Tree<Pane> {
+    fn create_tree() -> egui_tiles::Tree<Pane> {
         let mut tiles = egui_tiles::Tiles::default();
 
         let mut tabs = vec![];
@@ -186,7 +180,7 @@ impl ZApp {
                 self.tree.ui(&mut behavior, ui);
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
-                    if let Tile::Pane(Pane::FileExplorer(file_explorer)) = tile {
+                    if let Tile::Pane(Pane::FileExplorer(_file_explorer)) = tile {
                         let count = if behavior.file_explorerer_ctx.root.is_dir() {
                             behavior.file_explorerer_ctx.root_dir_cache.len() - 1
                         } else {

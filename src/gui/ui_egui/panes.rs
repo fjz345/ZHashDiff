@@ -9,9 +9,7 @@ use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
 use zhashdiff::{
     fs::{DirCache, FsEntry},
-    hash::{
-        HashService, HashServiceSnapshot, ResolveConflictsInput, execute_resolution, find_conflicts,
-    },
+    hash::{HashService, ResolveConflictsInput, execute_resolution, find_conflicts},
 };
 
 use crate::{logger::ui_log_window, ui_egui::popup};
@@ -428,7 +426,7 @@ impl FileExplorerPane {
                                     execute_resolution(&resolution_input).removed_files;
                                 if removed_files.len() > 0 {
                                     // HashService needs to remove hashes for deleted files
-                                    for (path) in removed_files {
+                                    for path in removed_files {
                                         ctx.hash_service.remove(&path);
                                     }
                                     // Directory view is now stale
@@ -436,7 +434,6 @@ impl FileExplorerPane {
                                     // Reset diff UI state
                                     ctx.conflict_map.clear();
                                     ctx.conflict_map_resolved.clear();
-                                    *ctx.active_conflict_hash = None;
                                     *ctx.active_conflict_hash = None;
                                     self.open_diff_popup = false;
                                     did_resolve = true;
