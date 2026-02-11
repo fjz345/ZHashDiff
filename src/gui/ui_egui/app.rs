@@ -7,7 +7,7 @@ use std::{
 };
 use zhashdiff::{fs::FileSystem, hash::HashService};
 
-use crate::ui_egui::panes::{FileExplorerPane, FileExplorerPaneCtx, LogPane, Pane, TreeBehavior};
+use crate::ui_egui::panes::{DuplicateFilesPane, FileExplorerPaneCtx, LogPane, Pane, TreeBehavior};
 use eframe::{
     CreationContext,
     epaint::{Pos2, Vec2},
@@ -116,7 +116,7 @@ impl ZApp {
             scroll_to_bottom: true,
         }));
 
-        let tile_file_explorer = tiles.insert_pane(Pane::FileExplorer(FileExplorerPane::new(
+        let tile_file_explorer = tiles.insert_pane(Pane::FileExplorer(DuplicateFilesPane::new(
             Some("File Explorer".to_string()),
         )));
 
