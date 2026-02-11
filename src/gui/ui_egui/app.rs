@@ -7,10 +7,7 @@ use std::{
 };
 use zhashdiff::{fs::FileSystem, hash::HashService};
 
-use crate::ui_egui::{
-    app,
-    panes::{FileExplorerPane, FileExplorerPaneCtx, LogPane, Pane, TreeBehavior},
-};
+use crate::ui_egui::panes::{FileExplorerPane, FileExplorerPaneCtx, LogPane, Pane, TreeBehavior};
 use eframe::{
     CreationContext,
     epaint::{Pos2, Vec2},
@@ -51,14 +48,6 @@ impl Default for AppState {
 }
 
 impl AppState {
-    fn ctx(&mut self) -> &mut AppStateCtx {
-        match self {
-            AppState::Startup(ctx) => ctx,
-            AppState::Idle(ctx) => ctx,
-            AppState::Exit(ctx) => ctx,
-        }
-    }
-
     fn into_ctx(self) -> AppStateCtx {
         match self {
             AppState::Startup(ctx) => ctx,
@@ -168,10 +157,15 @@ impl ZApp {
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::FileExplorer(_file_explorer)) = tile {
+                        let count_files = behavior
+                            .file_explorer_ctx
+                            .file_system
+                            .count_files(&behavior.file_explorer_ctx.file_system.root);
+
                         let count = if behavior.file_explorer_ctx.file_system.root.is_dir() {
-                            behavior.file_explorer_ctx.file_system.root_dir_cache.len() - 1
+                            count_files - 1
                         } else {
-                            behavior.file_explorer_ctx.file_system.root_dir_cache.len()
+                            count_files
                         };
 
                         let active = app_ctx.hash_service.count_active_hashes();
@@ -252,7 +246,6 @@ impl eframe::App for ZApp {
                         ui.label("Loading...");
                     });
                 });
-
                 AppState::Idle(state_ctx)
             }
             AppState::Idle(mut state) => {
@@ -262,7 +255,7 @@ impl eframe::App for ZApp {
             }
             AppState::Exit(state) => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                log::info!("EXIT INITIATED");
+                log::info!("send_viewport_cmd sent");
 
                 egui::CentralPanel::default().show(ctx, |ui| {
                     ui.centered_and_justified(|ui| {

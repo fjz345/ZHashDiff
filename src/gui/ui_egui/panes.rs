@@ -8,7 +8,7 @@ use eframe::egui::{self};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
 use zhashdiff::{
-    fs::{DirCache, FileSystem, FsEntry},
+    fs::{FileSystem, FsEntry},
     hash::{HashService, ResolveConflictsInput, execute_resolution, find_conflicts},
 };
 
@@ -182,24 +182,13 @@ impl FileExplorerPane {
                 }
 
                 if ui.button("Request All Hash").clicked() {
-                    self.load_dir_recursive(ctx, &ctx.file_system.root.clone());
+                    let all_paths =
+                        FileSystem::read_path_recursive_flatten(&ctx.file_system.root.clone());
 
-                    let all_paths: Vec<PathBuf> = ctx
-                        .file_system
-                        .root_dir_cache
-                        .values()
-                        .flat_map(|folder| folder.entries.iter())
-                        .filter_map(|entry| {
-                            if let FsEntry::File { path } = entry {
-                                Some(path.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-
-                    for path in all_paths {
-                        ctx.hash_service.request(path.clone());
+                    for path in all_paths.entries {
+                        if let FsEntry::File { path } = path {
+                            ctx.hash_service.request(path);
+                        }
                     }
                 }
 
@@ -207,22 +196,23 @@ impl FileExplorerPane {
                     ctx.hash_service.clear();
                 }
 
-                if ui.button("Reload Root Dir").clicked() {
-                    self.load_dir_recursive(ctx, &ctx.file_system.root.clone());
-                }
+                // if ui.button("Reload Root Dir").clicked() {
+                //     ctx.file_system
+                //         .read_path_recursive_flatten(&ctx.file_system.root.clone());
+                // }
 
-                if ui.button("Clear Cache").clicked() {
-                    ctx.file_system.root_dir_cache.clear();
-                }
+                // if ui.button("Clear Cache").clicked() {
+                //     ctx.file_system.root_dir_cache.clear();
+                // }
 
-                let cache_text = if ctx.file_system.cache_enabled {
-                    "Disable Cache"
-                } else {
-                    "Enable Cache"
-                };
-                if ui.button(cache_text).clicked() {
-                    ctx.file_system.cache_enabled = !ctx.file_system.cache_enabled;
-                }
+                // let cache_text = if ctx.file_system.cache_enabled {
+                //     "Disable Cache"
+                // } else {
+                //     "Enable Cache"
+                // };
+                // if ui.button(cache_text).clicked() {
+                //     ctx.file_system.cache_enabled = !ctx.file_system.cache_enabled;
+                // }
 
                 ui.label("Concurrent Hashes");
                 let mut slider_concurrent_hashes = ctx.hash_service.count_threads();
@@ -238,19 +228,13 @@ impl FileExplorerPane {
 
         ui.separator();
 
+        let mut show_diff_button = false;
         egui::ScrollArea::vertical()
             .max_height(500.0)
             .show(ui, |ui| {
                 if ctx.file_system.root.is_dir() {
                     self.draw_ui_folder_tree_with_checkbox(ui, ctx);
-
-                    if ui.button("Diff").clicked() {
-                        log::info!("Selected files for diff");
-                        let snapshot = ctx.hash_service.snapshot();
-                        *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.selected);
-                        *ctx.diff_action_pressed = true;
-                        self.open_diff_popup = true;
-                    }
+                    show_diff_button = true;
                 } else {
                     ui.label("No root dir set...");
                     if ui.button("Open Folder").clicked() {
@@ -259,11 +243,19 @@ impl FileExplorerPane {
                 }
             });
 
+        if show_diff_button && ui.button("Diff").clicked() {
+            log::info!("Selected files for diff");
+            let snapshot = ctx.hash_service.snapshot();
+            *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.selected);
+            *ctx.diff_action_pressed = true;
+            self.open_diff_popup = true;
+        }
+
         if self.open_dir_window {
             self.open_dir_window = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                ctx.file_system.root_dir_cache.clear();
-                self.load_dir_recursive(ctx, &path);
+                // ctx.file_system.root_dir_cache.clear();
+                FileSystem::read_path_recursive_flatten(&path);
                 ctx.file_system.root = path;
             }
         }
@@ -273,19 +265,10 @@ impl FileExplorerPane {
 
     fn recursive_expand(ctx: &mut FileExplorerPaneCtx, path: &PathBuf) {
         ctx.expanded.insert(path.clone(), true);
-
-        if let Some(cache_entry) = ctx.file_system.root_dir_cache.get(path) {
-            let subdirs: Vec<PathBuf> = cache_entry
-                .entries
-                .iter()
-                .filter_map(|entry| match entry {
-                    FsEntry::Dir { path: p } => Some(p.clone()),
-                    _ => None,
-                })
-                .collect();
-
-            for subdir in subdirs {
-                Self::recursive_expand(ctx, &subdir);
+        let path = ctx.file_system.get(path);
+        for entry in path.entries.iter() {
+            if let FsEntry::Dir { path } = entry {
+                Self::recursive_expand(ctx, path);
             }
         }
     }
@@ -425,7 +408,7 @@ impl FileExplorerPane {
                                         ctx.hash_service.remove(&path);
                                     }
                                     // Directory view is now stale
-                                    ctx.file_system.root_dir_cache.clear();
+                                    // ctx.file_system.root_dir_cache.clear();
                                     // Reset diff UI state
                                     ctx.conflict_map.clear();
                                     ctx.conflict_map_resolved.clear();
@@ -599,15 +582,11 @@ impl FileExplorerPane {
         depth: usize,
         out: &mut Vec<VisibleRow>,
     ) {
-        let dir_cache = if let Some(cache) = ctx.file_system.root_dir_cache.get(current_path) {
-            cache.clone()
-        } else {
-            self.load_dir_recursive(ctx, current_path).clone()
-        };
+        let fs_path = ctx.file_system.get(current_path);
 
-        let has_files_deep = dir_cache.has_files_deep;
+        let has_files_deep = fs_path.has_files_deep;
 
-        for entry in &dir_cache.entries {
+        for entry in &fs_path.entries {
             let (path, is_dir) = match entry {
                 FsEntry::Dir { path } => (path, true),
                 FsEntry::File { path } => (path, false),
@@ -619,9 +598,8 @@ impl FileExplorerPane {
                 depth,
                 parent_has_files: has_files_deep,
             });
-
-            if is_dir && ctx.expanded.get(path).copied().unwrap_or(false) {
-                self.build_visible_rows(ctx, path, depth + 1, out);
+            if is_dir && ctx.expanded.get(&path.clone()).copied().unwrap_or(false) {
+                self.build_visible_rows(ctx, &path, depth + 1, out);
             }
         }
     }
@@ -711,28 +689,20 @@ impl FileExplorerPane {
                     }
                 }
             } else {
-                let (progress, label) = if ctx.file_system.root_dir_cache.contains_key(path) {
-                    let snapshot = ctx.hash_service.snapshot();
+                let snapshot = ctx.hash_service.snapshot();
 
-                    let subtree_files: Vec<_> = snapshot
-                        .hashes
-                        .iter()
-                        .filter(|(p, _)| p.starts_with(path))
-                        .collect();
+                let subtree_files: Vec<_> = snapshot
+                    .hashes
+                    .iter()
+                    .filter(|(p, _)| p.starts_with(path))
+                    .collect();
 
-                    let total = subtree_files.len();
-                    if total > 0 {
-                        let hashed = subtree_files.iter().filter(|(_, h)| h.is_some()).count();
-                        (
-                            hashed as f32 / total as f32,
-                            format!("{}/{}", hashed, total),
-                        )
-                    } else {
-                        (0.0, "0/0".to_string())
-                    }
-                } else {
-                    (0.0, "initializing...".to_string())
-                };
+                let total = subtree_files.len();
+                let hashed = subtree_files.iter().filter(|(_, h)| h.is_some()).count();
+                let (progress, label) = (
+                    hashed as f32 / total as f32,
+                    format!("{}/{}", hashed, total),
+                );
 
                 ui.horizontal(|ui| {
                     ui.add(
@@ -818,9 +788,9 @@ impl FileExplorerPane {
     }
 
     fn recursive_selection(&mut self, ctx: &mut FileExplorerPaneCtx, path: &PathBuf, value: bool) {
-        let cache = self.load_dir(ctx, path);
+        let fs_path = ctx.file_system.get(path);
 
-        for entry in &cache.entries {
+        for entry in &fs_path.entries {
             match entry {
                 FsEntry::File { path: p } => {
                     ctx.selected.insert(p.clone(), value);
@@ -832,51 +802,24 @@ impl FileExplorerPane {
         }
     }
 
-    fn has_files_recursive(&self, path: &PathBuf) -> bool {
-        if path.is_file() {
-            return true;
-        }
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if self.has_files_recursive(&p) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     fn get_folder_selection_state(
         &self,
         ctx: &mut FileExplorerPaneCtx,
         path: &PathBuf,
     ) -> FolderSelectState {
-        let cache = match ctx.file_system.root_dir_cache.get(path) {
-            Some(c) => c.clone(),
-            None => return FolderSelectState::None,
-        };
+        let fs_path = ctx.file_system.get(path);
 
         let mut has_selected = false;
         let mut has_unselected = false;
 
-        for entry in &cache.entries {
+        for entry in &fs_path.entries {
             let (p, is_dir) = match entry {
                 FsEntry::File { path: p } => (p, false),
                 FsEntry::Dir { path: p } => (p, true),
             };
 
             let state = if is_dir {
-                if ctx
-                    .file_system
-                    .root_dir_cache
-                    .get(p)
-                    .map_or(false, |c| c.has_files_deep)
-                {
-                    self.get_folder_selection_state(ctx, &p)
-                } else {
-                    FolderSelectState::None
-                }
+                self.get_folder_selection_state(ctx, &p)
             } else {
                 if *ctx.selected.get(p).unwrap_or(&false) {
                     FolderSelectState::All
@@ -932,51 +875,5 @@ impl FileExplorerPane {
         let value = (v_base).clamp(0.4, 0.95);
 
         egui::Color32::from(egui::ecolor::Hsva::new(hue, saturation, value, 1.0))
-    }
-
-    fn load_dir(&mut self, ctx: &mut FileExplorerPaneCtx, path: &PathBuf) -> Arc<DirCache> {
-        if ctx.file_system.cache_enabled {
-            if let Some(cache) = ctx.file_system.root_dir_cache.get(path) {
-                return Arc::clone(cache);
-            }
-        }
-
-        let mut entries = vec![];
-        if let Ok(read_dir) = std::fs::read_dir(path) {
-            for entry in read_dir.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    entries.push(FsEntry::Dir { path: p });
-                } else {
-                    entries.push(FsEntry::File { path: p });
-                }
-            }
-        }
-
-        let new_cache = Arc::new(DirCache {
-            entries,
-            has_files_deep: self.has_files_recursive(path),
-        });
-
-        ctx.file_system
-            .root_dir_cache
-            .insert(path.clone(), Arc::clone(&new_cache));
-        new_cache
-    }
-
-    fn load_dir_recursive(
-        &mut self,
-        ctx: &mut FileExplorerPaneCtx,
-        path: &PathBuf,
-    ) -> Arc<DirCache> {
-        let dir_cache = self.load_dir(ctx, path);
-
-        if dir_cache.has_files_deep {
-            for entry in dir_cache.entries.iter() {
-                self.load_dir(ctx, &entry.path());
-            }
-        }
-
-        dir_cache
     }
 }
