@@ -40,6 +40,12 @@ struct WorkerHandle {
     stop_flag: Arc<AtomicBool>,
 }
 
+impl Default for HashService {
+    fn default() -> Self {
+        HashService::new(4)
+    }
+}
+
 impl HashService {
     pub fn new(worker_count: usize) -> Self {
         let (tx, rx) = mpsc::channel::<PathBuf>();

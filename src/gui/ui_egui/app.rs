@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-use zhashdiff::{fs::DirCache, hash::HashService};
+use zhashdiff::{fs::FileSystem, hash::HashService};
 
 use crate::ui_egui::panes::{FileExplorerPane, FileExplorerPaneCtx, LogPane, Pane, TreeBehavior};
 use eframe::{
@@ -16,19 +16,11 @@ use egui_tiles::Tile;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AppStateCtx {
-    #[serde(skip, default = "AppStateCtx::default_hash_service")]
-    pub hash_service: Option<HashService>,
-
-    pub root: PathBuf,
+    #[serde(skip)]
+    pub hash_service: HashService,
 
     #[serde(skip)]
-    pub expanded: HashMap<PathBuf, bool>,
-    #[serde(skip)]
-    pub selected: HashMap<PathBuf, bool>,
-
-    pub cache_enabled: bool,
-    #[serde(skip)]
-    pub root_dir_cache: HashMap<PathBuf, Arc<DirCache>>,
+    pub file_system: FileSystem,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -81,19 +73,12 @@ pub struct ZApp {
     log_buffer: Arc<Mutex<Vec<String>>>,
 }
 
-impl AppStateCtx {
-    fn default_hash_service() -> Option<HashService> {
-        Some(HashService::new(4))
-    }
-}
-
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
 impl ZApp {
-    // stupid work around since persistance storage does not work??
     pub fn request_init(&mut self) {
-        if self.state.ctx().hash_service.is_none() {
-            self.state.ctx().hash_service = AppStateCtx::default_hash_service();
-        }
+        // if self.state.ctx().hash_service.is_none() {
+        // self.state.ctx().hash_service = HashService::default();
+        // }
     }
 
     pub fn new(cc: &CreationContext<'_>, log_buffer: Arc<Mutex<Vec<String>>>) -> Self {
@@ -153,23 +138,18 @@ impl ZApp {
         _frame: &mut eframe::Frame,
         app_ctx: &mut AppStateCtx,
     ) {
-        if app_ctx.hash_service.is_none() {
-            log::error!("HashService not initialized!");
-            return;
-        }
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
-                let hash_service = app_ctx.hash_service.as_mut().unwrap();
                 let mut diff_action_triggered = false;
                 let mut behavior = TreeBehavior {
                     log_buffer: self.log_buffer.clone(),
                     file_explorerer_ctx: FileExplorerPaneCtx {
-                        hash_service: hash_service,
-                        root: &mut app_ctx.root,
-                        expanded: &mut app_ctx.expanded,
-                        selected: &mut app_ctx.selected,
-                        cache_enabled: &mut app_ctx.cache_enabled,
-                        root_dir_cache: &mut app_ctx.root_dir_cache,
+                        hash_service: &mut app_ctx.hash_service,
+                        root: &mut app_ctx.file_system.root,
+                        expanded: &mut app_ctx.file_system.expanded,
+                        selected: &mut app_ctx.file_system.selected,
+                        cache_enabled: &mut app_ctx.file_system.cache_enabled,
+                        root_dir_cache: &mut app_ctx.file_system.root_dir_cache,
                         active_conflict_hash: &mut app_ctx.active_conflict_hash,
                         conflict_map: &mut app_ctx.conflict_map,
                         conflict_map_resolved: &mut app_ctx.conflict_map_resolved,
@@ -187,14 +167,8 @@ impl ZApp {
                             behavior.file_explorerer_ctx.root_dir_cache.len()
                         };
 
-                        let active = app_ctx
-                            .hash_service
-                            .as_ref()
-                            .map_or(0, |hs| hs.count_active_hashes());
-                        let total_pending = app_ctx
-                            .hash_service
-                            .as_ref()
-                            .map_or(0, |hs| hs.count_hash_queue() + active);
+                        let active = app_ctx.hash_service.count_active_hashes();
+                        let total_pending = app_ctx.hash_service.count_hash_queue() + active;
                         let waiting = total_pending.saturating_sub(active);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
                             "ZHashDiff - {} files/folders ({} active, {} queued)",

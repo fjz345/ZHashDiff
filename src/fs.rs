@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -32,3 +32,19 @@ impl Default for DirCache {
         }
     }
 }
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct FileSystem {
+    pub root: PathBuf,
+
+    #[serde(skip)]
+    pub expanded: HashMap<PathBuf, bool>,
+    #[serde(skip)]
+    pub selected: HashMap<PathBuf, bool>,
+
+    pub cache_enabled: bool,
+    #[serde(skip)]
+    pub root_dir_cache: HashMap<PathBuf, Arc<DirCache>>,
+}
+
+impl FileSystem {}
