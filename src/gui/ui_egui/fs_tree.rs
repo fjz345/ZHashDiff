@@ -28,10 +28,13 @@ pub fn draw_ui_folder_tree_with_checkbox(
     );
     let row_count = visible_rows.len();
 
+    let available_height = ui.available_height();
+
     let response = egui::Frame::new()
         .fill(egui::Color32::from_gray(20))
         .inner_margin(0.0)
         .show(ui, |ui| {
+            ui.set_min_height(available_height);
             let row_height = ui.text_style_height(&egui::TextStyle::Body);
             let row_height_header = ui.text_style_height(&egui::TextStyle::Heading);
 

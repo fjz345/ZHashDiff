@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
+    str::FromStr,
     sync::{Arc, Mutex},
 };
 
@@ -152,84 +153,114 @@ impl PathDiffPane {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut PathDiffPaneCtx) -> egui_tiles::UiResponse {
-        ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Open Folder 1").clicked() {
-                    self.open_dir_window_1 = true;
-                }
-                if ui.button("Open Folder 2").clicked() {
-                    self.open_dir_window_2 = true;
-                }
+        // Expand / Collapse buttons at the top
+        ui.horizontal(|ui| {
+            let is_anything_expanded_1 = !ctx.expanded_1.is_empty();
+            let is_anything_expanded_2 = !ctx.expanded_2.is_empty();
+            let is_anything_expanded = is_anything_expanded_1 || is_anything_expanded_2;
+            let button_text = if is_anything_expanded {
+                "Collapse All"
+            } else {
+                "Expand All"
+            };
 
-                let is_anything_expanded_1 = !ctx.expanded_1.is_empty();
-                let is_anything_expanded_2 = !ctx.expanded_2.is_empty();
-                let button_text = if is_anything_expanded_1 || is_anything_expanded_2 {
-                    "Collapse All"
+            if ui.button(button_text).clicked() {
+                if is_anything_expanded {
+                    ctx.expanded_1.clear();
+                    ctx.expanded_2.clear();
                 } else {
-                    "Expand All"
-                };
-
-                if ui.button(button_text).clicked() {
-                    if is_anything_expanded_1 {
-                        ctx.expanded_1.clear();
-                    } else {
-                        recursive_expand(ctx.expanded_1, &ctx.file_system_1.root);
-                    }
-                    if is_anything_expanded_2 {
-                        ctx.expanded_2.clear();
-                    } else {
-                        recursive_expand(ctx.expanded_2, &ctx.file_system_2.root);
-                    }
+                    recursive_expand(ctx.expanded_1, &ctx.file_system_1.root);
+                    recursive_expand(ctx.expanded_2, &ctx.file_system_2.root);
                 }
-            });
+            }
         });
 
         ui.separator();
 
+        // Horizontal split for left/right folder trees
         StripBuilder::new(ui)
-            .size(Size::relative(0.5)) // left pane: 50% width
-            .size(Size::remainder()) // right pane: remaining width
+            .size(Size::relative(0.5)) // left pane 50%
+            .size(Size::remainder()) // right pane remaining
             .horizontal(|mut strips| {
-                // horizontal split: vertical strips
+                // LEFT PANE
                 strips.cell(|ui_left| {
-                    ScrollArea::vertical()
-                        .id_source(&ctx.file_system_1.root)
-                        .show(ui_left, |ui| {
-                            if ctx.file_system_1.root.is_dir() {
-                                draw_ui_folder_tree_with_checkbox(
-                                    ui,
-                                    &ctx.file_system_1.root.clone(),
-                                    &mut ctx.expanded_1,
-                                    &mut ctx.selected_1,
-                                    &mut ctx.file_system_1,
-                                    &mut ctx.hash_service,
-                                );
-                            } else {
-                                ui.label("No root dir set...");
+                    ui_left.vertical(|ui_left| {
+                        ui_left.horizontal(|ui_left| {
+                            // Open folder button for left pane
+                            if ui_left.button("Open Folder 1").clicked() {
+                                self.open_dir_window_1 = true;
+                            }
+
+                            let mut text_edit_string =
+                                ctx.file_system_1.root.to_string_lossy().to_string();
+                            if ui_left
+                                .text_edit_singleline(&mut text_edit_string)
+                                .changed()
+                            {
+                                ctx.file_system_1.root = PathBuf::from(text_edit_string);
                             }
                         });
+
+                        // Table scroll area
+                        ScrollArea::vertical()
+                            .id_salt(&ctx.file_system_1.root)
+                            .show(ui_left, |ui| {
+                                if ctx.file_system_1.root.is_dir() {
+                                    draw_ui_folder_tree_with_checkbox(
+                                        ui,
+                                        &ctx.file_system_1.root.clone(),
+                                        &mut ctx.expanded_1,
+                                        &mut ctx.selected_1,
+                                        &mut ctx.file_system_1,
+                                        &mut ctx.hash_service,
+                                    );
+                                } else {
+                                    ui.label("No root dir set...");
+                                }
+                            });
+                    });
                 });
 
+                // RIGHT PANE
                 strips.cell(|ui_right| {
-                    ScrollArea::vertical()
-                        .id_source(&ctx.file_system_2.root)
-                        .show(ui_right, |ui| {
-                            if ctx.file_system_2.root.is_dir() {
-                                draw_ui_folder_tree_with_checkbox(
-                                    ui,
-                                    &ctx.file_system_2.root.clone(),
-                                    &mut ctx.expanded_2,
-                                    &mut ctx.selected_2,
-                                    &mut ctx.file_system_2,
-                                    &mut ctx.hash_service,
-                                );
-                            } else {
-                                ui.label("No root dir set...");
+                    ui_right.vertical(|ui_right| {
+                        ui_right.horizontal(|ui_right| {
+                            if ui_right.button("Open Folder 2").clicked() {
+                                self.open_dir_window_2 = true;
+                            }
+
+                            let mut text_edit_string =
+                                ctx.file_system_2.root.to_string_lossy().to_string();
+                            if ui_right
+                                .text_edit_singleline(&mut text_edit_string)
+                                .changed()
+                            {
+                                ctx.file_system_2.root = PathBuf::from(text_edit_string);
                             }
                         });
+
+                        // Table scroll area
+                        ScrollArea::vertical()
+                            .id_salt(&ctx.file_system_2.root)
+                            .show(ui_right, |ui| {
+                                if ctx.file_system_2.root.is_dir() {
+                                    draw_ui_folder_tree_with_checkbox(
+                                        ui,
+                                        &ctx.file_system_2.root.clone(),
+                                        &mut ctx.expanded_2,
+                                        &mut ctx.selected_2,
+                                        &mut ctx.file_system_2,
+                                        &mut ctx.hash_service,
+                                    );
+                                } else {
+                                    ui.label("No root dir set...");
+                                }
+                            });
+                    });
                 });
             });
 
+        // Handle folder dialogs
         if self.open_dir_window_1 {
             self.open_dir_window_1 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {

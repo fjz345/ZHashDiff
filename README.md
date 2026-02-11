@@ -1,6 +1,7 @@
 # ZHashDiff
 
 ![alt text](img/showcase.png)
+![alt text](img/showcase2.png)
 
 I need to resolve and delete duplicated files with different file names.
 
