@@ -1,8 +1,14 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
-use eframe::egui;
+use eframe::{
+    egui::{self},
+    epaint::tessellator::Path,
+};
 use egui_extras::{Column, TableBuilder};
-use zhashdiff::fs::FsEntry;
+use zhashdiff::{
+    fs::{FileSystem, FsEntry, FsPath},
+    hash::HashService,
+};
 
 use crate::ui_egui::{
     common::{CheckboxSelectState, hash_to_color, ui_custom_checkbox},
@@ -11,10 +17,21 @@ use crate::ui_egui::{
 
 pub fn draw_ui_folder_tree_with_checkbox(
     ui: &mut egui::Ui,
-    ctx: &mut DuplicateFilesPaneCtx,
+    root: &PathBuf,
+    expanded: &mut HashMap<PathBuf, bool>,
+    selected: &mut HashMap<PathBuf, bool>,
+    file_system: &mut FileSystem,
+    hash_service: &mut HashService,
 ) -> egui::response::Response {
     let mut visible_rows = Vec::new();
-    build_visible_rows(ctx, &ctx.file_system.root.clone(), 0, &mut visible_rows);
+    build_expanded_rows(
+        expanded,
+        file_system,
+        hash_service,
+        root,
+        0,
+        &mut visible_rows,
+    );
     let row_count = visible_rows.len();
     let available_width = ui.available_width();
 
@@ -36,6 +53,7 @@ pub fn draw_ui_folder_tree_with_checkbox(
             let min_hash_width = galley.size().x + 20.0;
 
             TableBuilder::new(ui)
+                .id_salt(root)
                 .striped(true)
                 .resizable(true)
                 .auto_shrink([false, true])
@@ -50,10 +68,14 @@ pub fn draw_ui_folder_tree_with_checkbox(
                     header.col(|ui| {
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             ui.centered_and_justified(|ui| {
-                                let state =
-                                    get_folder_selection_state(ctx, &ctx.file_system.root.clone());
-                                let root_path = ctx.file_system.root.clone();
-                                folder_state_ui_custom_checkbox(ui, ctx, state, &root_path);
+                                let state = get_folder_selection_state(&root, selected);
+                                folder_state_ui_custom_checkbox(
+                                    ui,
+                                    file_system,
+                                    selected,
+                                    state,
+                                    &root,
+                                );
                             });
                         });
                     });
@@ -71,7 +93,15 @@ pub fn draw_ui_folder_tree_with_checkbox(
                 .body(|body| {
                     body.rows(row_height, row_count, |mut row| {
                         let entry = &visible_rows[row.index()];
-                        render_row(ctx, &mut row, entry, row_height);
+                        render_row(
+                            hash_service,
+                            file_system,
+                            expanded,
+                            selected,
+                            &mut row,
+                            entry,
+                            row_height,
+                        );
                     });
                 });
         });
@@ -85,15 +115,15 @@ struct VisibleRow {
     depth: usize,
 }
 
-fn build_visible_rows(
-    ctx: &mut DuplicateFilesPaneCtx,
+fn build_expanded_rows(
+    expanded: &mut HashMap<PathBuf, bool>,
+    file_system: &mut FileSystem,
+    hash_service: &mut HashService,
     current_path: &PathBuf,
     depth: usize,
     out: &mut Vec<VisibleRow>,
 ) {
-    let fs_path = ctx.file_system.get(current_path);
-
-    let has_files_deep = fs_path.has_files_deep;
+    let fs_path = file_system.get(current_path);
 
     for entry in &fs_path.entries {
         let (path, is_dir) = match entry {
@@ -106,14 +136,17 @@ fn build_visible_rows(
             is_dir,
             depth,
         });
-        if is_dir && ctx.expanded.get(&path.clone()).copied().unwrap_or(false) {
-            build_visible_rows(ctx, &path, depth + 1, out);
+        if is_dir && expanded.get(&path.clone()).copied().unwrap_or(false) {
+            build_expanded_rows(expanded, file_system, hash_service, &path, depth + 1, out);
         }
     }
 }
 
 fn render_row(
-    ctx: &mut DuplicateFilesPaneCtx,
+    hash_service: &mut HashService,
+    file_system: &mut FileSystem,
+    expanded: &mut HashMap<PathBuf, bool>,
+    selected: &mut HashMap<PathBuf, bool>,
     row: &mut egui_extras::TableRow,
     entry: &VisibleRow,
     row_height: f32,
@@ -125,15 +158,15 @@ fn render_row(
     row.col(|ui| {
         ui.centered_and_justified(|ui| {
             let state = if is_dir {
-                get_folder_selection_state(ctx, path)
+                get_folder_selection_state(path, selected)
             } else {
-                if *ctx.selected.get(path).unwrap_or(&false) {
+                if *selected.get(path).unwrap_or(&false) {
                     CheckboxSelectState::Checked
                 } else {
                     CheckboxSelectState::Unchecked
                 }
             };
-            folder_state_ui_custom_checkbox(ui, ctx, state, path);
+            folder_state_ui_custom_checkbox(ui, file_system, selected, state, path);
         });
     });
 
@@ -142,14 +175,14 @@ fn render_row(
         ui.horizontal(|ui| {
             ui.add_space((entry.depth as f32) * 16.0);
             if is_dir {
-                let is_open = ctx.expanded.get(path).copied().unwrap_or(false);
+                let is_open = expanded.get(path).copied().unwrap_or(false);
                 let openness = if is_open { 1.0 } else { 0.0 };
                 let (_rect, response) =
                     ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
                 egui::collapsing_header::paint_default_icon(ui, openness, &response);
 
                 if response.clicked() {
-                    ctx.expanded.insert(path.clone(), !is_open);
+                    expanded.insert(path.clone(), !is_open);
                 }
 
                 let label = format!(
@@ -157,7 +190,7 @@ fn render_row(
                     path.file_name().unwrap_or_default().to_string_lossy()
                 );
                 if ui.label(label).interact(egui::Sense::click()).clicked() {
-                    ctx.expanded.insert(path.clone(), !is_open);
+                    expanded.insert(path.clone(), !is_open);
                 }
             } else {
                 ui.label(path.file_name().unwrap_or_default().to_string_lossy());
@@ -168,7 +201,7 @@ fn render_row(
     // Column 3: Hash
     row.col(|ui| {
         if !is_dir {
-            let hash_state = ctx.hash_service.get(path);
+            let hash_state = hash_service.get(path);
 
             match hash_state {
                 Some(Some(hash_str)) => {
@@ -189,12 +222,12 @@ fn render_row(
                     ui.weak("hashing...");
                 }
                 None => {
-                    ctx.hash_service.request(path.clone());
+                    hash_service.request(path.clone());
                     ui.weak("pending...");
                 }
             }
         } else {
-            let snapshot = ctx.hash_service.snapshot();
+            let snapshot = hash_service.snapshot();
 
             let subtree_files: Vec<_> = snapshot
                 .hashes
@@ -224,40 +257,38 @@ fn render_row(
         }
     });
 }
-
 fn get_folder_selection_state(
-    ctx: &mut DuplicateFilesPaneCtx,
     path: &PathBuf,
+    selected: &HashMap<PathBuf, bool>,
 ) -> CheckboxSelectState {
-    let fs_path = ctx.file_system.get(path);
+    let flatten_entries = FileSystem::read_path_recursive_flatten(path);
 
     let mut has_selected = false;
     let mut has_unselected = false;
 
-    for entry in &fs_path.entries {
-        let (p, is_dir) = match entry {
-            FsEntry::File { path: p } => (p, false),
-            FsEntry::Dir { path: p } => (p, true),
+    // Check the folder itself first
+    if *selected.get(path).unwrap_or(&false) {
+        has_selected = true;
+    } else {
+        has_unselected = true;
+    }
+
+    // Check all flattened children
+    for entry in &flatten_entries.entries {
+        let p = match entry {
+            FsEntry::File { path } => path,
+            FsEntry::Dir { path } => path,
         };
 
-        let state = if is_dir {
-            get_folder_selection_state(ctx, &p)
+        let is_selected = *selected.get(p).unwrap_or(&false);
+
+        if is_selected {
+            has_selected = true;
         } else {
-            if *ctx.selected.get(p).unwrap_or(&false) {
-                CheckboxSelectState::Checked
-            } else {
-                CheckboxSelectState::Unchecked
-            }
-        };
-
-        match state {
-            CheckboxSelectState::Checked => has_selected = true,
-            CheckboxSelectState::Unchecked => has_unselected = true,
-            CheckboxSelectState::Partial => {
-                return CheckboxSelectState::Partial;
-            }
+            has_unselected = true;
         }
 
+        // Early exit if mixed
         if has_selected && has_unselected {
             return CheckboxSelectState::Partial;
         }
@@ -272,34 +303,47 @@ fn get_folder_selection_state(
 
 pub fn folder_state_ui_custom_checkbox(
     ui: &mut egui::Ui,
-    ctx: &mut DuplicateFilesPaneCtx,
+    file_system: &mut FileSystem,
+    selected: &mut HashMap<PathBuf, bool>,
     state: CheckboxSelectState,
     path: &PathBuf,
 ) {
     let response = ui_custom_checkbox(ui, state.clone());
 
     if response.clicked() {
-        let new_val = state != CheckboxSelectState::Checked;
+        let was_not_checked = state != CheckboxSelectState::Checked;
 
-        if path.is_dir() {
-            recursive_selection(ctx, path, new_val);
-        } else {
-            ctx.selected.insert(path.clone(), new_val);
-        }
+        recursive_selection(file_system, selected, path, was_not_checked);
     }
 }
 
-fn recursive_selection(ctx: &mut DuplicateFilesPaneCtx, path: &PathBuf, value: bool) {
-    let fs_path = ctx.file_system.get(path);
+fn recursive_selection(
+    file_system: &mut FileSystem,
+    selected: &mut HashMap<PathBuf, bool>,
+    path: &PathBuf,
+    value: bool,
+) {
+    let fs_path = file_system.get(path);
+    selected.insert(fs_path.root.path().clone(), value);
 
     for entry in &fs_path.entries {
         match entry {
             FsEntry::File { path: p } => {
-                ctx.selected.insert(p.clone(), value);
+                selected.insert(p.clone(), value);
             }
             FsEntry::Dir { path: p } => {
-                recursive_selection(ctx, p, value);
+                recursive_selection(file_system, selected, p, value);
             }
+        }
+    }
+}
+
+pub fn recursive_expand(expanded: &mut HashMap<PathBuf, bool>, in_path: &PathBuf) {
+    expanded.insert(in_path.clone(), true);
+    let flattened_entries = FileSystem::read_path_recursive_flatten(in_path);
+    for entry in flattened_entries.entries.iter() {
+        if let FsEntry::Dir { path } = entry {
+            expanded.insert(path.clone(), true);
         }
     }
 }

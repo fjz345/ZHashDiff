@@ -18,7 +18,7 @@ impl FsEntry {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FsPath {
     pub root: FsEntry,
     pub entries: Vec<FsEntry>,

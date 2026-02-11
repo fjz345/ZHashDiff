@@ -7,7 +7,7 @@ use std::{
 use eframe::egui::{self};
 use serde::{Deserialize, Serialize};
 use zhashdiff::{
-    fs::{FileSystem, FsEntry},
+    fs::{FileSystem, FsEntry, FsPath},
     hash::{HashService, ResolveConflictsInput, execute_resolution, find_conflicts},
 };
 
@@ -15,14 +15,60 @@ use crate::{
     logger::ui_log_window,
     ui_egui::{
         common::{CheckboxSelectState, hash_to_color},
-        fs_tree::{draw_ui_folder_tree_with_checkbox, folder_state_ui_custom_checkbox},
+        fs_tree::{
+            draw_ui_folder_tree_with_checkbox, folder_state_ui_custom_checkbox, recursive_expand,
+        },
         popup,
     },
 };
 pub struct TreeBehavior<'a> {
     pub log_buffer: Arc<Mutex<Vec<String>>>,
 
-    pub file_explorer_ctx: DuplicateFilesPaneCtx<'a>,
+    pub hash_service: &'a mut HashService,
+    pub file_system: &'a mut FileSystem,
+    pub file_system_2: &'a mut FileSystem,
+
+    // User Interaction State
+    pub expanded: &'a mut HashMap<PathBuf, bool>,
+    pub selected: &'a mut HashMap<PathBuf, bool>,
+    pub expanded_2: &'a mut HashMap<PathBuf, bool>,
+    pub selected_2: &'a mut HashMap<PathBuf, bool>,
+
+    // Diff Action State
+    pub active_conflict_hash: &'a mut Option<String>,
+    pub conflict_map: &'a mut HashMap<String, Vec<PathBuf>>,
+    pub conflict_map_resolved: &'a mut HashMap<String, PathBuf>,
+    pub diff_action_pressed: &'a mut bool,
+}
+
+impl TreeBehavior<'_> {
+    pub fn create_path_diff_ctx(&mut self) -> PathDiffPaneCtx {
+        PathDiffPaneCtx {
+            hash_service: &mut self.hash_service,
+
+            file_system_1: &mut self.file_system,
+            file_system_2: &mut self.file_system_2,
+            expanded_1: &mut self.expanded,
+            selected_1: &mut self.selected,
+            expanded_2: &mut self.expanded_2,
+            selected_2: &mut self.selected_2,
+        }
+    }
+
+    pub fn create_duplicate_files_ctx(&mut self) -> DuplicateFilesPaneCtx {
+        DuplicateFilesPaneCtx {
+            hash_service: &mut self.hash_service,
+            file_system: &mut self.file_system,
+
+            expanded: &mut self.expanded,
+            selected: &mut self.selected,
+
+            active_conflict_hash: &mut self.active_conflict_hash,
+            conflict_map: &mut self.conflict_map,
+            conflict_map_resolved: &mut self.conflict_map_resolved,
+            diff_action_pressed: &mut self.diff_action_pressed,
+        }
+    }
 }
 
 impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
@@ -42,17 +88,13 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
                 egui_tiles::UiResponse::from(response)
             }
             Pane::DuplicateFiles(pane) => {
-                let mut ctx = DuplicateFilesPaneCtx {
-                    hash_service: self.file_explorer_ctx.hash_service,
-                    file_system: self.file_explorer_ctx.file_system,
-                    expanded: self.file_explorer_ctx.expanded,
-                    selected: self.file_explorer_ctx.selected,
-                    active_conflict_hash: self.file_explorer_ctx.active_conflict_hash,
-                    conflict_map: self.file_explorer_ctx.conflict_map,
-                    conflict_map_resolved: self.file_explorer_ctx.conflict_map_resolved,
-                    diff_action_pressed: self.file_explorer_ctx.diff_action_pressed,
-                };
+                let mut ctx = self.create_duplicate_files_ctx();
                 let response = pane.ui(ui, &mut ctx);
+                egui_tiles::UiResponse::from(response)
+            }
+            Pane::PathDiff(path_diff_pane) => {
+                let mut ctx = self.create_path_diff_ctx();
+                let response = path_diff_pane.ui(ui, &mut ctx);
                 egui_tiles::UiResponse::from(response)
             }
         }
@@ -63,6 +105,7 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
 pub enum Pane {
     Log(LogPane),
     DuplicateFiles(DuplicateFilesPane),
+    PathDiff(PathDiffPane),
 }
 
 impl Pane {
@@ -70,6 +113,7 @@ impl Pane {
         match self {
             Pane::Log(pane) => pane.title().into(),
             Pane::DuplicateFiles(p) => p.title(),
+            Pane::PathDiff(p) => p.title(),
         }
     }
 }
@@ -77,6 +121,125 @@ impl Pane {
 pub trait ZAppPane {
     fn title(&self) -> String {
         "Pane".to_string()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PathDiffPane {
+    pub title: Option<String>,
+
+    #[serde(skip)]
+    pub open_dir_window_1: bool,
+
+    #[serde(skip)]
+    pub open_dir_window_2: bool,
+}
+
+impl ZAppPane for PathDiffPane {
+    fn title(&self) -> String {
+        self.title.clone().unwrap_or(format!("Pane"))
+    }
+}
+
+impl PathDiffPane {
+    pub fn new(title: Option<String>) -> Self {
+        Self {
+            title,
+            open_dir_window_1: false,
+            open_dir_window_2: false,
+        }
+    }
+
+    pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut PathDiffPaneCtx) -> egui_tiles::UiResponse {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Open Folder 1").clicked() {
+                    self.open_dir_window_1 = true;
+                }
+                if ui.button("Open Folder 2").clicked() {
+                    self.open_dir_window_2 = true;
+                }
+
+                let is_anything_expanded_1 = !ctx.expanded_1.is_empty();
+                let is_anything_expanded_2 = !ctx.expanded_2.is_empty();
+                let button_text = if is_anything_expanded_1 || is_anything_expanded_2 {
+                    "Collapse All"
+                } else {
+                    "Expand All"
+                };
+
+                if ui.button(button_text).clicked() {
+                    if is_anything_expanded_1 {
+                        ctx.expanded_1.clear();
+                    } else {
+                        recursive_expand(ctx.expanded_1, &ctx.file_system_1.root);
+                    }
+                    if is_anything_expanded_2 {
+                        ctx.expanded_2.clear();
+                    } else {
+                        recursive_expand(ctx.expanded_2, &ctx.file_system_2.root);
+                    }
+                }
+            });
+        });
+
+        ui.separator();
+
+        egui::ScrollArea::vertical()
+            .max_height(500.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.push_id(ctx.file_system_1.root.clone(), |ui| {
+                        if ctx.file_system_1.root.is_dir() {
+                            draw_ui_folder_tree_with_checkbox(
+                                ui,
+                                &ctx.file_system_1.root.clone(),
+                                ctx.expanded_1,
+                                ctx.selected_1,
+                                ctx.file_system_1,
+                                ctx.hash_service,
+                            );
+                        } else {
+                            ui.label("No root dir set...");
+                        }
+                    });
+
+                    ui.push_id(ctx.file_system_1.root.clone(), |ui| {
+                        if ctx.file_system_2.root.is_dir() {
+                            draw_ui_folder_tree_with_checkbox(
+                                ui,
+                                &ctx.file_system_2.root.clone(),
+                                ctx.expanded_2,
+                                ctx.selected_2,
+                                ctx.file_system_2,
+                                ctx.hash_service,
+                            );
+                        } else {
+                            ui.label("No root dir set...");
+                        }
+                    });
+                })
+            });
+
+        if self.open_dir_window_1 {
+            self.open_dir_window_1 = false;
+            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                // ctx.file_system.root_dir_cache.clear();
+                FileSystem::read_path_recursive_flatten(&path);
+                ctx.file_system_1.root = path;
+            }
+        }
+
+        if self.open_dir_window_2 {
+            self.open_dir_window_2 = false;
+            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                // ctx.file_system.root_dir_cache.clear();
+                FileSystem::read_path_recursive_flatten(&path);
+                ctx.file_system_2.root = path;
+            }
+        }
+
+        egui_tiles::UiResponse::None
     }
 }
 
@@ -121,6 +284,18 @@ impl ZAppPane for DuplicateFilesPane {
     }
 }
 
+pub struct PathDiffPaneCtx<'a> {
+    pub hash_service: &'a mut HashService,
+    pub file_system_1: &'a mut FileSystem,
+    pub file_system_2: &'a mut FileSystem,
+
+    // User Interaction State
+    pub expanded_1: &'a mut HashMap<PathBuf, bool>,
+    pub selected_1: &'a mut HashMap<PathBuf, bool>,
+    pub expanded_2: &'a mut HashMap<PathBuf, bool>,
+    pub selected_2: &'a mut HashMap<PathBuf, bool>,
+}
+
 pub struct DuplicateFilesPaneCtx<'a> {
     pub hash_service: &'a mut HashService,
     pub file_system: &'a mut FileSystem,
@@ -142,16 +317,6 @@ impl DuplicateFilesPane {
             title,
             open_diff_popup: false,
             open_dir_window: false,
-        }
-    }
-
-    fn recursive_expand(ctx: &mut DuplicateFilesPaneCtx, path: &PathBuf) {
-        ctx.expanded.insert(path.clone(), true);
-        let path = ctx.file_system.get(path);
-        for entry in path.entries.iter() {
-            if let FsEntry::Dir { path } = entry {
-                Self::recursive_expand(ctx, path);
-            }
         }
     }
 
@@ -179,7 +344,7 @@ impl DuplicateFilesPane {
                     if is_anything_expanded {
                         ctx.expanded.clear();
                     } else {
-                        Self::recursive_expand(ctx, &ctx.file_system.root.clone());
+                        recursive_expand(ctx.expanded, &ctx.file_system.root);
                     }
                 }
 
@@ -235,7 +400,14 @@ impl DuplicateFilesPane {
             .max_height(500.0)
             .show(ui, |ui| {
                 if ctx.file_system.root.is_dir() {
-                    draw_ui_folder_tree_with_checkbox(ui, ctx);
+                    draw_ui_folder_tree_with_checkbox(
+                        ui,
+                        &ctx.file_system.root.clone(),
+                        ctx.expanded,
+                        ctx.selected,
+                        ctx.file_system,
+                        ctx.hash_service,
+                    );
                     show_diff_button = true;
                 } else {
                     ui.label("No root dir set...");
@@ -337,7 +509,8 @@ impl DuplicateFilesPane {
                                             ui.centered_and_justified(|ui| {
                                                 folder_state_ui_custom_checkbox(
                                                     ui,
-                                                    ctx,
+                                                    ctx.file_system,
+                                                    ctx.selected,
                                                     if *is_resolved {
                                                         CheckboxSelectState::Checked
                                                     } else {

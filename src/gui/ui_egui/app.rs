@@ -8,7 +8,8 @@ use std::{
 use zhashdiff::{fs::FileSystem, hash::HashService};
 
 use crate::ui_egui::panes::{
-    DuplicateFilesPane, DuplicateFilesPaneCtx, LogPane, Pane, TreeBehavior,
+    DuplicateFilesPane, DuplicateFilesPaneCtx, LogPane, Pane, PathDiffPane, PathDiffPaneCtx,
+    TreeBehavior,
 };
 use eframe::{
     CreationContext,
@@ -21,11 +22,16 @@ pub struct AppStateCtx {
     #[serde(skip)]
     pub hash_service: HashService,
     pub file_system: FileSystem,
+    pub file_system_2: FileSystem,
 
     #[serde(skip)]
     pub expanded: HashMap<PathBuf, bool>,
     #[serde(skip)]
     pub selected: HashMap<PathBuf, bool>,
+    #[serde(skip)]
+    pub expanded_2: HashMap<PathBuf, bool>,
+    #[serde(skip)]
+    pub selected_2: HashMap<PathBuf, bool>,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -118,11 +124,16 @@ impl ZApp {
             scroll_to_bottom: true,
         }));
 
+        let tile_path_diff = tiles.insert_pane(Pane::PathDiff(PathDiffPane::new(Some(
+            "Path Diff".to_string(),
+        ))));
+
         let tile_file_explorer = tiles.insert_pane(Pane::DuplicateFiles(DuplicateFilesPane::new(
-            Some("File Explorer".to_string()),
+            Some("Duplicate Files".to_string()),
         )));
 
-        let master_tile = tiles.insert_horizontal_tile(vec![tile_file_explorer]);
+        // let master_tile = tiles.insert_horizontal_tile(vec![tile_file_explorer]);
+        let master_tile = tiles.insert_horizontal_tile(vec![tile_path_diff]);
         tabs.push(tiles.insert_vertical_tile(vec![master_tile, tile_console]));
 
         let root = tiles.insert_tab_tile(tabs);
@@ -141,37 +152,35 @@ impl ZApp {
                 let mut diff_action_triggered = false;
                 let mut behavior = TreeBehavior {
                     log_buffer: self.log_buffer.clone(),
-                    file_explorer_ctx: DuplicateFilesPaneCtx {
-                        hash_service: &mut app_ctx.hash_service,
-                        file_system: &mut app_ctx.file_system,
-
-                        expanded: &mut app_ctx.expanded,
-                        selected: &mut app_ctx.selected,
-
-                        active_conflict_hash: &mut app_ctx.active_conflict_hash,
-                        conflict_map: &mut app_ctx.conflict_map,
-                        conflict_map_resolved: &mut app_ctx.conflict_map_resolved,
-                        diff_action_pressed: &mut diff_action_triggered,
-                    },
+                    hash_service: &mut app_ctx.hash_service,
+                    file_system: &mut app_ctx.file_system,
+                    expanded: &mut app_ctx.expanded,
+                    selected: &mut app_ctx.selected,
+                    active_conflict_hash: &mut app_ctx.active_conflict_hash,
+                    conflict_map: &mut app_ctx.conflict_map,
+                    conflict_map_resolved: &mut app_ctx.conflict_map_resolved,
+                    diff_action_pressed: &mut diff_action_triggered,
+                    file_system_2: &mut app_ctx.file_system_2,
+                    expanded_2: &mut app_ctx.expanded_2,
+                    selected_2: &mut app_ctx.selected_2,
                 };
 
                 self.tree.ui(&mut behavior, ui);
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
-                        let count_files = behavior
-                            .file_explorer_ctx
-                            .file_system
-                            .count_files(&behavior.file_explorer_ctx.file_system.root);
+                        let out_ctx = behavior.create_duplicate_files_ctx();
+                        let count_files =
+                            out_ctx.file_system.count_files(&out_ctx.file_system.root);
 
-                        let count = if behavior.file_explorer_ctx.file_system.root.is_dir() {
+                        let count = if out_ctx.file_system.root.is_dir() {
                             count_files - 1
                         } else {
                             count_files
                         };
 
-                        let active = app_ctx.hash_service.count_active_hashes();
-                        let total_pending = app_ctx.hash_service.count_hash_queue() + active;
+                        let active = out_ctx.hash_service.count_active_hashes();
+                        let total_pending = out_ctx.hash_service.count_hash_queue() + active;
                         let waiting = total_pending.saturating_sub(active);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
                             "ZHashDiff - {} files/folders ({} active, {} queued)",
