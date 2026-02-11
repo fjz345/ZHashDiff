@@ -22,7 +22,7 @@ use crate::{
 pub struct TreeBehavior<'a> {
     pub log_buffer: Arc<Mutex<Vec<String>>>,
 
-    pub file_explorer_ctx: FileExplorerPaneCtx<'a>,
+    pub file_explorer_ctx: DuplicateFilesPaneCtx<'a>,
 }
 
 impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
@@ -41,8 +41,8 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
                 let response = pane.ui(ui, &mut self.log_buffer);
                 egui_tiles::UiResponse::from(response)
             }
-            Pane::FileExplorer(pane) => {
-                let mut ctx = FileExplorerPaneCtx {
+            Pane::DuplicateFiles(pane) => {
+                let mut ctx = DuplicateFilesPaneCtx {
                     hash_service: self.file_explorer_ctx.hash_service,
                     file_system: self.file_explorer_ctx.file_system,
                     expanded: self.file_explorer_ctx.expanded,
@@ -62,14 +62,14 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
 #[derive(Serialize, Deserialize)]
 pub enum Pane {
     Log(LogPane),
-    FileExplorer(DuplicateFilesPane),
+    DuplicateFiles(DuplicateFilesPane),
 }
 
 impl Pane {
     pub fn title(&self) -> String {
         match self {
             Pane::Log(pane) => pane.title().into(),
-            Pane::FileExplorer(p) => p.title(),
+            Pane::DuplicateFiles(p) => p.title(),
         }
     }
 }
@@ -121,7 +121,7 @@ impl ZAppPane for DuplicateFilesPane {
     }
 }
 
-pub struct FileExplorerPaneCtx<'a> {
+pub struct DuplicateFilesPaneCtx<'a> {
     pub hash_service: &'a mut HashService,
     pub file_system: &'a mut FileSystem,
 
@@ -145,7 +145,7 @@ impl DuplicateFilesPane {
         }
     }
 
-    fn recursive_expand(ctx: &mut FileExplorerPaneCtx, path: &PathBuf) {
+    fn recursive_expand(ctx: &mut DuplicateFilesPaneCtx, path: &PathBuf) {
         ctx.expanded.insert(path.clone(), true);
         let path = ctx.file_system.get(path);
         for entry in path.entries.iter() {
@@ -158,7 +158,7 @@ impl DuplicateFilesPane {
     pub fn ui(
         &mut self,
         ui: &mut egui::Ui,
-        ctx: &mut FileExplorerPaneCtx,
+        ctx: &mut DuplicateFilesPaneCtx,
     ) -> egui_tiles::UiResponse {
         ui.vertical(|ui| {
             self.ui_popups(ui, ctx);
@@ -267,7 +267,7 @@ impl DuplicateFilesPane {
         egui_tiles::UiResponse::None
     }
 
-    fn ui_popups(&mut self, ui: &mut egui::Ui, ctx: &mut FileExplorerPaneCtx) {
+    fn ui_popups(&mut self, ui: &mut egui::Ui, ctx: &mut DuplicateFilesPaneCtx) {
         if self.open_diff_popup {
             let mut temp_show_diff_popup: bool = self.open_diff_popup;
             let mut did_resolve = false;
@@ -425,7 +425,7 @@ impl DuplicateFilesPane {
         self.ui_conflict_details(ui, ctx);
     }
 
-    fn ui_conflict_details(&mut self, ui: &mut egui::Ui, ctx: &mut FileExplorerPaneCtx) {
+    fn ui_conflict_details(&mut self, ui: &mut egui::Ui, ctx: &mut DuplicateFilesPaneCtx) {
         if let Some(selected_hash) = ctx.active_conflict_hash.clone() {
             let mut is_open = true;
             let mut temp_is_open = is_open;

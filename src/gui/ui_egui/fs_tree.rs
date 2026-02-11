@@ -6,12 +6,12 @@ use zhashdiff::fs::FsEntry;
 
 use crate::ui_egui::{
     common::{CheckboxSelectState, hash_to_color, ui_custom_checkbox},
-    panes::FileExplorerPaneCtx,
+    panes::DuplicateFilesPaneCtx,
 };
 
 pub fn draw_ui_folder_tree_with_checkbox(
     ui: &mut egui::Ui,
-    ctx: &mut FileExplorerPaneCtx,
+    ctx: &mut DuplicateFilesPaneCtx,
 ) -> egui::response::Response {
     let mut visible_rows = Vec::new();
     build_visible_rows(ctx, &ctx.file_system.root.clone(), 0, &mut visible_rows);
@@ -86,7 +86,7 @@ struct VisibleRow {
 }
 
 fn build_visible_rows(
-    ctx: &mut FileExplorerPaneCtx,
+    ctx: &mut DuplicateFilesPaneCtx,
     current_path: &PathBuf,
     depth: usize,
     out: &mut Vec<VisibleRow>,
@@ -113,7 +113,7 @@ fn build_visible_rows(
 }
 
 fn render_row(
-    ctx: &mut FileExplorerPaneCtx,
+    ctx: &mut DuplicateFilesPaneCtx,
     row: &mut egui_extras::TableRow,
     entry: &VisibleRow,
     row_height: f32,
@@ -226,7 +226,7 @@ fn render_row(
 }
 
 fn get_folder_selection_state(
-    ctx: &mut FileExplorerPaneCtx,
+    ctx: &mut DuplicateFilesPaneCtx,
     path: &PathBuf,
 ) -> CheckboxSelectState {
     let fs_path = ctx.file_system.get(path);
@@ -272,7 +272,7 @@ fn get_folder_selection_state(
 
 pub fn folder_state_ui_custom_checkbox(
     ui: &mut egui::Ui,
-    ctx: &mut FileExplorerPaneCtx,
+    ctx: &mut DuplicateFilesPaneCtx,
     state: CheckboxSelectState,
     path: &PathBuf,
 ) {
@@ -289,7 +289,7 @@ pub fn folder_state_ui_custom_checkbox(
     }
 }
 
-fn recursive_selection(ctx: &mut FileExplorerPaneCtx, path: &PathBuf, value: bool) {
+fn recursive_selection(ctx: &mut DuplicateFilesPaneCtx, path: &PathBuf, value: bool) {
     let fs_path = ctx.file_system.get(path);
 
     for entry in &fs_path.entries {

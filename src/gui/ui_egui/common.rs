@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use eframe::egui;
 use zhashdiff::fs::FsEntry;
 
-use crate::ui_egui::panes::FileExplorerPaneCtx;
+use crate::ui_egui::panes::DuplicateFilesPaneCtx;
 
 pub fn hash_to_color(hash: &str) -> egui::Color32 {
     use std::collections::hash_map::DefaultHasher;

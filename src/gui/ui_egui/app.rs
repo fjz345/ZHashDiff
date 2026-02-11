@@ -7,7 +7,9 @@ use std::{
 };
 use zhashdiff::{fs::FileSystem, hash::HashService};
 
-use crate::ui_egui::panes::{DuplicateFilesPane, FileExplorerPaneCtx, LogPane, Pane, TreeBehavior};
+use crate::ui_egui::panes::{
+    DuplicateFilesPane, DuplicateFilesPaneCtx, LogPane, Pane, TreeBehavior,
+};
 use eframe::{
     CreationContext,
     epaint::{Pos2, Vec2},
@@ -116,7 +118,7 @@ impl ZApp {
             scroll_to_bottom: true,
         }));
 
-        let tile_file_explorer = tiles.insert_pane(Pane::FileExplorer(DuplicateFilesPane::new(
+        let tile_file_explorer = tiles.insert_pane(Pane::DuplicateFiles(DuplicateFilesPane::new(
             Some("File Explorer".to_string()),
         )));
 
@@ -139,7 +141,7 @@ impl ZApp {
                 let mut diff_action_triggered = false;
                 let mut behavior = TreeBehavior {
                     log_buffer: self.log_buffer.clone(),
-                    file_explorer_ctx: FileExplorerPaneCtx {
+                    file_explorer_ctx: DuplicateFilesPaneCtx {
                         hash_service: &mut app_ctx.hash_service,
                         file_system: &mut app_ctx.file_system,
 
@@ -156,7 +158,7 @@ impl ZApp {
                 self.tree.ui(&mut behavior, ui);
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
-                    if let Tile::Pane(Pane::FileExplorer(_file_explorer)) = tile {
+                    if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
                         let count_files = behavior
                             .file_explorer_ctx
                             .file_system
