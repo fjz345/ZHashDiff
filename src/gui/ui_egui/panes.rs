@@ -4,7 +4,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use eframe::egui::{self};
+use eframe::egui::{self, ScrollArea};
+use egui_extras::{Size, StripBuilder};
 use serde::{Deserialize, Serialize};
 use zhashdiff::{
     fs::{FileSystem, FsEntry, FsPath},
@@ -185,40 +186,48 @@ impl PathDiffPane {
 
         ui.separator();
 
-        egui::ScrollArea::vertical()
-            .max_height(500.0)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.push_id(ctx.file_system_1.root.clone(), |ui| {
-                        if ctx.file_system_1.root.is_dir() {
-                            draw_ui_folder_tree_with_checkbox(
-                                ui,
-                                &ctx.file_system_1.root.clone(),
-                                ctx.expanded_1,
-                                ctx.selected_1,
-                                ctx.file_system_1,
-                                ctx.hash_service,
-                            );
-                        } else {
-                            ui.label("No root dir set...");
-                        }
-                    });
+        StripBuilder::new(ui)
+            .size(Size::relative(0.5)) // left pane: 50% width
+            .size(Size::remainder()) // right pane: remaining width
+            .horizontal(|mut strips| {
+                // horizontal split: vertical strips
+                strips.cell(|ui_left| {
+                    ScrollArea::vertical()
+                        .id_source(&ctx.file_system_1.root)
+                        .show(ui_left, |ui| {
+                            if ctx.file_system_1.root.is_dir() {
+                                draw_ui_folder_tree_with_checkbox(
+                                    ui,
+                                    &ctx.file_system_1.root.clone(),
+                                    &mut ctx.expanded_1,
+                                    &mut ctx.selected_1,
+                                    &mut ctx.file_system_1,
+                                    &mut ctx.hash_service,
+                                );
+                            } else {
+                                ui.label("No root dir set...");
+                            }
+                        });
+                });
 
-                    ui.push_id(ctx.file_system_1.root.clone(), |ui| {
-                        if ctx.file_system_2.root.is_dir() {
-                            draw_ui_folder_tree_with_checkbox(
-                                ui,
-                                &ctx.file_system_2.root.clone(),
-                                ctx.expanded_2,
-                                ctx.selected_2,
-                                ctx.file_system_2,
-                                ctx.hash_service,
-                            );
-                        } else {
-                            ui.label("No root dir set...");
-                        }
-                    });
-                })
+                strips.cell(|ui_right| {
+                    ScrollArea::vertical()
+                        .id_source(&ctx.file_system_2.root)
+                        .show(ui_right, |ui| {
+                            if ctx.file_system_2.root.is_dir() {
+                                draw_ui_folder_tree_with_checkbox(
+                                    ui,
+                                    &ctx.file_system_2.root.clone(),
+                                    &mut ctx.expanded_2,
+                                    &mut ctx.selected_2,
+                                    &mut ctx.file_system_2,
+                                    &mut ctx.hash_service,
+                                );
+                            } else {
+                                ui.label("No root dir set...");
+                            }
+                        });
+                });
             });
 
         if self.open_dir_window_1 {

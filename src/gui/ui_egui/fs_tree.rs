@@ -1,19 +1,13 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use eframe::{
-    egui::{self},
-    epaint::tessellator::Path,
-};
+use eframe::egui::{self};
 use egui_extras::{Column, TableBuilder};
 use zhashdiff::{
-    fs::{FileSystem, FsEntry, FsPath},
+    fs::{FileSystem, FsEntry},
     hash::HashService,
 };
 
-use crate::ui_egui::{
-    common::{CheckboxSelectState, hash_to_color, ui_custom_checkbox},
-    panes::DuplicateFilesPaneCtx,
-};
+use crate::ui_egui::common::{CheckboxSelectState, hash_to_color, ui_custom_checkbox};
 
 pub fn draw_ui_folder_tree_with_checkbox(
     ui: &mut egui::Ui,
@@ -33,13 +27,11 @@ pub fn draw_ui_folder_tree_with_checkbox(
         &mut visible_rows,
     );
     let row_count = visible_rows.len();
-    let available_width = ui.available_width();
 
     let response = egui::Frame::new()
         .fill(egui::Color32::from_gray(20))
         .inner_margin(0.0)
         .show(ui, |ui| {
-            ui.set_max_width(available_width);
             let row_height = ui.text_style_height(&egui::TextStyle::Body);
             let row_height_header = ui.text_style_height(&egui::TextStyle::Heading);
 
