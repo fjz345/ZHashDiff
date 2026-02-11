@@ -21,7 +21,6 @@ use egui_tiles::Tile;
 pub struct AppStateCtx {
     #[serde(skip)]
     pub hash_service: HashService,
-    #[serde(skip)]
     pub file_system: FileSystem,
 
     #[serde(skip)]
@@ -74,7 +73,8 @@ pub struct ZApp {
     monitor_size: Vec2,
     scale_factor: f32,
     native_pixel_per_point: f32,
-    state: AppState,
+    // Option > Hack to avoid cloning state when matching &mut self.state in update loop
+    state: Option<AppState>,
     tree: egui_tiles::Tree<Pane>,
     #[serde(skip)]
     log_buffer: Arc<Mutex<Vec<String>>>,
@@ -100,7 +100,7 @@ impl ZApp {
             monitor_size: monitor_size,
             scale_factor: scale_factor,
             native_pixel_per_point: native_pixel_per_point,
-            state: AppState::default(),
+            state: Some(AppState::default()),
             tree: Self::create_tree(),
             log_buffer: log_buffer,
         }
@@ -150,7 +150,7 @@ impl ZApp {
                 let mut diff_action_triggered = false;
                 let mut behavior = TreeBehavior {
                     log_buffer: self.log_buffer.clone(),
-                    file_explorerer_ctx: FileExplorerPaneCtx {
+                    file_explorer_ctx: FileExplorerPaneCtx {
                         hash_service: &mut app_ctx.hash_service,
                         file_system: &mut app_ctx.file_system,
 
@@ -168,19 +168,10 @@ impl ZApp {
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::FileExplorer(_file_explorer)) = tile {
-                        let count = if behavior.file_explorerer_ctx.file_system.root.is_dir() {
-                            behavior
-                                .file_explorerer_ctx
-                                .file_system
-                                .root_dir_cache
-                                .len()
-                                - 1
+                        let count = if behavior.file_explorer_ctx.file_system.root.is_dir() {
+                            behavior.file_explorer_ctx.file_system.root_dir_cache.len() - 1
                         } else {
-                            behavior
-                                .file_explorerer_ctx
-                                .file_system
-                                .root_dir_cache
-                                .len()
+                            behavior.file_explorer_ctx.file_system.root_dir_cache.len()
                         };
 
                         let active = app_ctx.hash_service.count_active_hashes();
@@ -199,8 +190,11 @@ impl ZApp {
     }
 
     fn request_shutdown(&mut self) {
-        let state = std::mem::take(&mut self.state);
-        self.state = AppState::Exit(state.into_ctx());
+        let state = self
+            .state
+            .take()
+            .expect("state was invalid during shutdown");
+        self.state = Some(AppState::Exit(state.into_ctx()));
     }
 
     fn process_ctx_inputs(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -245,8 +239,10 @@ impl eframe::App for ZApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        let mut app_state = std::mem::take(&mut self.state);
-
+        let mut app_state = self
+            .state
+            .take()
+            .expect("state should be valid before and after update()");
         app_state = match app_state {
             AppState::Startup(state_ctx) => {
                 self.startup(ctx, frame);
@@ -276,6 +272,6 @@ impl eframe::App for ZApp {
                 AppState::Exit(state)
             }
         };
-        self.state = app_state;
+        self.state = Some(app_state);
     }
 }

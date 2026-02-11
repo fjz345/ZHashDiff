@@ -16,7 +16,7 @@ use crate::{logger::ui_log_window, ui_egui::popup};
 pub struct TreeBehavior<'a> {
     pub log_buffer: Arc<Mutex<Vec<String>>>,
 
-    pub file_explorerer_ctx: FileExplorerPaneCtx<'a>,
+    pub file_explorer_ctx: FileExplorerPaneCtx<'a>,
 }
 
 impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
@@ -37,14 +37,14 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
             }
             Pane::FileExplorer(pane) => {
                 let mut ctx = FileExplorerPaneCtx {
-                    hash_service: self.file_explorerer_ctx.hash_service,
-                    file_system: self.file_explorerer_ctx.file_system,
-                    expanded: self.file_explorerer_ctx.expanded,
-                    selected: self.file_explorerer_ctx.selected,
-                    active_conflict_hash: self.file_explorerer_ctx.active_conflict_hash,
-                    conflict_map: self.file_explorerer_ctx.conflict_map,
-                    conflict_map_resolved: self.file_explorerer_ctx.conflict_map_resolved,
-                    diff_action_pressed: self.file_explorerer_ctx.diff_action_pressed,
+                    hash_service: self.file_explorer_ctx.hash_service,
+                    file_system: self.file_explorer_ctx.file_system,
+                    expanded: self.file_explorer_ctx.expanded,
+                    selected: self.file_explorer_ctx.selected,
+                    active_conflict_hash: self.file_explorer_ctx.active_conflict_hash,
+                    conflict_map: self.file_explorer_ctx.conflict_map,
+                    conflict_map_resolved: self.file_explorer_ctx.conflict_map_resolved,
+                    diff_action_pressed: self.file_explorer_ctx.diff_action_pressed,
                 };
                 let response = pane.ui(ui, &mut ctx);
                 egui_tiles::UiResponse::from(response)
@@ -133,14 +133,14 @@ pub struct FileExplorerPaneCtx<'a> {
     pub hash_service: &'a mut HashService,
     pub file_system: &'a mut FileSystem,
 
+    // User Interaction State
     pub expanded: &'a mut HashMap<PathBuf, bool>,
     pub selected: &'a mut HashMap<PathBuf, bool>,
 
+    // Diff Action State
     pub active_conflict_hash: &'a mut Option<String>,
-
     pub conflict_map: &'a mut HashMap<String, Vec<PathBuf>>,
     pub conflict_map_resolved: &'a mut HashMap<String, PathBuf>,
-
     pub diff_action_pressed: &'a mut bool,
 }
 
@@ -243,6 +243,14 @@ impl FileExplorerPane {
             .show(ui, |ui| {
                 if ctx.file_system.root.is_dir() {
                     self.draw_ui_folder_tree_with_checkbox(ui, ctx);
+
+                    if ui.button("Diff").clicked() {
+                        log::info!("Selected files for diff");
+                        let snapshot = ctx.hash_service.snapshot();
+                        *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.selected);
+                        *ctx.diff_action_pressed = true;
+                        self.open_diff_popup = true;
+                    }
                 } else {
                     ui.label("No root dir set...");
                     if ui.button("Open Folder").clicked() {
@@ -250,14 +258,6 @@ impl FileExplorerPane {
                     }
                 }
             });
-
-        if ui.button("Diff").clicked() {
-            log::info!("Selected files for diff");
-            let snapshot = ctx.hash_service.snapshot();
-            *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.selected);
-            *ctx.diff_action_pressed = true;
-            self.open_diff_popup = true;
-        }
 
         if self.open_dir_window {
             self.open_dir_window = false;

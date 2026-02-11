@@ -78,6 +78,7 @@ impl HashService {
 
             loop {
                 if thread_stop_flag.load(Ordering::SeqCst) {
+                    log::info!("Worker {id} stop signal");
                     break;
                 }
 
@@ -97,7 +98,10 @@ impl HashService {
                         thread::sleep(Duration::from_millis(50));
                         continue;
                     }
-                    Err(TryRecvError::Disconnected) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        log::info!("Worker {id} channel disconnected");
+                        break;
+                    }
                 }
             }
 
