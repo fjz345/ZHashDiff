@@ -126,7 +126,6 @@ struct VisibleRow {
     path: PathBuf,
     is_dir: bool,
     depth: usize,
-    parent_has_files: bool,
 }
 
 pub struct FileExplorerPaneCtx<'a> {
@@ -243,12 +242,14 @@ impl FileExplorerPane {
                 }
             });
 
-        if show_diff_button && ui.button("Diff").clicked() {
-            log::info!("Selected files for diff");
-            let snapshot = ctx.hash_service.snapshot();
-            *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.selected);
-            *ctx.diff_action_pressed = true;
-            self.open_diff_popup = true;
+        if show_diff_button {
+            if ui.button("Diff").clicked() {
+                log::info!("Selected files for diff");
+                let snapshot = ctx.hash_service.snapshot();
+                *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.selected);
+                *ctx.diff_action_pressed = true;
+                self.open_diff_popup = true;
+            }
         }
 
         if self.open_dir_window {
@@ -596,7 +597,6 @@ impl FileExplorerPane {
                 path: path.clone(),
                 is_dir,
                 depth,
-                parent_has_files: has_files_deep,
             });
             if is_dir && ctx.expanded.get(&path.clone()).copied().unwrap_or(false) {
                 self.build_visible_rows(ctx, &path, depth + 1, out);
@@ -617,18 +617,16 @@ impl FileExplorerPane {
         // Column 1: Checkbox
         row.col(|ui| {
             ui.centered_and_justified(|ui| {
-                if entry.parent_has_files {
-                    let state = if is_dir {
-                        self.get_folder_selection_state(ctx, path)
+                let state = if is_dir {
+                    self.get_folder_selection_state(ctx, path)
+                } else {
+                    if *ctx.selected.get(path).unwrap_or(&false) {
+                        FolderSelectState::All
                     } else {
-                        if *ctx.selected.get(path).unwrap_or(&false) {
-                            FolderSelectState::All
-                        } else {
-                            FolderSelectState::None
-                        }
-                    };
-                    self.ui_custom_checkbox(ui, ctx, state, path);
-                }
+                        FolderSelectState::None
+                    }
+                };
+                self.ui_custom_checkbox(ui, ctx, state, path);
             });
         });
 
