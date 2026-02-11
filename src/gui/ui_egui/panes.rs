@@ -14,10 +14,8 @@ use zhashdiff::{
 use crate::{
     logger::ui_log_window,
     ui_egui::{
-        common::hash_to_color,
-        fs_tree::{
-            FolderSelectState, draw_ui_folder_tree_with_checkbox, folder_state_ui_custom_checkbox,
-        },
+        common::{CheckboxSelectState, hash_to_color},
+        fs_tree::{draw_ui_folder_tree_with_checkbox, folder_state_ui_custom_checkbox},
         popup,
     },
 };
@@ -341,9 +339,9 @@ impl DuplicateFilesPane {
                                                     ui,
                                                     ctx,
                                                     if *is_resolved {
-                                                        FolderSelectState::All
+                                                        CheckboxSelectState::Checked
                                                     } else {
-                                                        FolderSelectState::Partial
+                                                        CheckboxSelectState::Partial
                                                     },
                                                     &PathBuf::default(),
                                                 );

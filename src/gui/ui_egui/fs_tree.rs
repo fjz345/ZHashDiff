@@ -4,7 +4,10 @@ use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use zhashdiff::fs::FsEntry;
 
-use crate::ui_egui::{common::hash_to_color, panes::FileExplorerPaneCtx};
+use crate::ui_egui::{
+    common::{CheckboxSelectState, hash_to_color, ui_custom_checkbox},
+    panes::FileExplorerPaneCtx,
+};
 
 pub fn draw_ui_folder_tree_with_checkbox(
     ui: &mut egui::Ui,
@@ -109,13 +112,6 @@ fn build_visible_rows(
     }
 }
 
-#[derive(PartialEq, Eq)]
-pub enum FolderSelectState {
-    None,
-    All,
-    Partial,
-}
-
 fn render_row(
     ctx: &mut FileExplorerPaneCtx,
     row: &mut egui_extras::TableRow,
@@ -132,9 +128,9 @@ fn render_row(
                 get_folder_selection_state(ctx, path)
             } else {
                 if *ctx.selected.get(path).unwrap_or(&false) {
-                    FolderSelectState::All
+                    CheckboxSelectState::Checked
                 } else {
-                    FolderSelectState::None
+                    CheckboxSelectState::Unchecked
                 }
             };
             folder_state_ui_custom_checkbox(ui, ctx, state, path);
@@ -229,62 +225,61 @@ fn render_row(
     });
 }
 
-pub fn folder_state_ui_custom_checkbox(
-    ui: &mut egui::Ui,
+fn get_folder_selection_state(
     ctx: &mut FileExplorerPaneCtx,
-    state: FolderSelectState,
     path: &PathBuf,
-) {
-    let icon_size = ui.spacing().icon_width;
-    let icon_rect = egui::Vec2::splat(icon_size);
+) -> CheckboxSelectState {
+    let fs_path = ctx.file_system.get(path);
 
-    let (rect, response) = ui.allocate_exact_size(ui.spacing().interact_size, egui::Sense::click());
-    let visual_rect = egui::Rect::from_center_size(rect.center(), icon_rect);
+    let mut has_selected = false;
+    let mut has_unselected = false;
 
-    if ui.is_rect_visible(visual_rect) {
-        let visuals = ui.style().interact(&response);
-        let painter = ui.painter();
-        let rounding = ui.visuals().widgets.active.corner_radius;
-
-        // Background
-        let bg_fill = if state != FolderSelectState::None {
-            visuals.bg_fill
-        } else {
-            ui.visuals().gray_out(visuals.bg_fill)
+    for entry in &fs_path.entries {
+        let (p, is_dir) = match entry {
+            FsEntry::File { path: p } => (p, false),
+            FsEntry::Dir { path: p } => (p, true),
         };
-        painter.rect_filled(visual_rect, rounding, bg_fill);
 
-        // Border
-        painter.rect_stroke(
-            visual_rect,
-            rounding,
-            visuals.bg_stroke,
-            egui::StrokeKind::Middle,
-        );
+        let state = if is_dir {
+            get_folder_selection_state(ctx, &p)
+        } else {
+            if *ctx.selected.get(p).unwrap_or(&false) {
+                CheckboxSelectState::Checked
+            } else {
+                CheckboxSelectState::Unchecked
+            }
+        };
 
-        let stroke = visuals.fg_stroke;
         match state {
-            FolderSelectState::All => {
-                let points = vec![
-                    visual_rect.center() + egui::vec2(-icon_size * 0.25, 0.0),
-                    visual_rect.center() + egui::vec2(-icon_size * 0.05, icon_size * 0.2),
-                    visual_rect.center() + egui::vec2(icon_size * 0.3, -icon_size * 0.25),
-                ];
-                painter.add(egui::Shape::line(points, stroke));
+            CheckboxSelectState::Checked => has_selected = true,
+            CheckboxSelectState::Unchecked => has_unselected = true,
+            CheckboxSelectState::Partial => {
+                return CheckboxSelectState::Partial;
             }
-            FolderSelectState::Partial => {
-                let dash_rect = egui::Rect::from_center_size(
-                    visual_rect.center(),
-                    egui::vec2(icon_size * 0.5, 2.0),
-                );
-                painter.rect_filled(dash_rect, 0.0, stroke.color);
-            }
-            FolderSelectState::None => {}
+        }
+
+        if has_selected && has_unselected {
+            return CheckboxSelectState::Partial;
         }
     }
 
+    if has_selected {
+        CheckboxSelectState::Checked
+    } else {
+        CheckboxSelectState::Unchecked
+    }
+}
+
+pub fn folder_state_ui_custom_checkbox(
+    ui: &mut egui::Ui,
+    ctx: &mut FileExplorerPaneCtx,
+    state: CheckboxSelectState,
+    path: &PathBuf,
+) {
+    let response = ui_custom_checkbox(ui, state.clone());
+
     if response.clicked() {
-        let new_val = state != FolderSelectState::All;
+        let new_val = state != CheckboxSelectState::Checked;
 
         if path.is_dir() {
             recursive_selection(ctx, path, new_val);
@@ -306,47 +301,5 @@ fn recursive_selection(ctx: &mut FileExplorerPaneCtx, path: &PathBuf, value: boo
                 recursive_selection(ctx, p, value);
             }
         }
-    }
-}
-
-fn get_folder_selection_state(ctx: &mut FileExplorerPaneCtx, path: &PathBuf) -> FolderSelectState {
-    let fs_path = ctx.file_system.get(path);
-
-    let mut has_selected = false;
-    let mut has_unselected = false;
-
-    for entry in &fs_path.entries {
-        let (p, is_dir) = match entry {
-            FsEntry::File { path: p } => (p, false),
-            FsEntry::Dir { path: p } => (p, true),
-        };
-
-        let state = if is_dir {
-            get_folder_selection_state(ctx, &p)
-        } else {
-            if *ctx.selected.get(p).unwrap_or(&false) {
-                FolderSelectState::All
-            } else {
-                FolderSelectState::None
-            }
-        };
-
-        match state {
-            FolderSelectState::All => has_selected = true,
-            FolderSelectState::None => has_unselected = true,
-            FolderSelectState::Partial => {
-                return FolderSelectState::Partial;
-            }
-        }
-
-        if has_selected && has_unselected {
-            return FolderSelectState::Partial;
-        }
-    }
-
-    if has_selected {
-        FolderSelectState::All
-    } else {
-        FolderSelectState::None
     }
 }
