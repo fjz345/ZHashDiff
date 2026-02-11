@@ -7,7 +7,10 @@ use std::{
 };
 use zhashdiff::{fs::FileSystem, hash::HashService};
 
-use crate::ui_egui::panes::{FileExplorerPane, FileExplorerPaneCtx, LogPane, Pane, TreeBehavior};
+use crate::ui_egui::{
+    app,
+    panes::{FileExplorerPane, FileExplorerPaneCtx, LogPane, Pane, TreeBehavior},
+};
 use eframe::{
     CreationContext,
     epaint::{Pos2, Vec2},
@@ -18,9 +21,13 @@ use egui_tiles::Tile;
 pub struct AppStateCtx {
     #[serde(skip)]
     pub hash_service: HashService,
-
     #[serde(skip)]
     pub file_system: FileSystem,
+
+    #[serde(skip)]
+    pub expanded: HashMap<PathBuf, bool>,
+    #[serde(skip)]
+    pub selected: HashMap<PathBuf, bool>,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -145,11 +152,11 @@ impl ZApp {
                     log_buffer: self.log_buffer.clone(),
                     file_explorerer_ctx: FileExplorerPaneCtx {
                         hash_service: &mut app_ctx.hash_service,
-                        root: &mut app_ctx.file_system.root,
-                        expanded: &mut app_ctx.file_system.expanded,
-                        selected: &mut app_ctx.file_system.selected,
-                        cache_enabled: &mut app_ctx.file_system.cache_enabled,
-                        root_dir_cache: &mut app_ctx.file_system.root_dir_cache,
+                        file_system: &mut app_ctx.file_system,
+
+                        expanded: &mut app_ctx.expanded,
+                        selected: &mut app_ctx.selected,
+
                         active_conflict_hash: &mut app_ctx.active_conflict_hash,
                         conflict_map: &mut app_ctx.conflict_map,
                         conflict_map_resolved: &mut app_ctx.conflict_map_resolved,
@@ -161,10 +168,19 @@ impl ZApp {
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::FileExplorer(_file_explorer)) = tile {
-                        let count = if behavior.file_explorerer_ctx.root.is_dir() {
-                            behavior.file_explorerer_ctx.root_dir_cache.len() - 1
+                        let count = if behavior.file_explorerer_ctx.file_system.root.is_dir() {
+                            behavior
+                                .file_explorerer_ctx
+                                .file_system
+                                .root_dir_cache
+                                .len()
+                                - 1
                         } else {
-                            behavior.file_explorerer_ctx.root_dir_cache.len()
+                            behavior
+                                .file_explorerer_ctx
+                                .file_system
+                                .root_dir_cache
+                                .len()
                         };
 
                         let active = app_ctx.hash_service.count_active_hashes();
