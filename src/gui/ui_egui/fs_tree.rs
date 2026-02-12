@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use eframe::egui::{self};
+use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
 use zhashdiff::{
     fs::{FileSystem, FsEntry},
@@ -88,7 +88,7 @@ pub fn draw_ui_folder_tree_with_checkbox(
                 .body(|body| {
                     body.rows(row_height, row_count, |mut row| {
                         let entry = &visible_rows[row.index()];
-                        render_row(
+                        render_row_folder_tree_with_checkbox(
                             hash_service,
                             file_system,
                             expanded,
@@ -104,10 +104,135 @@ pub fn draw_ui_folder_tree_with_checkbox(
     response.response
 }
 
+pub fn draw_ui_two_folder_tree_with_diff(
+    ui: &mut egui::Ui,
+    root_1: &mut PathBuf,
+    root_2: &mut PathBuf,
+    expanded: &mut HashMap<PathBuf, bool>,
+    selected: &mut HashMap<PathBuf, bool>,
+    file_system_1: &mut FileSystem,
+    file_system_2: &mut FileSystem,
+    open_dir_window_1: &mut bool,
+    open_dir_window_2: &mut bool,
+) -> egui::response::Response {
+    let mut visible_rows = Vec::new();
+    build_expanded_rows_two_folder_diff(expanded, file_system_1, root_1, 0, &mut visible_rows);
+    let row_count = visible_rows.len();
+
+    let available_height = ui.available_height();
+
+    let response = egui::Frame::new()
+        .fill(egui::Color32::from_gray(20))
+        .inner_margin(0.0)
+        .show(ui, |ui| {
+            ui.set_min_height(available_height);
+            let row_height = ui.text_style_height(&egui::TextStyle::Body);
+            let row_height_header = ui.text_style_height(&egui::TextStyle::Heading);
+
+            TableBuilder::new(ui)
+                .id_salt(root_1.clone())
+                .striped(true)
+                .resizable(true)
+                .auto_shrink([false, true])
+                .column(Column::remainder().at_least(500.0))
+                .column(Column::auto().at_least(7.0))
+                .column(Column::remainder().at_least(500.0))
+                .header(row_height_header, |mut header| {
+                    // COLUMN 0 (Folder 1)
+                    header.col(|ui| {
+                        let available = ui.available_width();
+
+                        ui.vertical(|ui| {
+                            if ui
+                                .add_sized(
+                                    [available, row_height_header],
+                                    egui::Button::new("Open Folder 1"),
+                                )
+                                .clicked()
+                            {
+                                *open_dir_window_1 = true;
+                            }
+
+                            let mut text = root_1.to_string_lossy().to_string(); // adapt to your actual root 1
+                            ui.add_sized(
+                                [available, row_height_header],
+                                egui::TextEdit::singleline(&mut text),
+                            );
+
+                            ui.spacing();
+                        });
+                    });
+
+                    // COLUMN 1 (Diff icon header)
+                    header.col(|ui| {
+                        ui.centered_and_justified(|ui| {
+                            ui.label("≠");
+                        });
+                    });
+
+                    // COLUMN 2 (Folder 2)
+                    header.col(|ui| {
+                        let available = ui.available_width();
+
+                        ui.vertical(|ui| {
+                            if ui
+                                .add_sized(
+                                    [available, row_height_header],
+                                    egui::Button::new("Open Folder 2"),
+                                )
+                                .clicked()
+                            {
+                                *open_dir_window_2 = true;
+                            }
+
+                            let mut text = root_2.to_string_lossy().to_string(); // adapt to your actual root 2
+                            ui.add_sized(
+                                [available, row_height_header],
+                                egui::TextEdit::singleline(&mut text),
+                            );
+
+                            ui.spacing();
+                        });
+                    });
+                })
+                .body(|body| {
+                    body.rows(row_height, row_count, |mut row| {
+                        let entry = &visible_rows[row.index()];
+                        render_row_folder_tree_diff_column(expanded, &mut row, entry, row_height);
+                    });
+                });
+        });
+
+    response.response
+}
+
 struct VisibleRow {
     path: PathBuf,
     is_dir: bool,
     depth: usize,
+}
+
+pub enum DiffState {
+    Different,
+    Same,
+    OnlyInFirst,
+    OnlyInSecond,
+}
+
+pub fn ui_custom_diff_state(ui: &mut egui::Ui, state: &DiffState) -> egui::response::Response {
+    match state {
+        DiffState::Same => ui.label(RichText::new("=").color(egui::Color32::GREEN)),
+        DiffState::Different => ui.label(RichText::new("≠").color(egui::Color32::RED)),
+        DiffState::OnlyInFirst => ui.label(RichText::new("←").color(egui::Color32::YELLOW)),
+        DiffState::OnlyInSecond => ui.label(RichText::new("→").color(egui::Color32::YELLOW)),
+    }
+}
+
+struct VisibleRowTwoFolderDiff {
+    path: PathBuf,
+    is_dir: bool,
+    depth: usize,
+    diff_state: DiffState,
 }
 
 fn build_expanded_rows(
@@ -137,7 +262,107 @@ fn build_expanded_rows(
     }
 }
 
-fn render_row(
+fn build_expanded_rows_two_folder_diff(
+    expanded: &mut HashMap<PathBuf, bool>,
+    file_system: &mut FileSystem,
+    current_path: &PathBuf,
+    depth: usize,
+    out: &mut Vec<VisibleRowTwoFolderDiff>,
+) {
+    let fs_path = file_system.get(current_path);
+
+    for entry in &fs_path.entries {
+        let (path, is_dir) = match entry {
+            FsEntry::Dir { path } => (path, true),
+            FsEntry::File { path } => (path, false),
+        };
+
+        out.push(VisibleRowTwoFolderDiff {
+            path: path.clone(),
+            is_dir,
+            depth,
+            diff_state: DiffState::Same,
+        });
+        if is_dir && expanded.get(&path.clone()).copied().unwrap_or(false) {
+            build_expanded_rows_two_folder_diff(expanded, file_system, &path, depth + 1, out);
+        }
+    }
+}
+
+fn render_row_folder_tree_diff_column(
+    expanded: &mut HashMap<PathBuf, bool>,
+    row: &mut egui_extras::TableRow,
+    entry: &VisibleRowTwoFolderDiff,
+    row_height: f32,
+) {
+    let path = &entry.path;
+    let is_dir = entry.is_dir;
+
+    // Column 2: Name & Expand Icon
+    row.col(|ui| {
+        ui.horizontal(|ui| {
+            ui.add_space((entry.depth as f32) * 16.0);
+            if is_dir {
+                let is_open = expanded.get(path).copied().unwrap_or(false);
+                let openness = if is_open { 1.0 } else { 0.0 };
+                let (_rect, response) =
+                    ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
+                egui::collapsing_header::paint_default_icon(ui, openness, &response);
+
+                if response.clicked() {
+                    expanded.insert(path.clone(), !is_open);
+                }
+
+                let label = format!(
+                    "📁 {}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                if ui.label(label).interact(egui::Sense::click()).clicked() {
+                    expanded.insert(path.clone(), !is_open);
+                }
+            } else {
+                ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+            }
+        });
+    });
+
+    // Column 2: Name & Expand Icon
+    row.col(|ui| {
+        ui.horizontal(|ui| {
+            ui_custom_diff_state(ui, &entry.diff_state);
+        });
+    });
+
+    // Column 2: Name & Expand Icon
+    row.col(|ui| {
+        ui.horizontal(|ui| {
+            ui.add_space((entry.depth as f32) * 16.0);
+            if is_dir {
+                let is_open = expanded.get(path).copied().unwrap_or(false);
+                let openness = if is_open { 1.0 } else { 0.0 };
+                let (_rect, response) =
+                    ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
+                egui::collapsing_header::paint_default_icon(ui, openness, &response);
+
+                if response.clicked() {
+                    expanded.insert(path.clone(), !is_open);
+                }
+
+                let label = format!(
+                    "📁 {}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                if ui.label(label).interact(egui::Sense::click()).clicked() {
+                    expanded.insert(path.clone(), !is_open);
+                }
+            } else {
+                ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+            }
+        });
+    });
+}
+
+fn render_row_folder_tree_with_checkbox(
     hash_service: &mut HashService,
     file_system: &mut FileSystem,
     expanded: &mut HashMap<PathBuf, bool>,

@@ -18,7 +18,8 @@ use crate::{
     ui_egui::{
         common::{CheckboxSelectState, hash_to_color},
         fs_tree::{
-            draw_ui_folder_tree_with_checkbox, folder_state_ui_custom_checkbox, recursive_expand,
+            draw_ui_folder_tree_with_checkbox, draw_ui_two_folder_tree_with_diff,
+            folder_state_ui_custom_checkbox, recursive_expand,
         },
         popup,
     },
@@ -177,87 +178,25 @@ impl PathDiffPane {
 
         ui.separator();
 
-        // Horizontal split for left/right folder trees
-        StripBuilder::new(ui)
-            .size(Size::relative(0.5)) // left pane 50%
-            .size(Size::remainder()) // right pane remaining
-            .horizontal(|mut strips| {
-                // LEFT PANE
-                strips.cell(|ui_left| {
-                    ui_left.vertical(|ui_left| {
-                        ui_left.horizontal(|ui_left| {
-                            // Open folder button for left pane
-                            if ui_left.button("Open Folder 1").clicked() {
-                                self.open_dir_window_1 = true;
-                            }
-
-                            let mut text_edit_string =
-                                ctx.file_system_1.root.to_string_lossy().to_string();
-                            if ui_left
-                                .text_edit_singleline(&mut text_edit_string)
-                                .changed()
-                            {
-                                ctx.file_system_1.root = PathBuf::from(text_edit_string);
-                            }
-                        });
-
-                        // Table scroll area
-                        ScrollArea::vertical()
-                            .id_salt(&ctx.file_system_1.root)
-                            .show(ui_left, |ui| {
-                                if ctx.file_system_1.root.is_dir() {
-                                    draw_ui_folder_tree_with_checkbox(
-                                        ui,
-                                        &ctx.file_system_1.root.clone(),
-                                        &mut ctx.expanded_1,
-                                        &mut ctx.selected_1,
-                                        &mut ctx.file_system_1,
-                                        &mut ctx.hash_service,
-                                    );
-                                } else {
-                                    ui.label("No root dir set...");
-                                }
-                            });
-                    });
-                });
-
-                // RIGHT PANE
-                strips.cell(|ui_right| {
-                    ui_right.vertical(|ui_right| {
-                        ui_right.horizontal(|ui_right| {
-                            if ui_right.button("Open Folder 2").clicked() {
-                                self.open_dir_window_2 = true;
-                            }
-
-                            let mut text_edit_string =
-                                ctx.file_system_2.root.to_string_lossy().to_string();
-                            if ui_right
-                                .text_edit_singleline(&mut text_edit_string)
-                                .changed()
-                            {
-                                ctx.file_system_2.root = PathBuf::from(text_edit_string);
-                            }
-                        });
-
-                        // Table scroll area
-                        ScrollArea::vertical()
-                            .id_salt(&ctx.file_system_2.root)
-                            .show(ui_right, |ui| {
-                                if ctx.file_system_2.root.is_dir() {
-                                    draw_ui_folder_tree_with_checkbox(
-                                        ui,
-                                        &ctx.file_system_2.root.clone(),
-                                        &mut ctx.expanded_2,
-                                        &mut ctx.selected_2,
-                                        &mut ctx.file_system_2,
-                                        &mut ctx.hash_service,
-                                    );
-                                } else {
-                                    ui.label("No root dir set...");
-                                }
-                            });
-                    });
-                });
+        // Table scroll area
+        ScrollArea::vertical()
+            .id_salt(&"path_diff_table")
+            .show(ui, |ui| {
+                if ctx.file_system_1.root.is_dir() {
+                    draw_ui_two_folder_tree_with_diff(
+                        ui,
+                        &mut ctx.file_system_1.root.clone(),
+                        &mut ctx.file_system_2.root.clone(),
+                        &mut ctx.expanded_1,
+                        &mut ctx.selected_1,
+                        &mut ctx.file_system_1,
+                        &mut ctx.file_system_2,
+                        &mut self.open_dir_window_1,
+                        &mut self.open_dir_window_2,
+                    );
+                } else {
+                    ui.label("No root dir set...");
+                }
             });
 
         // Handle folder dialogs
