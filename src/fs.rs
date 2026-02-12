@@ -14,6 +14,12 @@ pub enum FsEntry {
 }
 
 impl FsEntry {
+    pub fn relative_path_buf(&self, root: &PathBuf) -> PathBuf {
+        match self {
+            FsEntry::File { path } => path.strip_prefix(root).unwrap_or(path).to_path_buf(),
+            FsEntry::Dir { path } => path.strip_prefix(root).unwrap_or(path).to_path_buf(),
+        }
+    }
     pub fn path(&self) -> &Path {
         match self {
             FsEntry::File { path } => path.as_path(),

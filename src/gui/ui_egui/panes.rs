@@ -10,13 +10,13 @@ use egui_extras::{Size, StripBuilder};
 use serde::{Deserialize, Serialize};
 use zhashdiff::{
     fs::{FileSystem, FsEntry, FsPath},
-    hash::{execute_resolution, find_conflicts, HashService, ResolveConflictsInput},
+    hash::{HashService, ResolveConflictsInput, execute_resolution, find_conflicts},
 };
 
 use crate::{
     logger::ui_log_window,
     ui_egui::{
-        common::{hash_to_color, CheckboxSelectState},
+        common::{CheckboxSelectState, hash_to_color},
         fs_tree::{
             draw_ui_folder_tree_with_checkbox, draw_ui_two_folder_tree_with_diff,
             folder_state_ui_custom_checkbox, recursive_expand,
@@ -34,7 +34,6 @@ pub struct TreeBehavior<'a> {
     // User Interaction State
     pub expanded: &'a mut HashMap<PathBuf, bool>,
     pub selected: &'a mut HashMap<PathBuf, bool>,
-    pub expanded_2: &'a mut HashMap<PathBuf, bool>,
     pub selected_2: &'a mut HashMap<PathBuf, bool>,
 
     // Diff Action State
@@ -51,9 +50,8 @@ impl TreeBehavior<'_> {
 
             file_system_1: &mut self.file_system,
             file_system_2: &mut self.file_system_2,
-            expanded_1: &mut self.expanded,
+            expanded: &mut self.expanded,
             selected_1: &mut self.selected,
-            expanded_2: &mut self.expanded_2,
             selected_2: &mut self.selected_2,
         }
     }
@@ -154,11 +152,13 @@ impl PathDiffPane {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut PathDiffPaneCtx) -> egui_tiles::UiResponse {
-        // Expand / Collapse buttons at the top
         ui.horizontal(|ui| {
-            let is_anything_expanded_1 = !ctx.expanded_1.is_empty();
-            let is_anything_expanded_2 = !ctx.expanded_2.is_empty();
-            let is_anything_expanded = is_anything_expanded_1 || is_anything_expanded_2;
+            let is_anything_expanded = ctx
+                .expanded
+                .iter()
+                .filter(|(k, _)| !k.as_os_str().is_empty()) // skip root
+                .any(|(_, &v)| v);
+
             let button_text = if is_anything_expanded {
                 "Collapse All"
             } else {
@@ -167,11 +167,17 @@ impl PathDiffPane {
 
             if ui.button(button_text).clicked() {
                 if is_anything_expanded {
-                    ctx.expanded_1.clear();
-                    ctx.expanded_2.clear();
+                    // Collapse all (not root)
+                    for (key, value) in &mut ctx.expanded.iter_mut() {
+                        // "" = root (relative)
+                        if !key.as_os_str().is_empty() {
+                            *value = false;
+                        }
+                    }
                 } else {
-                    recursive_expand(ctx.expanded_1, &ctx.file_system_1.root);
-                    recursive_expand(ctx.expanded_2, &ctx.file_system_2.root);
+                    // Expand all
+                    recursive_expand(ctx.expanded, ctx.file_system_1, &ctx.file_system_1.root);
+                    recursive_expand(ctx.expanded, ctx.file_system_2, &ctx.file_system_2.root);
                 }
             }
         });
@@ -187,7 +193,7 @@ impl PathDiffPane {
                         ui,
                         &mut ctx.file_system_1.root.clone(),
                         &mut ctx.file_system_2.root.clone(),
-                        &mut ctx.expanded_1,
+                        &mut ctx.expanded,
                         &mut ctx.selected_1,
                         &mut ctx.file_system_1,
                         &mut ctx.file_system_2,
@@ -206,6 +212,7 @@ impl PathDiffPane {
                 // ctx.file_system.root_dir_cache.clear();
                 FileSystem::read_path_recursive_flatten(&path);
                 ctx.file_system_1.root = path;
+                ctx.expanded.clear();
             }
         }
 
@@ -215,6 +222,7 @@ impl PathDiffPane {
                 // ctx.file_system.root_dir_cache.clear();
                 FileSystem::read_path_recursive_flatten(&path);
                 ctx.file_system_2.root = path;
+                ctx.expanded.clear();
             }
         }
 
@@ -269,9 +277,8 @@ pub struct PathDiffPaneCtx<'a> {
     pub file_system_2: &'a mut FileSystem,
 
     // User Interaction State
-    pub expanded_1: &'a mut HashMap<PathBuf, bool>,
+    pub expanded: &'a mut HashMap<PathBuf, bool>,
     pub selected_1: &'a mut HashMap<PathBuf, bool>,
-    pub expanded_2: &'a mut HashMap<PathBuf, bool>,
     pub selected_2: &'a mut HashMap<PathBuf, bool>,
 }
 
@@ -323,7 +330,7 @@ impl DuplicateFilesPane {
                     if is_anything_expanded {
                         ctx.expanded.clear();
                     } else {
-                        recursive_expand(ctx.expanded, &ctx.file_system.root);
+                        recursive_expand(ctx.expanded, ctx.file_system, &ctx.file_system.root);
                     }
                 }
 

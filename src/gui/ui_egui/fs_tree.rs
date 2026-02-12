@@ -264,6 +264,21 @@ fn build_expanded_rows(
         }
     }
 }
+/// Check if a given path is visible based on expanded folders
+fn is_visible(expanded: &HashMap<PathBuf, bool>, path: &Path) -> bool {
+    let mut ancestor = path.parent();
+
+    while let Some(p) = ancestor {
+        if let Some(&is_expanded) = expanded.get(p) {
+            if !is_expanded {
+                return false;
+            }
+        }
+        ancestor = p.parent();
+    }
+
+    true
+}
 
 fn build_two_folder_diff_rows(
     expanded: &mut HashMap<PathBuf, bool>,
@@ -288,23 +303,36 @@ fn build_two_folder_diff_rows(
 
     // LEFT
     for (entry, depth) in &fs_path_1_flat.entries {
-        let rel = entry.path().strip_prefix(&root1).unwrap().to_path_buf();
+        let rel = entry.relative_path_buf(&root1);
+        entries_map.insert(rel.clone(), (Some((entry, *depth)), None));
 
-        entries_map.insert(rel, (Some((entry, *depth)), None));
+        // Register folders in expanded map if missing
+        if matches!(entry, FsEntry::Dir { .. }) {
+            expanded.entry(rel).or_insert(false);
+        }
     }
 
     // RIGHT
     for (entry, depth) in &fs_path_2_flat.entries {
-        let rel = entry.path().strip_prefix(&root2).unwrap().to_path_buf();
-
+        let rel = entry.relative_path_buf(&root2);
         entries_map
-            .entry(rel)
+            .entry(rel.clone())
             .and_modify(|e| e.1 = Some((entry, *depth)))
             .or_insert((None, Some((entry, *depth))));
+
+        // Register folders in expanded map if missing
+        if matches!(entry, FsEntry::Dir { .. }) {
+            expanded.entry(rel).or_insert(false);
+        }
     }
 
     // BUILD ROWS
     for (rel_path, (left, right)) in entries_map {
+        // Skip entry if any parent folder is collapsed
+        if !is_visible(expanded, &rel_path) {
+            continue;
+        }
+
         let depth = left
             .map(|(_, d)| d)
             .or_else(|| right.map(|(_, d)| d))
@@ -316,9 +344,8 @@ fn build_two_folder_diff_rows(
             .unwrap_or(false);
 
         let diff_state = match (left, right) {
-            (Some((l, l_depth)), Some((r, r_depth))) => {
+            (Some((l, _)), Some((r, _))) => {
                 if matches!(l, FsEntry::Dir { .. }) {
-                    // TODO: Also check if contents are same
                     DiffState::Same
                 } else if hash_file(&l.path().to_string_lossy()).unwrap()
                     == hash_file(&r.path().to_string_lossy()).unwrap()
@@ -626,13 +653,26 @@ fn recursive_selection(
     }
 }
 
-pub fn recursive_expand(expanded: &mut HashMap<PathBuf, bool>, in_path: &PathBuf) {
-    // TODO: check if adding depth can be utilized here
-    expanded.insert(in_path.clone(), true);
-    let flattened_entries = FileSystem::read_path_recursive_flatten(in_path);
-    for entry in flattened_entries.entries.iter() {
-        if let FsEntry::Dir { path } = &entry.0 {
-            expanded.insert(path.clone(), true);
+pub fn recursive_expand(
+    expanded: &mut HashMap<PathBuf, bool>,
+    file_system: &FileSystem,
+    path: &PathBuf, // current folder in recursion
+) {
+    let root = &file_system.root;
+    // Compute relative path from root
+    let rel_path = if path == root {
+        PathBuf::from("") // root itself
+    } else {
+        path.strip_prefix(root).unwrap().to_path_buf()
+    };
+
+    // Mark this folder as expanded
+    expanded.insert(rel_path.clone(), true);
+
+    let fs_path = file_system.get(path);
+    for entry in &fs_path.entries {
+        if let FsEntry::Dir { path: child_path } = entry {
+            recursive_expand(expanded, file_system, child_path);
         }
     }
 }

@@ -161,7 +161,6 @@ impl ZApp {
                     conflict_map_resolved: &mut app_ctx.conflict_map_resolved,
                     diff_action_pressed: &mut diff_action_triggered,
                     file_system_2: &mut app_ctx.file_system_2,
-                    expanded_2: &mut app_ctx.expanded_2,
                     selected_2: &mut app_ctx.selected_2,
                 };
 
