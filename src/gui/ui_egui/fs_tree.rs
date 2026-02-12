@@ -215,6 +215,7 @@ struct VisibleRow {
     depth: usize,
 }
 
+#[derive(PartialEq)]
 pub enum DiffState {
     Different,
     Same,
@@ -280,6 +281,47 @@ fn is_visible(expanded: &HashMap<PathBuf, bool>, path: &Path) -> bool {
     true
 }
 
+fn folder_diff_state(
+    path: &Path,
+    entries_map: &BTreeMap<PathBuf, (Option<(&FsEntry, usize)>, Option<(&FsEntry, usize)>)>,
+) -> DiffState {
+    // Iterate over all entries that are children of this folder
+    let mut state = DiffState::Same;
+
+    for (child_path, (left, right)) in entries_map.range(path.to_path_buf()..) {
+        // Only direct children or deeper descendants
+        if !child_path.starts_with(path) || child_path == path {
+            continue;
+        }
+
+        let child_state = match (left, right) {
+            (Some((l, _)), Some((r, _))) => {
+                if matches!(l, FsEntry::Dir { .. }) {
+                    // Recursively check this child directory
+                    folder_diff_state(child_path, entries_map)
+                } else if hash_file(&l.path().to_string_lossy()).unwrap()
+                    == hash_file(&r.path().to_string_lossy()).unwrap()
+                {
+                    DiffState::Same
+                } else {
+                    DiffState::Different
+                }
+            }
+            (Some(_), None) => DiffState::OnlyInFirst,
+            (None, Some(_)) => DiffState::OnlyInSecond,
+            (None, None) => continue,
+        };
+
+        // Update folder state
+        if child_state != DiffState::Same {
+            state = child_state;
+            break; // any difference makes folder different
+        }
+    }
+
+    state
+}
+
 fn build_two_folder_diff_rows(
     expanded: &mut HashMap<PathBuf, bool>,
     file_system_1: &mut FileSystem,
@@ -327,7 +369,7 @@ fn build_two_folder_diff_rows(
     }
 
     // BUILD ROWS
-    for (rel_path, (left, right)) in entries_map {
+    for (rel_path, (left, right)) in &entries_map {
         // Skip entry if any parent folder is collapsed
         if !is_visible(expanded, &rel_path) {
             continue;
@@ -346,7 +388,7 @@ fn build_two_folder_diff_rows(
         let diff_state = match (left, right) {
             (Some((l, _)), Some((r, _))) => {
                 if matches!(l, FsEntry::Dir { .. }) {
-                    DiffState::Same
+                    folder_diff_state(&rel_path, &entries_map)
                 } else if hash_file(&l.path().to_string_lossy()).unwrap()
                     == hash_file(&r.path().to_string_lossy()).unwrap()
                 {
@@ -361,7 +403,7 @@ fn build_two_folder_diff_rows(
         };
 
         out.push(VisibleRowTwoFolderDiff {
-            path: rel_path,
+            path: rel_path.to_path_buf(),
             is_dir,
             depth,
             diff_state,
