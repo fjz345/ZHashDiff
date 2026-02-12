@@ -10,13 +10,13 @@ use egui_extras::{Size, StripBuilder};
 use serde::{Deserialize, Serialize};
 use zhashdiff::{
     fs::{FileSystem, FsEntry, FsPath},
-    hash::{HashService, ResolveConflictsInput, execute_resolution, find_conflicts},
+    hash::{execute_resolution, find_conflicts, HashService, ResolveConflictsInput},
 };
 
 use crate::{
     logger::ui_log_window,
     ui_egui::{
-        common::{CheckboxSelectState, hash_to_color},
+        common::{hash_to_color, CheckboxSelectState},
         fs_tree::{
             draw_ui_folder_tree_with_checkbox, draw_ui_two_folder_tree_with_diff,
             folder_state_ui_custom_checkbox, recursive_expand,
@@ -332,7 +332,7 @@ impl DuplicateFilesPane {
                         FileSystem::read_path_recursive_flatten(&ctx.file_system.root.clone());
 
                     for path in all_paths.entries {
-                        if let FsEntry::File { path } = path {
+                        if let FsEntry::File { path } = path.0 {
                             ctx.hash_service.request(path);
                         }
                     }

@@ -1,4 +1,8 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -10,7 +14,13 @@ pub enum FsEntry {
 }
 
 impl FsEntry {
-    pub fn path(&self) -> &PathBuf {
+    pub fn path(&self) -> &Path {
+        match self {
+            FsEntry::File { path } => path.as_path(),
+            FsEntry::Dir { path } => path.as_path(),
+        }
+    }
+    pub fn path_buf(&self) -> &PathBuf {
         match self {
             FsEntry::File { path } => path,
             FsEntry::Dir { path } => path,
@@ -34,6 +44,24 @@ impl Default for FsPath {
             },
             entries: Vec::new(),
             has_files_deep: true,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FsPathFlat {
+    pub root: FsEntry,
+    // Entry with depth from root
+    pub entries: Vec<(FsEntry, usize)>,
+}
+
+impl Default for FsPathFlat {
+    fn default() -> Self {
+        Self {
+            root: FsEntry::Dir {
+                path: PathBuf::new(),
+            },
+            entries: Vec::new(),
         }
     }
 }
@@ -77,33 +105,33 @@ impl FileSystem {
             has_files_deep: Self::has_files_recursive(path),
         }
     }
+    pub fn read_path_recursive_flatten(path: &PathBuf) -> FsPathFlat {
+        let root_entry = FsEntry::Dir { path: path.clone() };
 
-    pub fn read_path_recursive_flatten(path: &PathBuf) -> FsPath {
-        let mut current = Self::read_path(path);
+        let mut flat = FsPathFlat {
+            root: root_entry,
+            entries: Vec::new(),
+        };
 
-        if current.has_files_deep {
-            // Collect dirs first to avoid borrowing issues
-            let dirs: Vec<PathBuf> = current
-                .entries
-                .iter()
-                .filter_map(|entry| {
-                    if let FsEntry::Dir { path } = entry {
-                        Some(path.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+        Self::read_path_recursive_flatten_inner(path, 0, &mut flat);
 
-            for dir_path in dirs {
-                let child = Self::read_path_recursive_flatten(&dir_path);
+        flat
+    }
 
-                // Append all child entries
-                current.entries.extend(child.entries);
+    fn read_path_recursive_flatten_inner(path: &PathBuf, depth: usize, flat: &mut FsPathFlat) {
+        let current = Self::read_path(path);
+
+        for entry in current.entries {
+            let entry_depth = depth + 1;
+
+            // Store entry with depth
+            flat.entries.push((entry.clone(), entry_depth));
+
+            // Recurse if directory
+            if let FsEntry::Dir { path } = &entry {
+                Self::read_path_recursive_flatten_inner(path, entry_depth, flat);
             }
         }
-
-        current
     }
 
     // TODO: can probably optimize to do this while reading the path

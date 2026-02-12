@@ -1,10 +1,13 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::{Path, PathBuf},
+};
 
 use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
 use zhashdiff::{
     fs::{FileSystem, FsEntry},
-    hash::HashService,
+    hash::{HashService, hash_file},
 };
 
 use crate::ui_egui::common::{CheckboxSelectState, hash_to_color, ui_custom_checkbox};
@@ -116,7 +119,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     open_dir_window_2: &mut bool,
 ) -> egui::response::Response {
     let mut visible_rows = Vec::new();
-    build_expanded_rows_two_folder_diff(expanded, file_system_1, root_1, 0, &mut visible_rows);
+    build_two_folder_diff_rows(expanded, file_system_1, file_system_2, &mut visible_rows);
     let row_count = visible_rows.len();
 
     let available_height = ui.available_height();
@@ -222,9 +225,9 @@ pub enum DiffState {
 pub fn ui_custom_diff_state(ui: &mut egui::Ui, state: &DiffState) -> egui::response::Response {
     match state {
         DiffState::Same => ui.label(RichText::new("=").color(egui::Color32::GREEN)),
-        DiffState::Different => ui.label(RichText::new("≠").color(egui::Color32::RED)),
-        DiffState::OnlyInFirst => ui.label(RichText::new("←").color(egui::Color32::YELLOW)),
-        DiffState::OnlyInSecond => ui.label(RichText::new("→").color(egui::Color32::YELLOW)),
+        DiffState::Different => ui.label(RichText::new("≠").color(egui::Color32::YELLOW)),
+        DiffState::OnlyInFirst => ui.label(RichText::new("−").color(egui::Color32::RED)),
+        DiffState::OnlyInSecond => ui.label(RichText::new("+").color(egui::Color32::RED)),
     }
 }
 
@@ -262,30 +265,80 @@ fn build_expanded_rows(
     }
 }
 
-fn build_expanded_rows_two_folder_diff(
+fn build_two_folder_diff_rows(
     expanded: &mut HashMap<PathBuf, bool>,
-    file_system: &mut FileSystem,
-    current_path: &PathBuf,
-    depth: usize,
+    file_system_1: &mut FileSystem,
+    file_system_2: &mut FileSystem,
     out: &mut Vec<VisibleRowTwoFolderDiff>,
 ) {
-    let fs_path = file_system.get(current_path);
+    out.clear();
 
-    for entry in &fs_path.entries {
-        let (path, is_dir) = match entry {
-            FsEntry::Dir { path } => (path, true),
-            FsEntry::File { path } => (path, false),
+    let root1 = file_system_1.root.clone();
+    let root2 = file_system_2.root.clone();
+
+    let fs_path_1 = file_system_1.get(&root1);
+    let fs_path_2 = file_system_2.get(&root2);
+
+    let fs_path_1_flat = FileSystem::read_path_recursive_flatten(fs_path_1.root.path_buf());
+    let fs_path_2_flat = FileSystem::read_path_recursive_flatten(fs_path_2.root.path_buf());
+
+    // Use BTreeMap for stable ordering
+    let mut entries_map: BTreeMap<PathBuf, (Option<(&FsEntry, usize)>, Option<(&FsEntry, usize)>)> =
+        BTreeMap::new();
+
+    // LEFT
+    for (entry, depth) in &fs_path_1_flat.entries {
+        let rel = entry.path().strip_prefix(&root1).unwrap().to_path_buf();
+
+        entries_map.insert(rel, (Some((entry, *depth)), None));
+    }
+
+    // RIGHT
+    for (entry, depth) in &fs_path_2_flat.entries {
+        let rel = entry.path().strip_prefix(&root2).unwrap().to_path_buf();
+
+        entries_map
+            .entry(rel)
+            .and_modify(|e| e.1 = Some((entry, *depth)))
+            .or_insert((None, Some((entry, *depth))));
+    }
+
+    // BUILD ROWS
+    for (rel_path, (left, right)) in entries_map {
+        let depth = left
+            .map(|(_, d)| d)
+            .or_else(|| right.map(|(_, d)| d))
+            .unwrap_or(0);
+
+        let is_dir = left
+            .map(|(e, _)| matches!(e, FsEntry::Dir { .. }))
+            .or_else(|| right.map(|(e, _)| matches!(e, FsEntry::Dir { .. })))
+            .unwrap_or(false);
+
+        let diff_state = match (left, right) {
+            (Some((l, l_depth)), Some((r, r_depth))) => {
+                if matches!(l, FsEntry::Dir { .. }) {
+                    // TODO: Also check if contents are same
+                    DiffState::Same
+                } else if hash_file(&l.path().to_string_lossy()).unwrap()
+                    == hash_file(&r.path().to_string_lossy()).unwrap()
+                {
+                    DiffState::Same
+                } else {
+                    DiffState::Different
+                }
+            }
+            (Some(_), None) => DiffState::OnlyInFirst,
+            (None, Some(_)) => DiffState::OnlyInSecond,
+            (None, None) => continue,
         };
 
         out.push(VisibleRowTwoFolderDiff {
-            path: path.clone(),
+            path: rel_path,
             is_dir,
             depth,
-            diff_state: DiffState::Same,
+            diff_state,
         });
-        if is_dir && expanded.get(&path.clone()).copied().unwrap_or(false) {
-            build_expanded_rows_two_folder_diff(expanded, file_system, &path, depth + 1, out);
-        }
     }
 }
 
@@ -302,26 +355,33 @@ fn render_row_folder_tree_diff_column(
     row.col(|ui| {
         ui.horizontal(|ui| {
             ui.add_space((entry.depth as f32) * 16.0);
-            if is_dir {
-                let is_open = expanded.get(path).copied().unwrap_or(false);
-                let openness = if is_open { 1.0 } else { 0.0 };
-                let (_rect, response) =
-                    ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
-                egui::collapsing_header::paint_default_icon(ui, openness, &response);
+            match &entry.diff_state {
+                DiffState::Different | DiffState::Same | DiffState::OnlyInFirst => {
+                    if is_dir {
+                        let is_open = expanded.get(path).copied().unwrap_or(false);
+                        let openness = if is_open { 1.0 } else { 0.0 };
+                        let (_rect, response) = ui.allocate_exact_size(
+                            egui::vec2(12.0, row_height),
+                            egui::Sense::click(),
+                        );
+                        egui::collapsing_header::paint_default_icon(ui, openness, &response);
 
-                if response.clicked() {
-                    expanded.insert(path.clone(), !is_open);
-                }
+                        if response.clicked() {
+                            expanded.insert(path.clone(), !is_open);
+                        }
 
-                let label = format!(
-                    "📁 {}",
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                );
-                if ui.label(label).interact(egui::Sense::click()).clicked() {
-                    expanded.insert(path.clone(), !is_open);
+                        let label = format!(
+                            "📁 {}",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        );
+                        if ui.label(label).interact(egui::Sense::click()).clicked() {
+                            expanded.insert(path.clone(), !is_open);
+                        }
+                    } else {
+                        ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+                    }
                 }
-            } else {
-                ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+                DiffState::OnlyInSecond => {}
             }
         });
     });
@@ -337,26 +397,34 @@ fn render_row_folder_tree_diff_column(
     row.col(|ui| {
         ui.horizontal(|ui| {
             ui.add_space((entry.depth as f32) * 16.0);
-            if is_dir {
-                let is_open = expanded.get(path).copied().unwrap_or(false);
-                let openness = if is_open { 1.0 } else { 0.0 };
-                let (_rect, response) =
-                    ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
-                egui::collapsing_header::paint_default_icon(ui, openness, &response);
 
-                if response.clicked() {
-                    expanded.insert(path.clone(), !is_open);
-                }
+            match &entry.diff_state {
+                DiffState::Different | DiffState::Same | DiffState::OnlyInSecond => {
+                    if is_dir {
+                        let is_open = expanded.get(path).copied().unwrap_or(false);
+                        let openness = if is_open { 1.0 } else { 0.0 };
+                        let (_rect, response) = ui.allocate_exact_size(
+                            egui::vec2(12.0, row_height),
+                            egui::Sense::click(),
+                        );
+                        egui::collapsing_header::paint_default_icon(ui, openness, &response);
 
-                let label = format!(
-                    "📁 {}",
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                );
-                if ui.label(label).interact(egui::Sense::click()).clicked() {
-                    expanded.insert(path.clone(), !is_open);
+                        if response.clicked() {
+                            expanded.insert(path.clone(), !is_open);
+                        }
+
+                        let label = format!(
+                            "📁 {}",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        );
+                        if ui.label(label).interact(egui::Sense::click()).clicked() {
+                            expanded.insert(path.clone(), !is_open);
+                        }
+                    } else {
+                        ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+                    }
                 }
-            } else {
-                ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+                DiffState::OnlyInFirst => {}
             }
         });
     });
@@ -495,7 +563,7 @@ fn get_folder_selection_state(
 
     // Check all flattened children
     for entry in &flatten_entries.entries {
-        let p = match entry {
+        let p = match &entry.0 {
             FsEntry::File { path } => path,
             FsEntry::Dir { path } => path,
         };
@@ -544,7 +612,7 @@ fn recursive_selection(
     value: bool,
 ) {
     let fs_path = file_system.get(path);
-    selected.insert(fs_path.root.path().clone(), value);
+    selected.insert(fs_path.root.path_buf().clone(), value);
 
     for entry in &fs_path.entries {
         match entry {
@@ -559,10 +627,11 @@ fn recursive_selection(
 }
 
 pub fn recursive_expand(expanded: &mut HashMap<PathBuf, bool>, in_path: &PathBuf) {
+    // TODO: check if adding depth can be utilized here
     expanded.insert(in_path.clone(), true);
     let flattened_entries = FileSystem::read_path_recursive_flatten(in_path);
     for entry in flattened_entries.entries.iter() {
-        if let FsEntry::Dir { path } = entry {
+        if let FsEntry::Dir { path } = &entry.0 {
             expanded.insert(path.clone(), true);
         }
     }
