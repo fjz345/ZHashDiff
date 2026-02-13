@@ -136,10 +136,10 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 .id_salt(root_1.clone())
                 .striped(true)
                 .resizable(true)
-                .auto_shrink([false, true])
-                .column(Column::remainder().at_least(500.0))
-                .column(Column::auto().at_least(7.0))
-                .column(Column::remainder().at_least(500.0))
+                .auto_shrink([false, false])
+                .column(Column::remainder().at_least(100.0))
+                .column(Column::remainder().auto_size_this_frame(true))
+                .column(Column::remainder().resizable(true).clip(true))
                 .header(row_height_header, |mut header| {
                     // COLUMN 0 (Folder 1)
                     header.col(|ui| {
@@ -156,7 +156,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                                 *open_dir_window_1 = true;
                             }
 
-                            let mut text = root_1.to_string_lossy().to_string(); // adapt to your actual root 1
+                            let mut text = root_1.to_string_lossy().to_string();
                             ui.add_sized(
                                 [available, row_height_header],
                                 egui::TextEdit::singleline(&mut text),
@@ -166,7 +166,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                         });
                     });
 
-                    // COLUMN 1 (Diff icon header)
+                    // COLUMN 1 (Diff icon)
                     header.col(|ui| {
                         ui.centered_and_justified(|ui| {
                             ui.label("≠");
@@ -188,7 +188,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                                 *open_dir_window_2 = true;
                             }
 
-                            let mut text = root_2.to_string_lossy().to_string(); // adapt to your actual root 2
+                            let mut text = root_2.to_string_lossy().to_string();
                             ui.add_sized(
                                 [available, row_height_header],
                                 egui::TextEdit::singleline(&mut text),
@@ -265,7 +265,8 @@ fn build_expanded_rows(
         }
     }
 }
-/// Check if a given path is visible based on expanded folders
+
+// Check if a given relative path is visible based on expanded folders
 fn is_visible(expanded: &HashMap<PathBuf, bool>, path: &Path) -> bool {
     let mut ancestor = path.parent();
 
@@ -281,11 +282,11 @@ fn is_visible(expanded: &HashMap<PathBuf, bool>, path: &Path) -> bool {
     true
 }
 
+// Folders are equal if all contents are equal
 fn folder_diff_state(
     path: &Path,
     entries_map: &BTreeMap<PathBuf, (Option<(&FsEntry, usize)>, Option<(&FsEntry, usize)>)>,
 ) -> DiffState {
-    // Iterate over all entries that are children of this folder
     let mut state = DiffState::Same;
 
     for (child_path, (left, right)) in entries_map.range(path.to_path_buf()..) {
@@ -297,7 +298,6 @@ fn folder_diff_state(
         let child_state = match (left, right) {
             (Some((l, _)), Some((r, _))) => {
                 if matches!(l, FsEntry::Dir { .. }) {
-                    // Recursively check this child directory
                     folder_diff_state(child_path, entries_map)
                 } else if hash_file(&l.path().to_string_lossy()).unwrap()
                     == hash_file(&r.path().to_string_lossy()).unwrap()
@@ -312,10 +312,9 @@ fn folder_diff_state(
             (None, None) => continue,
         };
 
-        // Update folder state
         if child_state != DiffState::Same {
             state = child_state;
-            break; // any difference makes folder different
+            break;
         }
     }
 
@@ -339,7 +338,6 @@ fn build_two_folder_diff_rows(
     let fs_path_1_flat = FileSystem::read_path_recursive_flatten(fs_path_1.root.path_buf());
     let fs_path_2_flat = FileSystem::read_path_recursive_flatten(fs_path_2.root.path_buf());
 
-    // Use BTreeMap for stable ordering
     let mut entries_map: BTreeMap<PathBuf, (Option<(&FsEntry, usize)>, Option<(&FsEntry, usize)>)> =
         BTreeMap::new();
 
@@ -370,7 +368,6 @@ fn build_two_folder_diff_rows(
 
     // BUILD ROWS
     for (rel_path, (left, right)) in &entries_map {
-        // Skip entry if any parent folder is collapsed
         if !is_visible(expanded, &rel_path) {
             continue;
         }
@@ -420,7 +417,7 @@ fn render_row_folder_tree_diff_column(
     let path = &entry.path;
     let is_dir = entry.is_dir;
 
-    // Column 2: Name & Expand Icon
+    // Column 1
     row.col(|ui| {
         ui.horizontal(|ui| {
             ui.add_space((entry.depth as f32) * 16.0);
@@ -454,14 +451,14 @@ fn render_row_folder_tree_diff_column(
         });
     });
 
-    // Column 2: Name & Expand Icon
+    // Column 2
     row.col(|ui| {
         ui.horizontal(|ui| {
             ui_custom_diff_state(ui, &entry.diff_state);
         });
     });
 
-    // Column 2: Name & Expand Icon
+    // Column 3
     row.col(|ui| {
         ui.horizontal(|ui| {
             ui.add_space((entry.depth as f32) * 16.0);
@@ -611,6 +608,7 @@ fn render_row_folder_tree_with_checkbox(
         }
     });
 }
+
 fn get_folder_selection_state(
     path: &PathBuf,
     selected: &HashMap<PathBuf, bool>,
@@ -620,14 +618,12 @@ fn get_folder_selection_state(
     let mut has_selected = false;
     let mut has_unselected = false;
 
-    // Check the folder itself first
     if *selected.get(path).unwrap_or(&false) {
         has_selected = true;
     } else {
         has_unselected = true;
     }
 
-    // Check all flattened children
     for entry in &flatten_entries.entries {
         let p = match &entry.0 {
             FsEntry::File { path } => path,
@@ -695,17 +691,16 @@ fn recursive_selection(
 pub fn recursive_expand(
     expanded: &mut HashMap<PathBuf, bool>,
     file_system: &FileSystem,
-    path: &PathBuf, // current folder in recursion
+    path: &PathBuf,
 ) {
     let root = &file_system.root;
     // Compute relative path from root
     let rel_path = if path == root {
-        PathBuf::from("") // root itself
+        PathBuf::from("")
     } else {
         path.strip_prefix(root).unwrap().to_path_buf()
     };
 
-    // Mark this folder as expanded
     expanded.insert(rel_path.clone(), true);
 
     let fs_path = file_system.get(path);
