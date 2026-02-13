@@ -123,27 +123,32 @@ pub fn draw_ui_two_folder_tree_with_diff(
     let row_count = visible_rows.len();
 
     let available_height = ui.available_height();
+    let available_width = ui.available_width();
 
     let response = egui::Frame::new()
         .fill(egui::Color32::from_gray(20))
         .inner_margin(0.0)
         .show(ui, |ui| {
             ui.set_min_height(available_height);
+            ui.set_min_width(available_width);
+
             let row_height = ui.text_style_height(&egui::TextStyle::Body);
             let row_height_header = ui.text_style_height(&egui::TextStyle::Heading);
 
+            let available_size = ui.available_size();
             TableBuilder::new(ui)
                 .id_salt(root_1.clone())
                 .striped(true)
                 .resizable(false)
                 .auto_shrink([false, true])
-                .column(Column::auto().at_least(100.0).resizable(true))
-                .column(Column::auto().resizable(true).auto_size_this_frame(false))
                 .column(
-                    Column::remainder()
-                        .resizable(true)
-                        .clip(false) // Bugged
-                        .at_least(200.0), // Bugged
+                    Column::initial(available_size.x * 0.5)
+                        .at_least(100.0)
+                        .resizable(true),
+                )
+                .column(Column::auto().resizable(true).auto_size_this_frame(true))
+                .column(
+                    Column::remainder().resizable(true).clip(false), // Clip Bugged
                 )
                 .header(row_height_header, |mut header| {
                     // COLUMN 0 (Folder 1)
@@ -196,7 +201,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             let mut text = root_2.to_string_lossy().to_string();
                             ui.add_sized(
                                 [available, row_height_header],
-                                egui::TextEdit::singleline(&mut text),
+                                egui::TextEdit::singleline(&mut text).clip_text(true),
                             );
 
                             ui.spacing();
