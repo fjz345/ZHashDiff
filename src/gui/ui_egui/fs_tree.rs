@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use eframe::egui::{self, RichText};
+use eframe::egui::{self, Pos2, Rect, RichText, ScrollArea};
 use egui_extras::{Column, TableBuilder};
 use zhashdiff::{
     fs::{FileSystem, FsEntry},
@@ -135,11 +135,16 @@ pub fn draw_ui_two_folder_tree_with_diff(
             TableBuilder::new(ui)
                 .id_salt(root_1.clone())
                 .striped(true)
-                .resizable(true)
-                .auto_shrink([false, false])
-                .column(Column::remainder().at_least(100.0))
-                .column(Column::remainder().auto_size_this_frame(true))
-                .column(Column::remainder().resizable(true).clip(true))
+                .resizable(false)
+                .auto_shrink([false, true])
+                .column(Column::auto().at_least(100.0).resizable(true))
+                .column(Column::auto().resizable(true).auto_size_this_frame(false))
+                .column(
+                    Column::remainder()
+                        .resizable(true)
+                        .clip(false) // Bugged
+                        .at_least(200.0), // Bugged
+                )
                 .header(row_height_header, |mut header| {
                     // COLUMN 0 (Folder 1)
                     header.col(|ui| {

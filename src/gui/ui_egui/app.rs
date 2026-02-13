@@ -109,7 +109,7 @@ impl ZApp {
         log::info!("pixels_per_point{:?}", ctx.pixels_per_point());
         log::info!("native_pixels_per_point{:?}", ctx.native_pixels_per_point());
         ctx.set_pixels_per_point(self.scale_factor); // Maybe mult native_pixels_per_point?
-        // ctx.set_debug_on_hover(true);
+        ctx.set_debug_on_hover(true);
 
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
     }
@@ -147,6 +147,7 @@ impl ZApp {
         _frame: &mut eframe::Frame,
         app_ctx: &mut AppStateCtx,
     ) {
+        ctx.set_debug_on_hover(true);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 let mut diff_action_triggered = false;

@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use eframe::egui::{self, ScrollArea};
+use eframe::egui::{self, ScrollArea, Ui};
 use egui_extras::{Size, StripBuilder};
 use serde::{Deserialize, Serialize};
 use zhashdiff::{
