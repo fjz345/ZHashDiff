@@ -424,33 +424,32 @@ fn render_row_folder_tree_diff_column(
     row.col(|ui| {
         ui.horizontal(|ui| {
             ui.add_space((entry.depth as f32) * 16.0);
-            match &entry.diff_state {
-                DiffState::Different | DiffState::Same | DiffState::OnlyInFirst => {
-                    if is_dir {
-                        let is_open = expanded.get(path).copied().unwrap_or(false);
-                        let openness = if is_open { 1.0 } else { 0.0 };
-                        let (_rect, response) = ui.allocate_exact_size(
-                            egui::vec2(12.0, row_height),
-                            egui::Sense::click(),
-                        );
-                        egui::collapsing_header::paint_default_icon(ui, openness, &response);
 
-                        if response.clicked() {
-                            expanded.insert(path.clone(), !is_open);
-                        }
+            if is_dir {
+                let is_open = expanded.get(path).copied().unwrap_or(false);
+                let openness = if is_open { 1.0 } else { 0.0 };
+                let (_rect, response) =
+                    ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
+                egui::collapsing_header::paint_default_icon(ui, openness, &response);
 
-                        let label = format!(
-                            "📁 {}",
-                            path.file_name().unwrap_or_default().to_string_lossy()
-                        );
-                        if ui.label(label).interact(egui::Sense::click()).clicked() {
-                            expanded.insert(path.clone(), !is_open);
-                        }
-                    } else {
+                if response.clicked() {
+                    expanded.insert(path.clone(), !is_open);
+                }
+
+                let label = format!(
+                    "📁 {}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                if ui.label(label).interact(egui::Sense::click()).clicked() {
+                    expanded.insert(path.clone(), !is_open);
+                }
+            } else {
+                match &entry.diff_state {
+                    DiffState::Different | DiffState::Same | DiffState::OnlyInFirst => {
                         ui.label(path.file_name().unwrap_or_default().to_string_lossy());
                     }
+                    DiffState::OnlyInSecond => {}
                 }
-                DiffState::OnlyInSecond => {}
             }
         });
     });
@@ -467,33 +466,31 @@ fn render_row_folder_tree_diff_column(
         ui.horizontal(|ui| {
             ui.add_space((entry.depth as f32) * 16.0);
 
-            match &entry.diff_state {
-                DiffState::Different | DiffState::Same | DiffState::OnlyInSecond => {
-                    if is_dir {
-                        let is_open = expanded.get(path).copied().unwrap_or(false);
-                        let openness = if is_open { 1.0 } else { 0.0 };
-                        let (_rect, response) = ui.allocate_exact_size(
-                            egui::vec2(12.0, row_height),
-                            egui::Sense::click(),
-                        );
-                        egui::collapsing_header::paint_default_icon(ui, openness, &response);
+            if is_dir {
+                let is_open = expanded.get(path).copied().unwrap_or(false);
+                let openness = if is_open { 1.0 } else { 0.0 };
+                let (_rect, response) =
+                    ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
+                egui::collapsing_header::paint_default_icon(ui, openness, &response);
 
-                        if response.clicked() {
-                            expanded.insert(path.clone(), !is_open);
-                        }
+                if response.clicked() {
+                    expanded.insert(path.clone(), !is_open);
+                }
 
-                        let label = format!(
-                            "📁 {}",
-                            path.file_name().unwrap_or_default().to_string_lossy()
-                        );
-                        if ui.label(label).interact(egui::Sense::click()).clicked() {
-                            expanded.insert(path.clone(), !is_open);
-                        }
-                    } else {
+                let label = format!(
+                    "📁 {}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                if ui.label(label).interact(egui::Sense::click()).clicked() {
+                    expanded.insert(path.clone(), !is_open);
+                }
+            } else {
+                match &entry.diff_state {
+                    DiffState::Different | DiffState::Same | DiffState::OnlyInSecond => {
                         ui.label(path.file_name().unwrap_or_default().to_string_lossy());
                     }
+                    DiffState::OnlyInFirst => {}
                 }
-                DiffState::OnlyInFirst => {}
             }
         });
     });
