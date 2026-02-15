@@ -94,3 +94,92 @@ pub fn ui_custom_checkbox(
     }
     response
 }
+
+/// Preview hovering files:
+pub fn preview_files_being_dropped(ctx: &egui::Context) {
+    use egui::{Align2, Color32, Id, LayerId, Order, TextStyle};
+    use std::fmt::Write as _;
+
+    if !ctx.input(|i| i.raw.hovered_files.is_empty()) {
+        let text = ctx.input(|i| {
+            let mut text = "Dropping files:\n".to_owned();
+            for file in &i.raw.hovered_files {
+                if let Some(path) = &file.path {
+                    write!(text, "\n{}", path.display()).ok();
+                } else if !file.mime.is_empty() {
+                    write!(text, "\n{}", file.mime).ok();
+                } else {
+                    text += "\n???";
+                }
+            }
+            text
+        });
+
+        let painter =
+            ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("file_drop_target")));
+
+        let content_rect = ctx.content_rect();
+        painter.rect_filled(content_rect, 0.0, Color32::from_black_alpha(192));
+        painter.text(
+            content_rect.center(),
+            Align2::CENTER_CENTER,
+            text,
+            TextStyle::Heading.resolve(&ctx.style()),
+            Color32::WHITE,
+        );
+    }
+}
+
+pub fn preview_files_being_dropped_in_rect(ctx: &egui::Context, rect: egui::Rect, label: &str) {
+    use egui::{Align2, Color32, Id, LayerId, Order, TextStyle};
+    use std::fmt::Write as _;
+
+    let mut hover_pos = None;
+    let mut latest_pos = None;
+    if !ctx.input(|i| {
+        hover_pos = i.pointer.hover_pos();
+        latest_pos = i.pointer.latest_pos();
+        i.raw.hovered_files.is_empty()
+    }) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+            egui::WindowLevel::AlwaysOnTop,
+        ));
+        let text = ctx.input(|i| {
+            let mut text = "Dropping files:\n".to_owned();
+            for file in &i.raw.hovered_files {
+                if let Some(path) = &file.path {
+                    write!(text, "\n{}", path.display()).ok();
+                } else if !file.mime.is_empty() {
+                    write!(text, "\n{}", file.mime).ok();
+                } else {
+                    text += "\n???";
+                }
+            }
+            text
+        });
+
+        log::error!("HOVER POS: {:?}", hover_pos);
+        log::error!("LATEST POS: {:?}", latest_pos);
+        let Some(pos) = hover_pos else {
+            return;
+        };
+
+        // 3. Check if that position is inside our column rect
+        if rect.contains(pos) {
+            let painter =
+                ctx.layer_painter(LayerId::new(Order::Foreground, Id::new("file_drop_target")));
+
+            let content_rect = ctx.content_rect();
+            painter.rect_filled(content_rect, 0.0, Color32::from_black_alpha(192));
+            painter.text(
+                content_rect.center(),
+                Align2::CENTER_CENTER,
+                text,
+                TextStyle::Heading.resolve(&ctx.style()),
+                Color32::WHITE,
+            );
+        }
+    }
+}

@@ -17,7 +17,9 @@ fn main() -> eframe::Result {
     let log_buffer = LogCollector::init().expect("Failed to init logger");
 
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([2560.0, 1440.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([2560.0, 1440.0])
+            .with_drag_and_drop(true),
         ..Default::default()
     };
 

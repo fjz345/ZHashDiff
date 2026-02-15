@@ -7,9 +7,12 @@ use std::{
 };
 use zhashdiff::{fs::FileSystem, hash::HashService};
 
-use crate::ui_egui::panes::{
-    DuplicateFilesPane, DuplicateFilesPaneCtx, LogPane, Pane, PathDiffPane, PathDiffPaneCtx,
-    TreeBehavior,
+use crate::ui_egui::{
+    common::preview_files_being_dropped,
+    panes::{
+        DuplicateFilesPane, DuplicateFilesPaneCtx, LogPane, Pane, PathDiffPane, PathDiffPaneCtx,
+        TreeBehavior,
+    },
 };
 use eframe::{
     CreationContext,

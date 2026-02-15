@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use eframe::egui::{self, Pos2, Rect, RichText, ScrollArea};
+use eframe::egui::{self, Pos2, Rect, RichText, ScrollArea, Sense, Widget};
 use egui_extras::{Column, TableBuilder};
 use zhashdiff::{
     comparison::{PathComparissonMethod, compare_paths},
@@ -13,7 +13,10 @@ use zhashdiff::{
     hash::HashService,
 };
 
-use crate::ui_egui::common::{CheckboxSelectState, hash_to_color, ui_custom_checkbox};
+use crate::ui_egui::common::{
+    CheckboxSelectState, hash_to_color, preview_files_being_dropped,
+    preview_files_being_dropped_in_rect, ui_custom_checkbox,
+};
 
 pub fn draw_ui_folder_tree_with_checkbox(
     ui: &mut egui::Ui,
@@ -137,7 +140,10 @@ pub fn draw_ui_two_folder_tree_with_diff(
     let available_height = ui.available_height();
     let available_width = ui.available_width();
 
-    let response = egui::Frame::new()
+    let mut col0_rect = egui::Rect::NOTHING; // File System 1
+    let mut col2_rect = egui::Rect::NOTHING; // Fily System 2
+    let table_top = ui.cursor().top();
+    let response = egui::Frame::default()
         .fill(egui::Color32::from_gray(20))
         .inner_margin(0.0)
         .show(ui, |ui| {
@@ -148,7 +154,8 @@ pub fn draw_ui_two_folder_tree_with_diff(
             let row_height_header = ui.text_style_height(&egui::TextStyle::Heading);
 
             let available_size = ui.available_size();
-            TableBuilder::new(ui)
+            let scroll_area_output = TableBuilder::new(ui)
+                .sense(egui::Sense::all())
                 .id_salt(root_1.clone())
                 .striped(true)
                 .resizable(false)
@@ -165,6 +172,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 .header(row_height_header, |mut header| {
                     // COLUMN 0 (Folder 1)
                     header.col(|ui| {
+                        col0_rect = ui.max_rect();
                         let available = ui.available_width();
 
                         ui.vertical(|ui| {
@@ -173,6 +181,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                                     [available, row_height_header],
                                     egui::Button::new("Open Folder 1"),
                                 )
+                                .interact(egui::Sense::HOVER)
                                 .clicked()
                             {
                                 *open_dir_window_1 = true;
@@ -205,6 +214,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
 
                     // COLUMN 2 (Folder 2)
                     header.col(|ui| {
+                        col2_rect = ui.max_rect();
                         let available = ui.available_width();
 
                         ui.vertical(|ui| {
@@ -236,6 +246,40 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 });
         });
 
+    let table_bottom = ui.min_rect().bottom();
+    col0_rect.set_top(table_top);
+    col0_rect.set_bottom(table_bottom);
+    col2_rect.set_top(table_top);
+    col2_rect.set_bottom(table_bottom);
+
+    // log::error!("ASD: {:?}", response.response.interact_pointer_pos());
+    preview_files_being_dropped(ui.ctx());
+    // preview_files_being_dropped_in_rect(&ui.ctx(), col0_rect, "Folder 1");
+    // preview_files_being_dropped_in_rect(&ui.ctx(), col2_rect, "Folder 2");
+    ui.input(|i| {
+        if !i.raw.dropped_files.is_empty() {
+            // Get the drop position (where the mouse was)
+            if let Some(drop_pos) = i.pointer.hover_pos() {
+                for dropped_file in &i.raw.dropped_files {
+                    if let Some(path) = &dropped_file.path {
+                        if col0_rect.contains(drop_pos) {
+                            log::info!("File dropped in Column 1: {:?}", path);
+                            *root_1 = path.clone();
+                            FileSystem::read_path_recursive_flatten(&path);
+                            file_system_1.root = path.clone();
+                            expanded.clear();
+                        } else if col2_rect.contains(drop_pos) {
+                            log::info!("File dropped in Column 2: {:?}", path);
+                            *root_2 = path.clone();
+                            FileSystem::read_path_recursive_flatten(&path);
+                            file_system_2.root = path.clone();
+                            expanded.clear();
+                        }
+                    }
+                }
+            }
+        }
+    });
     response.response
 }
 
