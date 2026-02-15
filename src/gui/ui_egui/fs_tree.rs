@@ -373,21 +373,33 @@ pub fn folder_diff_state(
     partial_threshold: f32,
 ) -> DiffState {
     use DiffState::*;
+    use std::ops::Bound;
 
     let mut seen_same = false;
+    let mut seen_partial = false;
     let mut seen_diff = false;
     let mut seen_only_first = false;
     let mut seen_only_second = false;
+    let mut has_children = false;
 
-    for (child_path, (left, right)) in entries_map.iter() {
-        // Skip self and non-descendants
-        if !child_path.starts_with(path) || child_path == path {
+    // Explicitly specify <Path, _> to satisfy the Ord bound
+    let range = entries_map.range::<Path, _>((Bound::Excluded(path), Bound::Unbounded));
+
+    for (child_path, (left, right)) in range {
+        if !child_path.starts_with(path) {
+            break;
+        }
+        // Only process direct children of the current path.
+        if child_path.parent() != Some(path) {
             continue;
         }
+
+        has_children = true;
 
         let state = match (left, right) {
             (Some((l, _)), Some((r, _))) => {
                 if matches!(l, FsEntry::Dir { .. }) {
+                    // Recurse into subfolder
                     folder_diff_state(child_path, entries_map, method, partial_threshold)
                 } else {
                     file_diff_state(l, r, method, partial_threshold)
@@ -400,32 +412,33 @@ pub fn folder_diff_state(
 
         match state {
             Same(..) => seen_same = true,
-            Partial(..) => seen_diff = true,
+            Partial(..) => seen_partial = true,
             Different(..) => seen_diff = true,
             OnlyInFirst(..) => seen_only_first = true,
             OnlyInSecond(..) => seen_only_second = true,
         }
     }
 
-    // Decide folder state
-    let flags = [seen_same, seen_diff, seen_only_first, seen_only_second];
-    let count = flags.iter().filter(|&&b| b).count();
+    let p1 = path.to_path_buf();
+    let p2 = path.to_path_buf();
 
-    match count {
-        0 => Same(path.to_path_buf(), path.to_path_buf()), // empty folder
-        1 => {
-            if seen_same {
-                Same(path.to_path_buf(), path.to_path_buf())
-            } else if seen_diff {
-                Different(path.to_path_buf(), path.to_path_buf())
-            } else if seen_only_first {
-                OnlyInFirst(path.to_path_buf())
-            } else {
-                OnlyInSecond(path.to_path_buf())
-            }
-        }
-        _ => Partial(path.to_path_buf(), path.to_path_buf()), // mixed states → partial
+    if !has_children {
+        return Same(p1, p2);
     }
+
+    let has_any_diff = seen_diff || seen_only_first || seen_only_second || seen_partial;
+
+    if seen_partial || (seen_same && has_any_diff) {
+        return Partial(p1, p2);
+    } else if seen_same {
+        return Same(p1, p2);
+    } else if seen_only_first && !seen_only_second && !seen_diff {
+        return OnlyInFirst(p1);
+    } else if seen_only_second && !seen_only_first && !seen_diff {
+        return OnlyInSecond(p1);
+    }
+
+    Different(p1, p2)
 }
 
 fn build_two_folder_diff_rows(
