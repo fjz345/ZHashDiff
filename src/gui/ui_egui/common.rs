@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use eframe::egui;
+use eframe::egui::{self, Modifiers, Ui};
 use zhashdiff::fs::FsEntry;
 
 use crate::ui_egui::panes::DuplicateFilesPaneCtx;

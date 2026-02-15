@@ -382,14 +382,12 @@ pub fn folder_diff_state(
     let mut seen_only_second = false;
     let mut has_children = false;
 
-    // Explicitly specify <Path, _> to satisfy the Ord bound
     let range = entries_map.range::<Path, _>((Bound::Excluded(path), Bound::Unbounded));
 
     for (child_path, (left, right)) in range {
         if !child_path.starts_with(path) {
             break;
         }
-        // Only process direct children of the current path.
         if child_path.parent() != Some(path) {
             continue;
         }
@@ -485,7 +483,6 @@ fn build_two_folder_diff_rows(
         }
     }
 
-    // --- ADD ROOT ROW ---
     entries_map.insert(PathBuf::from(""), (None, None));
     let root_diff_state =
         folder_diff_state(&PathBuf::from(""), &entries_map, method, partial_threshold);
@@ -497,7 +494,6 @@ fn build_two_folder_diff_rows(
         diff_state: root_diff_state,
     });
 
-    // --- ADD CHILDREN ROWS ---
     for (rel_path, (left, right)) in &entries_map {
         if !is_visible(expanded, rel_path) {
             continue;

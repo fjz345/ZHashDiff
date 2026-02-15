@@ -1,4 +1,4 @@
-use eframe::egui::{self, Layout, PointerButton};
+use eframe::egui::{self, Layout, PointerButton, menu};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -75,6 +75,9 @@ pub struct ZApp {
     tree: egui_tiles::Tree<Pane>,
     #[serde(skip)]
     log_buffer: Arc<Mutex<Vec<String>>>,
+
+    open_dir_window_1: bool,
+    open_dir_window_2: bool,
 }
 
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
@@ -100,6 +103,8 @@ impl ZApp {
             state: Some(AppState::default()),
             tree: Self::create_tree(),
             log_buffer: log_buffer,
+            open_dir_window_1: false,
+            open_dir_window_2: false,
         }
     }
 
@@ -134,20 +139,32 @@ impl ZApp {
 
         // let master_tile = tiles.insert_horizontal_tile(vec![tile_file_explorer]);
         let master_tile = tiles.insert_horizontal_tile(vec![tile_path_diff]);
-        tabs.push(tiles.insert_vertical_tile(vec![master_tile, tile_console]));
+        tabs.push(tiles.insert_vertical_tile(vec![master_tile]));
 
         let root = tiles.insert_tab_tile(tabs);
 
         egui_tiles::Tree::new("my_tree", root, tiles)
     }
 
-    fn draw_ui_tree(
-        &mut self,
-        ctx: &egui::Context,
-        _frame: &mut eframe::Frame,
-        app_ctx: &mut AppStateCtx,
-    ) {
+    fn show_menu(&mut self, ui: &mut egui::Ui, app_ctx: &mut AppStateCtx) {
+        egui::MenuBar::new().ui(ui, |ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            ui.menu_button("File", |ui| {
+                if ui.button("Open Folder 1").clicked() {
+                    self.open_dir_window_1 = true;
+                }
+                if ui.button("Open Folder 2").clicked() {
+                    self.open_dir_window_2 = true;
+                }
+            });
+        });
+    }
+
+    fn ui(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
         egui::CentralPanel::default().show(ctx, |ui| {
+            self.show_menu(ui, app_ctx);
+            ui.separator();
+
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 let mut diff_action_triggered = false;
                 let mut behavior = TreeBehavior {
@@ -191,6 +208,26 @@ impl ZApp {
                 }
             });
         });
+
+        // Handle folder dialogs
+        if self.open_dir_window_1 {
+            self.open_dir_window_1 = false;
+            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                // ctx.file_system.root_dir_cache.clear();
+                FileSystem::read_path_recursive_flatten(&path);
+                app_ctx.file_system.root = path;
+                app_ctx.expanded.clear();
+            }
+        }
+        if self.open_dir_window_2 {
+            self.open_dir_window_2 = false;
+            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                // ctx.file_system.root_dir_cache.clear();
+                FileSystem::read_path_recursive_flatten(&path);
+                app_ctx.file_system.root = path;
+                app_ctx.expanded.clear();
+            }
+        }
     }
 
     fn request_shutdown(&mut self) {
@@ -259,7 +296,7 @@ impl eframe::App for ZApp {
                 AppState::Idle(state_ctx)
             }
             AppState::Idle(mut state) => {
-                self.draw_ui_tree(ctx, frame, &mut state);
+                self.ui(ctx, frame, &mut state);
                 self.process_ctx_inputs(ctx, frame);
                 AppState::Idle(state)
             }

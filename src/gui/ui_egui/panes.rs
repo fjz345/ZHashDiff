@@ -83,7 +83,7 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
         _tile_id: egui_tiles::TileId,
         pane: &mut Pane,
     ) -> egui_tiles::UiResponse {
-        match pane {
+        let response = match pane {
             Pane::Log(pane) => {
                 let response = pane.ui(ui, &mut self.log_buffer);
                 egui_tiles::UiResponse::from(response)
@@ -98,6 +98,15 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
                 let response = path_diff_pane.ui(ui, &mut ctx);
                 egui_tiles::UiResponse::from(response)
             }
+        };
+
+        if ui
+            .add(egui::Button::new("Drag me!").sense(egui::Sense::drag()))
+            .drag_started()
+        {
+            egui_tiles::UiResponse::DragStarted
+        } else {
+            response
         }
     }
 }
