@@ -96,7 +96,7 @@ pub fn compare_bytes(path1: &Path, path2: &Path) -> io::Result<PathComparisonRes
         total_compared += min_read as u64;
     }
 
-    let likeness = total_matches as f32 / max_len as f32;
+    let likeness = total_matches as f32 / total_compared as f32;
 
     Ok(PathComparisonResult::Byte { likeness })
 }
