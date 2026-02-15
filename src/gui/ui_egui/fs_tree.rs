@@ -1,11 +1,13 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    io,
     path::{Path, PathBuf},
 };
 
 use eframe::egui::{self, Pos2, Rect, RichText, ScrollArea};
 use egui_extras::{Column, TableBuilder};
 use zhashdiff::{
+    comparison::{PathComparisonResult, PathComparissonMethod, compare_paths},
     fs::{FileSystem, FsEntry},
     hash::{HashService, hash_file},
 };
@@ -119,7 +121,16 @@ pub fn draw_ui_two_folder_tree_with_diff(
     open_dir_window_2: &mut bool,
 ) -> egui::response::Response {
     let mut visible_rows = Vec::new();
-    build_two_folder_diff_rows(expanded, file_system_1, file_system_2, &mut visible_rows);
+    let io_read_result = build_two_folder_diff_rows(
+        expanded,
+        file_system_1,
+        file_system_2,
+        &mut visible_rows,
+        &PathComparissonMethod::CrC,
+    );
+    if let Err(err) = io_read_result {
+        log::error!("{:?}", err);
+    }
     let row_count = visible_rows.len();
 
     let available_height = ui.available_height();
@@ -229,16 +240,24 @@ struct VisibleRow {
 pub enum DiffState {
     Different,
     Same,
+    Partial,
     OnlyInFirst,
     OnlyInSecond,
 }
 
 pub fn ui_custom_diff_state(ui: &mut egui::Ui, state: &DiffState) -> egui::response::Response {
+    let green = egui::Color32::from_rgb(0x7E, 0xD3, 0x21);
+    let red = egui::Color32::from_rgb(0xD0, 0x02, 0x1B);
+    let yellow = egui::Color32::from_rgb(0xF8, 0xE7, 0x1C);
+    let blue = egui::Color32::from_rgb(0x4A, 0x90, 0xE2);
+    // let teal = egui::Color32::from_rgb(0x50, 0xE3, 0xC2);
+
     match state {
-        DiffState::Same => ui.label(RichText::new("=").color(egui::Color32::GREEN)),
-        DiffState::Different => ui.label(RichText::new("≠").color(egui::Color32::YELLOW)),
-        DiffState::OnlyInFirst => ui.label(RichText::new("−").color(egui::Color32::RED)),
-        DiffState::OnlyInSecond => ui.label(RichText::new("+").color(egui::Color32::RED)),
+        DiffState::Same => ui.label(RichText::new("=").color(green)),
+        DiffState::Different => ui.label(RichText::new("≠").color(red)),
+        DiffState::Partial => ui.label(RichText::new("≈").color(yellow)),
+        DiffState::OnlyInFirst => ui.label(RichText::new("−").color(blue)),
+        DiffState::OnlyInSecond => ui.label(RichText::new("+").color(blue)),
     }
 }
 
@@ -292,43 +311,91 @@ fn is_visible(expanded: &HashMap<PathBuf, bool>, path: &Path) -> bool {
     true
 }
 
-// Folders are equal if all contents are equal
+fn file_diff_state(
+    left: &FsEntry,
+    right: &FsEntry,
+    method: &PathComparissonMethod,
+    partial_threshold: f32,
+) -> DiffState {
+    let path1 = left.path();
+    let path2 = right.path();
+
+    let result = match compare_paths(path1, path2, method) {
+        Ok(r) => r,
+        Err(_) => return DiffState::Different,
+    };
+
+    let likeness = result.likeness();
+
+    if likeness == 1.0 {
+        DiffState::Same
+    } else if likeness >= partial_threshold {
+        DiffState::Partial
+    } else {
+        DiffState::Different
+    }
+}
+
 fn folder_diff_state(
     path: &Path,
     entries_map: &BTreeMap<PathBuf, (Option<(&FsEntry, usize)>, Option<(&FsEntry, usize)>)>,
+    method: &PathComparissonMethod,
+    partial_threshold: f32,
 ) -> DiffState {
-    let mut state = DiffState::Same;
+    use DiffState::*;
 
-    for (child_path, (left, right)) in entries_map.range(path.to_path_buf()..) {
-        // Only direct children or deeper descendants
+    let mut seen_same = false;
+    let mut seen_diff = false;
+    let mut seen_only_first = false;
+    let mut seen_only_second = false;
+
+    for (child_path, (left, right)) in entries_map.iter() {
+        // Skip self and non-descendants
         if !child_path.starts_with(path) || child_path == path {
             continue;
         }
 
-        let child_state = match (left, right) {
+        let state = match (left, right) {
             (Some((l, _)), Some((r, _))) => {
                 if matches!(l, FsEntry::Dir { .. }) {
-                    folder_diff_state(child_path, entries_map)
-                } else if hash_file(&l.path().to_string_lossy()).unwrap()
-                    == hash_file(&r.path().to_string_lossy()).unwrap()
-                {
-                    DiffState::Same
+                    folder_diff_state(child_path, entries_map, method, partial_threshold)
                 } else {
-                    DiffState::Different
+                    file_diff_state(l, r, method, 0.95)
                 }
             }
-            (Some(_), None) => DiffState::OnlyInFirst,
-            (None, Some(_)) => DiffState::OnlyInSecond,
+            (Some(_), None) => OnlyInFirst,
+            (None, Some(_)) => OnlyInSecond,
             (None, None) => continue,
         };
 
-        if child_state != DiffState::Same {
-            state = child_state;
-            break;
+        match state {
+            Same => seen_same = true,
+            Partial => seen_diff = true,
+            Different => seen_diff = true,
+            OnlyInFirst => seen_only_first = true,
+            OnlyInSecond => seen_only_second = true,
         }
     }
 
-    state
+    // Determine folder state
+    let flags = [seen_same, seen_diff, seen_only_first, seen_only_second];
+    let count = flags.iter().filter(|&&b| b).count();
+
+    match count {
+        0 => Same, // empty folder
+        1 => {
+            if seen_same {
+                Same
+            } else if seen_diff {
+                Different
+            } else if seen_only_first {
+                OnlyInFirst
+            } else {
+                OnlyInSecond
+            }
+        }
+        _ => Partial, // mixed states → partial
+    }
 }
 
 fn build_two_folder_diff_rows(
@@ -336,7 +403,8 @@ fn build_two_folder_diff_rows(
     file_system_1: &mut FileSystem,
     file_system_2: &mut FileSystem,
     out: &mut Vec<VisibleRowTwoFolderDiff>,
-) {
+    method: &PathComparissonMethod,
+) -> io::Result<()> {
     out.clear();
 
     let root1 = file_system_1.root.clone();
@@ -351,18 +419,14 @@ fn build_two_folder_diff_rows(
     let mut entries_map: BTreeMap<PathBuf, (Option<(&FsEntry, usize)>, Option<(&FsEntry, usize)>)> =
         BTreeMap::new();
 
-    // LEFT
     for (entry, depth) in &fs_path_1_flat.entries {
         let rel = entry.relative_path_buf(&root1);
         entries_map.insert(rel.clone(), (Some((entry, *depth)), None));
-
-        // Register folders in expanded map if missing
         if matches!(entry, FsEntry::Dir { .. }) {
             expanded.entry(rel).or_insert(false);
         }
     }
 
-    // RIGHT
     for (entry, depth) in &fs_path_2_flat.entries {
         let rel = entry.relative_path_buf(&root2);
         entries_map
@@ -370,15 +434,13 @@ fn build_two_folder_diff_rows(
             .and_modify(|e| e.1 = Some((entry, *depth)))
             .or_insert((None, Some((entry, *depth))));
 
-        // Register folders in expanded map if missing
         if matches!(entry, FsEntry::Dir { .. }) {
             expanded.entry(rel).or_insert(false);
         }
     }
 
-    // BUILD ROWS
     for (rel_path, (left, right)) in &entries_map {
-        if !is_visible(expanded, &rel_path) {
+        if !is_visible(expanded, rel_path) {
             continue;
         }
 
@@ -392,16 +454,13 @@ fn build_two_folder_diff_rows(
             .or_else(|| right.map(|(e, _)| matches!(e, FsEntry::Dir { .. })))
             .unwrap_or(false);
 
+        let partial_threshold = 1.0f32;
         let diff_state = match (left, right) {
             (Some((l, _)), Some((r, _))) => {
                 if matches!(l, FsEntry::Dir { .. }) {
-                    folder_diff_state(&rel_path, &entries_map)
-                } else if hash_file(&l.path().to_string_lossy()).unwrap()
-                    == hash_file(&r.path().to_string_lossy()).unwrap()
-                {
-                    DiffState::Same
+                    folder_diff_state(rel_path, &entries_map, method, partial_threshold)
                 } else {
-                    DiffState::Different
+                    file_diff_state(l, r, method, partial_threshold)
                 }
             }
             (Some(_), None) => DiffState::OnlyInFirst,
@@ -410,12 +469,14 @@ fn build_two_folder_diff_rows(
         };
 
         out.push(VisibleRowTwoFolderDiff {
-            path: rel_path.to_path_buf(),
+            path: rel_path.clone(),
             is_dir,
             depth,
             diff_state,
         });
     }
+
+    Ok(())
 }
 
 fn render_row_folder_tree_diff_column(
@@ -452,7 +513,10 @@ fn render_row_folder_tree_diff_column(
                 }
             } else {
                 match &entry.diff_state {
-                    DiffState::Different | DiffState::Same | DiffState::OnlyInFirst => {
+                    DiffState::Different
+                    | DiffState::Same
+                    | DiffState::Partial
+                    | DiffState::OnlyInFirst => {
                         ui.label(path.file_name().unwrap_or_default().to_string_lossy());
                     }
                     DiffState::OnlyInSecond => {}
@@ -493,7 +557,10 @@ fn render_row_folder_tree_diff_column(
                 }
             } else {
                 match &entry.diff_state {
-                    DiffState::Different | DiffState::Same | DiffState::OnlyInSecond => {
+                    DiffState::Different
+                    | DiffState::Same
+                    | DiffState::Partial
+                    | DiffState::OnlyInSecond => {
                         ui.label(path.file_name().unwrap_or_default().to_string_lossy());
                     }
                     DiffState::OnlyInFirst => {}
