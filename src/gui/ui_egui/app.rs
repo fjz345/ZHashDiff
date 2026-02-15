@@ -49,7 +49,7 @@ pub struct AppStateCtx {
 enum AppState {
     Startup(AppStateCtx),
     Idle(AppStateCtx),
-    Exit(AppStateCtx),
+    Exit(),
 }
 
 impl Default for AppState {
@@ -63,7 +63,7 @@ impl AppState {
         match self {
             AppState::Startup(ctx) => ctx,
             AppState::Idle(ctx) => ctx,
-            AppState::Exit(ctx) => ctx,
+            AppState::Exit() => panic!("Exit has no ctx"),
         }
     }
 }
@@ -153,42 +153,45 @@ impl ZApp {
         egui_tiles::Tree::new("my_tree", root, tiles)
     }
 
-    fn show_menu(&mut self, ui: &mut egui::Ui, app_ctx: &mut AppStateCtx) {
-        egui::MenuBar::new().ui(ui, |ui| {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-            ui.menu_button("File", |ui| {
-                if ui.button("Open Folder 1").clicked() {
-                    self.open_dir_window_1 = true;
-                }
-                if ui.button("Open Folder 2").clicked() {
-                    self.open_dir_window_2 = true;
-                }
-            });
-        });
-        ui.menu_button("Options", |ui| {
-            if ui.button("Open Folder 1").clicked() {
-                self.open_dir_window_1 = true;
-            }
-            if ui.button("Open Folder 2").clicked() {
-                self.open_dir_window_2 = true;
-            }
-        });
+    fn show_menu(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                ui.menu_button("File", |ui| {
+                    if ui.button("Open Folder 1").clicked() {
+                        self.open_dir_window_1 = true;
+                    }
+                    if ui.button("Open Folder 2").clicked() {
+                        self.open_dir_window_2 = true;
+                    }
+                });
 
-        let diff_mode_text = if self.diff_mode_path_diff {
-            "Change to Duplicate Diff"
-        } else {
-            "Change to Path Diff"
-        };
-        ui.menu_button("Diff Mode", |ui| {
-            if ui.button(diff_mode_text).clicked() {
-                self.diff_mode_path_diff = !self.diff_mode_path_diff;
-            }
+                ui.menu_button("Options", |ui| {
+                    if ui.button("Open Folder 1").clicked() {
+                        self.open_dir_window_1 = true;
+                    }
+                    if ui.button("Open Folder 2").clicked() {
+                        self.open_dir_window_2 = true;
+                    }
+                });
+
+                let diff_mode_text = if self.diff_mode_path_diff {
+                    "Change to Duplicate Diff"
+                } else {
+                    "Change to Path Diff"
+                };
+                ui.menu_button("Diff Mode", |ui| {
+                    if ui.button(diff_mode_text).clicked() {
+                        self.diff_mode_path_diff = !self.diff_mode_path_diff;
+                    }
+                });
+            });
         });
     }
 
     fn ui(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.show_menu(ui, app_ctx);
+            self.show_menu(ui);
             ui.separator();
 
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
@@ -257,11 +260,7 @@ impl ZApp {
     }
 
     fn request_shutdown(&mut self) {
-        let state = self
-            .state
-            .take()
-            .expect("state was invalid during shutdown");
-        self.state = Some(AppState::Exit(state.into_ctx()));
+        self.state = Some(AppState::Exit());
     }
 
     fn process_ctx_inputs(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -371,7 +370,7 @@ impl eframe::App for ZApp {
                 self.process_ctx_inputs(ctx, frame);
                 AppState::Idle(state)
             }
-            AppState::Exit(state) => {
+            AppState::Exit() => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 log::info!("send_viewport_cmd sent");
 
@@ -380,7 +379,7 @@ impl eframe::App for ZApp {
                         ui.label("Exiting...");
                     });
                 });
-                AppState::Exit(state)
+                AppState::Exit()
             }
         };
         self.state = Some(app_state);
