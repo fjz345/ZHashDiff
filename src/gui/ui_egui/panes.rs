@@ -211,6 +211,17 @@ impl PathDiffPane {
                     );
                 } else {
                     ui.label("No root dir set...");
+                    draw_ui_two_folder_tree_with_diff(
+                        ui,
+                        &mut ctx.file_system_1.root.clone(),
+                        &mut ctx.file_system_2.root.clone(),
+                        &mut ctx.expanded,
+                        &mut ctx.selected_1,
+                        &mut ctx.file_system_1,
+                        &mut ctx.file_system_2,
+                        &mut self.open_dir_window_1,
+                        &mut self.open_dir_window_2,
+                    );
                 }
             });
 
