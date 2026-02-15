@@ -18,7 +18,7 @@ use eframe::{
     CreationContext,
     epaint::{Pos2, Vec2},
 };
-use egui_tiles::Tile;
+use egui_tiles::{Tile, TileId};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AppStateCtx {
@@ -81,6 +81,8 @@ pub struct ZApp {
 
     open_dir_window_1: bool,
     open_dir_window_2: bool,
+
+    diff_mode_path_diff: bool,
 }
 
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
@@ -108,6 +110,7 @@ impl ZApp {
             log_buffer: log_buffer,
             open_dir_window_1: false,
             open_dir_window_2: false,
+            diff_mode_path_diff: true,
         }
     }
 
@@ -136,14 +139,15 @@ impl ZApp {
             "Path Diff".to_string(),
         ))));
 
-        let tile_file_explorer = tiles.insert_pane(Pane::DuplicateFiles(DuplicateFilesPane::new(
+        let tile_duplicate_file = tiles.insert_pane(Pane::DuplicateFiles(DuplicateFilesPane::new(
             Some("Duplicate Files".to_string()),
         )));
 
-        // let master_tile = tiles.insert_horizontal_tile(vec![tile_file_explorer]);
-        let master_tile = tiles.insert_horizontal_tile(vec![tile_path_diff]);
+        // let master_tile = tiles.insert_horizontal_tile(vec![tile_duplicate_file]);
+        let master_tile = tiles.insert_horizontal_tile(vec![tile_path_diff, tile_duplicate_file]);
         tabs.push(tiles.insert_vertical_tile(vec![master_tile]));
 
+        tiles.set_visible(tile_duplicate_file, false);
         let root = tiles.insert_tab_tile(tabs);
 
         egui_tiles::Tree::new("my_tree", root, tiles)
@@ -160,6 +164,25 @@ impl ZApp {
                     self.open_dir_window_2 = true;
                 }
             });
+        });
+        ui.menu_button("Options", |ui| {
+            if ui.button("Open Folder 1").clicked() {
+                self.open_dir_window_1 = true;
+            }
+            if ui.button("Open Folder 2").clicked() {
+                self.open_dir_window_2 = true;
+            }
+        });
+
+        let diff_mode_text = if self.diff_mode_path_diff {
+            "Change to Duplicate Diff"
+        } else {
+            "Change to Path Diff"
+        };
+        ui.menu_button("Diff Mode", |ui| {
+            if ui.button(diff_mode_text).clicked() {
+                self.diff_mode_path_diff = !self.diff_mode_path_diff;
+            }
         });
     }
 
@@ -268,6 +291,42 @@ impl ZApp {
             self.request_shutdown();
         }
     }
+
+    // Quick hacky funtion to determine if path_diff is open or duplicate_diff is open
+    fn is_path_diff(&self) -> bool {
+        for (tileid, tile) in self.tree.tiles.iter() {
+            if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
+                if self.tree.is_visible(*tileid) {
+                    return false;
+                }
+            } else if let Tile::Pane(Pane::PathDiff(_path_diff)) = tile {
+                return true;
+            }
+        }
+        panic!("PathDiff or DuplicateFiles should always be active");
+    }
+    fn set_path_diff_visible(&mut self, visible: bool) {
+        let mut found_tile_id = None;
+        for (tileid, tile) in self.tree.tiles.iter() {
+            if let Tile::Pane(Pane::PathDiff(..)) = tile {
+                found_tile_id = Some(tileid);
+                break;
+            }
+        }
+        self.tree
+            .set_visible(*found_tile_id.expect("Should always find"), visible);
+    }
+    fn set_duplicate_files_visible(&mut self, visible: bool) {
+        let mut found_tile_id = None;
+        for (tileid, tile) in self.tree.tiles.iter() {
+            if let Tile::Pane(Pane::DuplicateFiles(..)) = tile {
+                found_tile_id = Some(tileid);
+                break;
+            }
+        }
+        self.tree
+            .set_visible(*found_tile_id.expect("Should always find"), visible);
+    }
 }
 
 impl eframe::App for ZApp {
@@ -299,6 +358,15 @@ impl eframe::App for ZApp {
                 AppState::Idle(state_ctx)
             }
             AppState::Idle(mut state) => {
+                if self.is_path_diff() != self.diff_mode_path_diff {
+                    if self.is_path_diff() {
+                        self.set_path_diff_visible(false);
+                        self.set_duplicate_files_visible(true);
+                    } else {
+                        self.set_duplicate_files_visible(false);
+                        self.set_path_diff_visible(true);
+                    }
+                }
                 self.ui(ctx, frame, &mut state);
                 self.process_ctx_inputs(ctx, frame);
                 AppState::Idle(state)
