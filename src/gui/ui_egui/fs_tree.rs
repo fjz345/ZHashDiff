@@ -7,9 +7,10 @@ use std::{
 use eframe::egui::{self, Pos2, Rect, RichText, ScrollArea};
 use egui_extras::{Column, TableBuilder};
 use zhashdiff::{
-    comparison::{PathComparisonResult, PathComparissonMethod, compare_paths},
+    comparison::{PathComparissonMethod, compare_paths},
+    external_diff_tool::{DiffToolConfig, open_diff_tool},
     fs::{FileSystem, FsEntry},
-    hash::{HashService, hash_file},
+    hash::HashService,
 };
 
 use crate::ui_egui::common::{CheckboxSelectState, hash_to_color, ui_custom_checkbox};
@@ -246,11 +247,32 @@ struct VisibleRow {
 
 #[derive(PartialEq)]
 pub enum DiffState {
-    Different,
-    Same,
-    Partial,
-    OnlyInFirst,
-    OnlyInSecond,
+    Different(PathBuf, PathBuf),
+    Same(PathBuf, PathBuf),
+    Partial(PathBuf, PathBuf),
+    OnlyInFirst(PathBuf),
+    OnlyInSecond(PathBuf),
+}
+
+impl DiffState {
+    pub fn first(&self) -> Option<&PathBuf> {
+        match &self {
+            DiffState::Same(path_buf, path_buf1)
+            | DiffState::Different(path_buf, path_buf1)
+            | DiffState::Partial(path_buf, path_buf1) => Some(path_buf),
+            DiffState::OnlyInFirst(path_buf) => Some(path_buf),
+            DiffState::OnlyInSecond(..) => None,
+        }
+    }
+    pub fn second(&self) -> Option<&PathBuf> {
+        match &self {
+            DiffState::Same(path_buf, path_buf1)
+            | DiffState::Different(path_buf, path_buf1)
+            | DiffState::Partial(path_buf, path_buf1) => Some(path_buf1),
+            DiffState::OnlyInFirst(..) => None,
+            DiffState::OnlyInSecond(path_buf) => Some(path_buf),
+        }
+    }
 }
 
 pub fn ui_custom_diff_state(ui: &mut egui::Ui, state: &DiffState) -> egui::response::Response {
@@ -261,11 +283,11 @@ pub fn ui_custom_diff_state(ui: &mut egui::Ui, state: &DiffState) -> egui::respo
     // let teal = egui::Color32::from_rgb(0x50, 0xE3, 0xC2);
 
     match state {
-        DiffState::Same => ui.label(RichText::new("=").color(green)),
-        DiffState::Different => ui.label(RichText::new("≠").color(red)),
-        DiffState::Partial => ui.label(RichText::new("≈").color(yellow)),
-        DiffState::OnlyInFirst => ui.label(RichText::new("−").color(blue)),
-        DiffState::OnlyInSecond => ui.label(RichText::new("+").color(blue)),
+        DiffState::Same(..) => ui.label(RichText::new("=").color(green)),
+        DiffState::Different(..) => ui.label(RichText::new("≠").color(red)),
+        DiffState::Partial(..) => ui.label(RichText::new("≈").color(yellow)),
+        DiffState::OnlyInFirst(..) => ui.label(RichText::new("−").color(blue)),
+        DiffState::OnlyInSecond(..) => ui.label(RichText::new("+").color(blue)),
     }
 }
 
@@ -330,21 +352,21 @@ fn file_diff_state(
 
     let result = match compare_paths(path1, path2, method) {
         Ok(r) => r,
-        Err(_) => return DiffState::Different,
+        Err(_) => return DiffState::Different(path1.to_path_buf(), path2.to_path_buf()),
     };
 
     let likeness = result.likeness();
 
     if likeness == 1.0 {
-        DiffState::Same
+        DiffState::Same(path1.to_path_buf(), path2.to_path_buf())
     } else if likeness >= partial_threshold {
-        DiffState::Partial
+        DiffState::Partial(path1.to_path_buf(), path2.to_path_buf())
     } else {
-        DiffState::Different
+        DiffState::Different(path1.to_path_buf(), path2.to_path_buf())
     }
 }
 
-fn folder_diff_state(
+pub fn folder_diff_state(
     path: &Path,
     entries_map: &BTreeMap<PathBuf, (Option<(&FsEntry, usize)>, Option<(&FsEntry, usize)>)>,
     method: &PathComparissonMethod,
@@ -368,43 +390,44 @@ fn folder_diff_state(
                 if matches!(l, FsEntry::Dir { .. }) {
                     folder_diff_state(child_path, entries_map, method, partial_threshold)
                 } else {
-                    file_diff_state(l, r, method, 0.95)
+                    file_diff_state(l, r, method, partial_threshold)
                 }
             }
-            (Some(_), None) => OnlyInFirst,
-            (None, Some(_)) => OnlyInSecond,
+            (Some((l, _)), None) => OnlyInFirst(l.path_buf().clone()),
+            (None, Some((r, _))) => OnlyInSecond(r.path_buf().clone()),
             (None, None) => continue,
         };
 
         match state {
-            Same => seen_same = true,
-            Partial => seen_diff = true,
-            Different => seen_diff = true,
-            OnlyInFirst => seen_only_first = true,
-            OnlyInSecond => seen_only_second = true,
+            Same(..) => seen_same = true,
+            Partial(..) => seen_diff = true,
+            Different(..) => seen_diff = true,
+            OnlyInFirst(..) => seen_only_first = true,
+            OnlyInSecond(..) => seen_only_second = true,
         }
     }
 
-    // Determine folder state
+    // Decide folder state
     let flags = [seen_same, seen_diff, seen_only_first, seen_only_second];
     let count = flags.iter().filter(|&&b| b).count();
 
     match count {
-        0 => Same, // empty folder
+        0 => Same(path.to_path_buf(), path.to_path_buf()), // empty folder
         1 => {
             if seen_same {
-                Same
+                Same(path.to_path_buf(), path.to_path_buf())
             } else if seen_diff {
-                Different
+                Different(path.to_path_buf(), path.to_path_buf())
             } else if seen_only_first {
-                OnlyInFirst
+                OnlyInFirst(path.to_path_buf())
             } else {
-                OnlyInSecond
+                OnlyInSecond(path.to_path_buf())
             }
         }
-        _ => Partial, // mixed states → partial
+        _ => Partial(path.to_path_buf(), path.to_path_buf()), // mixed states → partial
     }
 }
+
 fn build_two_folder_diff_rows(
     expanded: &mut HashMap<PathBuf, bool>,
     file_system_1: &mut FileSystem,
@@ -485,8 +508,8 @@ fn build_two_folder_diff_rows(
                     file_diff_state(l, r, method, partial_threshold)
                 }
             }
-            (Some(_), None) => DiffState::OnlyInFirst,
-            (None, Some(_)) => DiffState::OnlyInSecond,
+            (Some(p), None) => DiffState::OnlyInFirst(p.0.path_buf().clone()),
+            (None, Some(p)) => DiffState::OnlyInSecond(p.0.path_buf().clone()),
             (None, None) => continue,
         };
 
@@ -499,6 +522,32 @@ fn build_two_folder_diff_rows(
     }
 
     Ok(())
+}
+
+fn on_row_item_clicked(entry: &VisibleRowTwoFolderDiff) -> bool {
+    log::info!("on_row_iten_clicked");
+
+    let path1 = entry.diff_state.first();
+    let path2 = entry.diff_state.second();
+
+    match (path1, path2) {
+        (None, None) => panic!("should not have a row if both paths are none"),
+        (None, Some(p)) | (Some(p), None) => {
+            log::info!("nothing to diff, only in one tree {:?}", p);
+            return false;
+        }
+        (Some(path1), Some(path2)) => {
+            let diff_tool = DiffToolConfig::default_tortoise();
+            let result = open_diff_tool(&diff_tool, path1, path2);
+            if let Err(err) = result {
+                log::error!("diffing failed...");
+                log::error!("{err}");
+                return false;
+            };
+        }
+    }
+
+    return true;
 }
 
 fn render_row_folder_tree_diff_column(
@@ -535,13 +584,19 @@ fn render_row_folder_tree_diff_column(
                 }
             } else {
                 match &entry.diff_state {
-                    DiffState::Different
-                    | DiffState::Same
-                    | DiffState::Partial
-                    | DiffState::OnlyInFirst => {
-                        ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+                    DiffState::Different(..)
+                    | DiffState::Same(..)
+                    | DiffState::Partial(..)
+                    | DiffState::OnlyInFirst(..) => {
+                        if ui
+                            .label(path.file_name().unwrap_or_default().to_string_lossy())
+                            .interact(egui::Sense::click())
+                            .clicked()
+                        {
+                            on_row_item_clicked(entry);
+                        }
                     }
-                    DiffState::OnlyInSecond => {}
+                    DiffState::OnlyInSecond(..) => {}
                 }
             }
         });
@@ -579,13 +634,19 @@ fn render_row_folder_tree_diff_column(
                 }
             } else {
                 match &entry.diff_state {
-                    DiffState::Different
-                    | DiffState::Same
-                    | DiffState::Partial
-                    | DiffState::OnlyInSecond => {
-                        ui.label(path.file_name().unwrap_or_default().to_string_lossy());
+                    DiffState::Different(..)
+                    | DiffState::Same(..)
+                    | DiffState::Partial(..)
+                    | DiffState::OnlyInSecond(..) => {
+                        if ui
+                            .label(path.file_name().unwrap_or_default().to_string_lossy())
+                            .interact(egui::Sense::click())
+                            .clicked()
+                        {
+                            on_row_item_clicked(entry);
+                        }
                     }
-                    DiffState::OnlyInFirst => {}
+                    DiffState::OnlyInFirst(..) => {}
                 }
             }
         });
