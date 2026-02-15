@@ -189,8 +189,16 @@ pub fn draw_ui_two_folder_tree_with_diff(
 
                     // COLUMN 1 (Diff icon)
                     header.col(|ui| {
-                        ui.centered_and_justified(|ui| {
+                        ui.vertical(|ui| {
                             ui.label("≠");
+
+                            // Find the root folder row in visible_rows
+                            if let Some(root_row) =
+                                visible_rows.iter().find(|row| row.path == *root_1)
+                            {
+                                // Draw the diff icon for this row
+                                ui_custom_diff_state(ui, &root_row.diff_state);
+                            }
                         });
                     });
 
@@ -397,7 +405,6 @@ fn folder_diff_state(
         _ => Partial, // mixed states → partial
     }
 }
-
 fn build_two_folder_diff_rows(
     expanded: &mut HashMap<PathBuf, bool>,
     file_system_1: &mut FileSystem,
@@ -405,6 +412,8 @@ fn build_two_folder_diff_rows(
     out: &mut Vec<VisibleRowTwoFolderDiff>,
     method: &PathComparissonMethod,
 ) -> io::Result<()> {
+    let partial_threshold = 1.0f32;
+
     out.clear();
 
     let root1 = file_system_1.root.clone();
@@ -419,6 +428,7 @@ fn build_two_folder_diff_rows(
     let mut entries_map: BTreeMap<PathBuf, (Option<(&FsEntry, usize)>, Option<(&FsEntry, usize)>)> =
         BTreeMap::new();
 
+    // Populate entries_map for folder 1
     for (entry, depth) in &fs_path_1_flat.entries {
         let rel = entry.relative_path_buf(&root1);
         entries_map.insert(rel.clone(), (Some((entry, *depth)), None));
@@ -427,18 +437,31 @@ fn build_two_folder_diff_rows(
         }
     }
 
+    // Populate entries_map for folder 2
     for (entry, depth) in &fs_path_2_flat.entries {
         let rel = entry.relative_path_buf(&root2);
         entries_map
             .entry(rel.clone())
             .and_modify(|e| e.1 = Some((entry, *depth)))
             .or_insert((None, Some((entry, *depth))));
-
         if matches!(entry, FsEntry::Dir { .. }) {
             expanded.entry(rel).or_insert(false);
         }
     }
 
+    // --- ADD ROOT ROW ---
+    entries_map.insert(PathBuf::from(""), (None, None));
+    let root_diff_state =
+        folder_diff_state(&PathBuf::from(""), &entries_map, method, partial_threshold);
+
+    out.push(VisibleRowTwoFolderDiff {
+        path: root1.clone(),
+        is_dir: true,
+        depth: 0,
+        diff_state: root_diff_state,
+    });
+
+    // --- ADD CHILDREN ROWS ---
     for (rel_path, (left, right)) in &entries_map {
         if !is_visible(expanded, rel_path) {
             continue;
@@ -454,7 +477,6 @@ fn build_two_folder_diff_rows(
             .or_else(|| right.map(|(e, _)| matches!(e, FsEntry::Dir { .. })))
             .unwrap_or(false);
 
-        let partial_threshold = 1.0f32;
         let diff_state = match (left, right) {
             (Some((l, _)), Some((r, _))) => {
                 if matches!(l, FsEntry::Dir { .. }) {
