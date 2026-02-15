@@ -9,6 +9,7 @@ use eframe::egui::{self, ScrollArea, Ui};
 use egui_extras::{Size, StripBuilder};
 use serde::{Deserialize, Serialize};
 use zhashdiff::{
+    external_diff_tool::DiffToolConfig,
     fs::{FileSystem, FsEntry, FsPath},
     hash::{HashService, ResolveConflictsInput, execute_resolution, find_conflicts},
 };
@@ -41,6 +42,7 @@ pub struct TreeBehavior<'a> {
     pub conflict_map: &'a mut HashMap<String, Vec<PathBuf>>,
     pub conflict_map_resolved: &'a mut HashMap<String, PathBuf>,
     pub diff_action_pressed: &'a mut bool,
+    pub diff_tool_config: &'a DiffToolConfig,
 }
 
 impl TreeBehavior<'_> {
@@ -53,6 +55,7 @@ impl TreeBehavior<'_> {
             expanded: &mut self.expanded,
             selected_1: &mut self.selected,
             selected_2: &mut self.selected_2,
+            diff_tool_config: &self.diff_tool_config,
         }
     }
 
@@ -208,6 +211,7 @@ impl PathDiffPane {
                         &mut ctx.file_system_2,
                         &mut self.open_dir_window_1,
                         &mut self.open_dir_window_2,
+                        &ctx.diff_tool_config,
                     );
                 } else {
                     ui.label("No root dir set...");
@@ -221,6 +225,7 @@ impl PathDiffPane {
                         &mut ctx.file_system_2,
                         &mut self.open_dir_window_1,
                         &mut self.open_dir_window_2,
+                        &ctx.diff_tool_config,
                     );
                 }
             });
@@ -300,6 +305,7 @@ pub struct PathDiffPaneCtx<'a> {
     pub expanded: &'a mut HashMap<PathBuf, bool>,
     pub selected_1: &'a mut HashMap<PathBuf, bool>,
     pub selected_2: &'a mut HashMap<PathBuf, bool>,
+    pub diff_tool_config: &'a DiffToolConfig,
 }
 
 pub struct DuplicateFilesPaneCtx<'a> {

@@ -123,6 +123,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     file_system_2: &mut FileSystem,
     open_dir_window_1: &mut bool,
     open_dir_window_2: &mut bool,
+    diff_tool_config: &DiffToolConfig,
 ) -> egui::response::Response {
     let mut visible_rows = Vec::new();
     let io_read_result = build_two_folder_diff_rows(
@@ -241,7 +242,13 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 .body(|body| {
                     body.rows(row_height, row_count, |mut row| {
                         let entry = &visible_rows[row.index()];
-                        render_row_folder_tree_diff_column(expanded, &mut row, entry, row_height);
+                        render_row_folder_tree_diff_column(
+                            expanded,
+                            &mut row,
+                            entry,
+                            row_height,
+                            diff_tool_config,
+                        );
                     });
                 });
         });
@@ -577,7 +584,7 @@ fn build_two_folder_diff_rows(
     Ok(())
 }
 
-fn on_row_item_clicked(entry: &VisibleRowTwoFolderDiff) -> bool {
+fn on_row_item_clicked(entry: &VisibleRowTwoFolderDiff, config: &DiffToolConfig) -> bool {
     log::info!("on_row_iten_clicked");
 
     let path1 = entry.diff_state.first();
@@ -590,7 +597,7 @@ fn on_row_item_clicked(entry: &VisibleRowTwoFolderDiff) -> bool {
             return false;
         }
         (Some(path1), Some(path2)) => {
-            let diff_tool = DiffToolConfig::default_tortoise();
+            let diff_tool = config;
             let result = open_diff_tool(&diff_tool, path1, path2);
             if let Err(err) = result {
                 log::error!("diffing failed...");
@@ -608,6 +615,7 @@ fn render_row_folder_tree_diff_column(
     row: &mut egui_extras::TableRow,
     entry: &VisibleRowTwoFolderDiff,
     row_height: f32,
+    diff_tool_config: &DiffToolConfig,
 ) {
     let path = &entry.path;
     let is_dir = entry.is_dir;
@@ -646,7 +654,7 @@ fn render_row_folder_tree_diff_column(
                             .interact(egui::Sense::click())
                             .clicked()
                         {
-                            on_row_item_clicked(entry);
+                            on_row_item_clicked(entry, diff_tool_config);
                         }
                     }
                     DiffState::OnlyInSecond(..) => {}
@@ -696,7 +704,7 @@ fn render_row_folder_tree_diff_column(
                             .interact(egui::Sense::click())
                             .clicked()
                         {
-                            on_row_item_clicked(entry);
+                            on_row_item_clicked(entry, diff_tool_config);
                         }
                     }
                     DiffState::OnlyInFirst(..) => {}

@@ -1,11 +1,15 @@
-use eframe::egui::{self, Layout, PointerButton, menu};
+use eframe::egui::{self, Layout, PointerButton, TextBuffer, menu};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-use zhashdiff::{fs::FileSystem, hash::HashService};
+use zhashdiff::{
+    external_diff_tool::{DiffToolConfig, DiffToolDefaultArgs},
+    fs::FileSystem,
+    hash::HashService,
+};
 
 use crate::ui_egui::{
     common::preview_files_being_dropped,
@@ -13,6 +17,7 @@ use crate::ui_egui::{
         DuplicateFilesPane, DuplicateFilesPaneCtx, LogPane, Pane, PathDiffPane, PathDiffPaneCtx,
         TreeBehavior,
     },
+    popup::show_custom_popup,
 };
 use eframe::{
     CreationContext,
@@ -32,8 +37,6 @@ pub struct AppStateCtx {
     #[serde(skip)]
     pub selected: HashMap<PathBuf, bool>,
     #[serde(skip)]
-    pub expanded_2: HashMap<PathBuf, bool>,
-    #[serde(skip)]
     pub selected_2: HashMap<PathBuf, bool>,
 
     #[serde(skip)]
@@ -43,6 +46,8 @@ pub struct AppStateCtx {
     conflict_map: HashMap<String, Vec<PathBuf>>,
     #[serde(skip)]
     conflict_map_resolved: HashMap<String, PathBuf>,
+
+    diff_config: DiffToolConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -83,6 +88,8 @@ pub struct ZApp {
     open_dir_window_2: bool,
 
     diff_mode_path_diff: bool,
+
+    open_external_diff_window: bool,
 }
 
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
@@ -111,6 +118,7 @@ impl ZApp {
             open_dir_window_1: false,
             open_dir_window_2: false,
             diff_mode_path_diff: true,
+            open_external_diff_window: false,
         }
     }
 
@@ -153,7 +161,7 @@ impl ZApp {
         egui_tiles::Tree::new("my_tree", root, tiles)
     }
 
-    fn show_menu(&mut self, ui: &mut egui::Ui) {
+    fn show_menu(&mut self, ui: &mut egui::Ui, app_ctx: &mut AppStateCtx) {
         ui.horizontal(|ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
@@ -167,11 +175,17 @@ impl ZApp {
                 });
 
                 ui.menu_button("Options", |ui| {
-                    if ui.button("Open Folder 1").clicked() {
-                        self.open_dir_window_1 = true;
+                    if ui.button("Set external diff tool").clicked() {
+                        self.open_external_diff_window = true;
                     }
-                    if ui.button("Open Folder 2").clicked() {
-                        self.open_dir_window_2 = true;
+                    if ui.button("Setup colors").clicked() {
+                        log::error!("NYI");
+                    }
+                    if ui.button("Font size").clicked() {
+                        log::error!("NYI");
+                    }
+                    if ui.button("Set Theme").clicked() {
+                        log::error!("NYI");
                     }
                 });
 
@@ -191,7 +205,50 @@ impl ZApp {
 
     fn ui(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.show_menu(ui);
+            self.show_menu(ui, app_ctx);
+
+            if self.open_external_diff_window {
+                show_custom_popup(
+                    ctx,
+                    &mut self.open_external_diff_window,
+                    "Option - External Diff Tool",
+                    |ui| {
+                        ui.label("Defaults: ");
+                        ui.vertical(|ui| {
+                            if ui.button("Tortoise").clicked() {
+                                app_ctx.diff_config = DiffToolConfig::default_tortoise()
+                            }
+                        });
+
+                        let mut text_edit = app_ctx.diff_config.exe_path.to_string_lossy();
+                        ui.label("Path: ");
+                        ui.text_edit_singleline(&mut text_edit);
+                        app_ctx.diff_config.exe_path = PathBuf::from(text_edit.as_str());
+
+                        let mut text_edit = app_ctx.diff_config.diff_path_1_args.clone();
+                        ui.label("Path 1 args ({}): ");
+                        ui.text_edit_singleline(&mut text_edit);
+                        app_ctx.diff_config.diff_path_1_args = text_edit.to_string();
+
+                        let mut text_edit = app_ctx.diff_config.diff_path_2_args.clone();
+                        ui.label("Path 2 args ({}): ");
+                        ui.text_edit_singleline(&mut text_edit);
+                        app_ctx.diff_config.diff_path_2_args = text_edit.to_string();
+
+                        let mut text_edit = app_ctx.diff_config.prefix_args.to_string();
+                        ui.label("Prefix Args (\\n): ");
+                        ui.text_edit_multiline(&mut text_edit);
+                        app_ctx.diff_config.prefix_args =
+                            DiffToolDefaultArgs::from_string(text_edit.as_str());
+
+                        let mut text_edit = app_ctx.diff_config.suffix_args.to_string();
+                        ui.label("Suffix args (\\n): ");
+                        ui.text_edit_multiline(&mut text_edit);
+                        app_ctx.diff_config.suffix_args =
+                            DiffToolDefaultArgs::from_string(text_edit.as_str());
+                    },
+                );
+            }
             ui.separator();
 
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
@@ -208,6 +265,7 @@ impl ZApp {
                     diff_action_pressed: &mut diff_action_triggered,
                     file_system_2: &mut app_ctx.file_system_2,
                     selected_2: &mut app_ctx.selected_2,
+                    diff_tool_config: &app_ctx.diff_config,
                 };
 
                 self.tree.ui(&mut behavior, ui);
