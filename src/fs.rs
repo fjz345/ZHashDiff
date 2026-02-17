@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -185,5 +188,217 @@ impl FileSystem {
             }
         }
         count
+    }
+}
+
+// ^^^^^^^^^^^^^^^^^ OLD ^^^^^^^^^^^^^^^^
+
+type FsNodeId = usize;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum FsNodeKind {
+    File {
+        path: PathBuf,
+    },
+    Dir {
+        path: PathBuf,
+        children: Vec<FsNodeId>,
+    },
+}
+
+impl FsNodeKind {
+    pub fn new_file(path: impl AsRef<Path>) -> Self {
+        Self::File {
+            path: path.as_ref().into(),
+        }
+    }
+    pub fn new_empty_dir(path: impl AsRef<Path>) -> Self {
+        Self::Dir {
+            path: path.as_ref().into(),
+            children: Vec::new(),
+        }
+    }
+    pub fn new_dir(path: impl AsRef<Path>, children: Vec<FsNodeId>) -> Self {
+        Self::Dir {
+            path: path.as_ref().into(),
+            children,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FsNode {
+    pub parent: Option<FsNodeId>,
+    pub kind: FsNodeKind,
+}
+
+#[derive(Debug)]
+pub struct FileSystemModel {
+    root_path: PathBuf,
+    nodes: Vec<FsNode>,
+}
+
+impl FileSystemModel {
+    pub fn new(root_path: &Path) -> Self {
+        Self::build_model(root_path).expect("failed to build model")
+    }
+
+    pub fn get_node(&self, node_id: FsNodeId) -> Option<&FsNode> {
+        self.nodes.get(node_id)
+    }
+    pub fn get_node_mut(&mut self, node_id: FsNodeId) -> Option<&mut FsNode> {
+        self.nodes.get_mut(node_id)
+    }
+
+    fn push_node(&mut self, parent: Option<FsNodeId>, kind: FsNodeKind) -> FsNodeId {
+        let new_node = FsNode { parent, kind };
+        let next_node_id: FsNodeId = self.nodes.len();
+        self.nodes.push(new_node);
+        next_node_id
+    }
+
+    fn build_model(root: impl AsRef<Path>) -> io::Result<Self> {
+        let root_path = root.as_ref().to_path_buf();
+        let nodes = Vec::new();
+        let mut model = Self { root_path, nodes };
+
+        let root_node_id = model.read_dir(root.as_ref().to_path_buf(), None)?;
+        assert_eq!(root_node_id, 0);
+
+        Ok(model)
+    }
+
+    fn read_dir(
+        &mut self,
+        path: impl AsRef<Path>,
+        parent: Option<FsNodeId>,
+    ) -> io::Result<FsNodeId> {
+        let read_dir = std::fs::read_dir(&path)?;
+        let dir_node_id = self.push_node(parent, FsNodeKind::new_empty_dir(&path));
+
+        let mut children = Vec::new();
+        for entry in read_dir.flatten() {
+            let p = entry.path();
+            let child_id = if p.is_dir() {
+                self.read_dir(p, Some(dir_node_id))?
+            } else {
+                self.push_node(Some(dir_node_id), FsNodeKind::new_file(p))
+            };
+            children.push(child_id);
+        }
+
+        if let Some(node) = self.get_node_mut(dir_node_id) {
+            if let FsNodeKind::Dir { children: c, .. } = &mut node.kind {
+                *c = children;
+            }
+        }
+        Ok(dir_node_id)
+    }
+}
+
+//// TESTS
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{self, File};
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    fn create_file(path: &Path) {
+        File::create(path).expect("failed to create file");
+    }
+
+    #[test]
+    fn builds_empty_directory() {
+        let dir = tempdir().unwrap();
+        let model = FileSystemModel::new(dir.path());
+
+        let root = model.get_node(0).unwrap();
+
+        match &root.kind {
+            FsNodeKind::Dir { path, children } => {
+                assert_eq!(path, dir.path());
+                assert!(children.is_empty());
+            }
+            _ => panic!("root is not a directory"),
+        }
+
+        assert!(root.parent.is_none());
+    }
+
+    #[test]
+    fn builds_directory_with_files() {
+        let dir = tempdir().unwrap();
+
+        create_file(&dir.path().join("a.txt"));
+        create_file(&dir.path().join("b.txt"));
+
+        let model = FileSystemModel::new(dir.path());
+        let root = model.get_node(0).unwrap();
+
+        let children_ids = match &root.kind {
+            FsNodeKind::Dir { children, .. } => children,
+            _ => panic!("root not dir"),
+        };
+
+        assert_eq!(children_ids.len(), 2);
+
+        let mut file_names = Vec::new();
+
+        for child_id in children_ids {
+            let node = model.get_node(*child_id).unwrap();
+            assert_eq!(node.parent, Some(0));
+
+            match &node.kind {
+                FsNodeKind::File { path } => {
+                    file_names.push(path.file_name().unwrap().to_string_lossy().to_string());
+                }
+                _ => panic!("expected file"),
+            }
+        }
+
+        file_names.sort();
+        assert_eq!(file_names, vec!["a.txt", "b.txt"]);
+    }
+
+    #[test]
+    fn builds_nested_directories() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("subdir");
+        fs::create_dir(&sub).unwrap();
+        create_file(&sub.join("nested.txt"));
+
+        let model = FileSystemModel::new(dir.path());
+
+        let root = model.get_node(0).unwrap();
+
+        let root_children = match &root.kind {
+            FsNodeKind::Dir { children, .. } => children,
+            _ => panic!("root not dir"),
+        };
+
+        assert_eq!(root_children.len(), 1);
+
+        let subdir_id = root_children[0];
+        let subdir_node = model.get_node(subdir_id).unwrap();
+        assert_eq!(subdir_node.parent, Some(0));
+
+        let sub_children = match &subdir_node.kind {
+            FsNodeKind::Dir { children, .. } => children,
+            _ => panic!("subdir not dir"),
+        };
+
+        assert_eq!(sub_children.len(), 1);
+
+        let nested_id = sub_children[0];
+        let nested_node = model.get_node(nested_id).unwrap();
+        assert_eq!(nested_node.parent, Some(subdir_id));
+
+        match &nested_node.kind {
+            FsNodeKind::File { path } => {
+                assert_eq!(path.file_name().unwrap(), "nested.txt");
+            }
+            _ => panic!("expected file"),
+        }
     }
 }
