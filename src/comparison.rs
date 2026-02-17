@@ -41,8 +41,8 @@ impl PathComparisonResult {
 }
 
 pub fn compare_paths(
-    path1: &Path,
-    path2: &Path,
+    path1: impl AsRef<Path>,
+    path2: impl AsRef<Path>,
     method: &PathComparissonMethod,
 ) -> io::Result<PathComparisonResult> {
     match method {
@@ -52,7 +52,10 @@ pub fn compare_paths(
     }
 }
 
-pub fn compare_bytes(path1: &Path, path2: &Path) -> io::Result<PathComparisonResult> {
+pub fn compare_bytes(
+    path1: impl AsRef<Path>,
+    path2: impl AsRef<Path>,
+) -> io::Result<PathComparisonResult> {
     let mut file1 = File::open(path1)?;
     let mut file2 = File::open(path2)?;
 
@@ -101,7 +104,10 @@ pub fn compare_bytes(path1: &Path, path2: &Path) -> io::Result<PathComparisonRes
     Ok(PathComparisonResult::Byte { likeness })
 }
 
-pub fn compare_hash(path1: &Path, path2: &Path) -> io::Result<PathComparisonResult> {
+pub fn compare_hash(
+    path1: impl AsRef<Path>,
+    path2: impl AsRef<Path>,
+) -> io::Result<PathComparisonResult> {
     let hash1 = hash_file(path1)?;
     let hash2 = hash_file(path2)?;
 
@@ -110,8 +116,11 @@ pub fn compare_hash(path1: &Path, path2: &Path) -> io::Result<PathComparisonResu
     })
 }
 
-pub fn compare_crc(path1: &Path, path2: &Path) -> io::Result<PathComparisonResult> {
-    fn crc_of_file(path: &Path) -> io::Result<u32> {
+pub fn compare_crc(
+    path1: impl AsRef<Path>,
+    path2: impl AsRef<Path>,
+) -> io::Result<PathComparisonResult> {
+    fn crc_of_file(path: impl AsRef<Path>) -> io::Result<u32> {
         let mut file = File::open(path)?;
         let mut hasher = Crc32Hasher::new();
         let mut buffer = [0u8; 8192];

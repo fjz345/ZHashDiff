@@ -1,4 +1,4 @@
-use eframe::egui::{self, Layout, PointerButton, TextBuffer, menu};
+use eframe::egui::{self, Layout, PointerButton, TextBuffer};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -7,37 +7,33 @@ use std::{
 };
 use zhashdiff::{
     external_diff_tool::{DiffToolConfig, DiffToolDefaultArgs},
-    fs::FileSystem,
+    fs::{FileSystemModel, FsNodeId},
     hash::HashService,
 };
 
 use crate::ui_egui::{
-    common::preview_files_being_dropped,
-    panes::{
-        DuplicateFilesPane, DuplicateFilesPaneCtx, LogPane, Pane, PathDiffPane, PathDiffPaneCtx,
-        TreeBehavior,
-    },
+    panes::{DuplicateFilesPane, LogPane, Pane, PathDiffPane, TreeBehavior},
     popup::show_custom_popup,
 };
 use eframe::{
     CreationContext,
     epaint::{Pos2, Vec2},
 };
-use egui_tiles::{Tile, TileId};
+use egui_tiles::Tile;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AppStateCtx {
     #[serde(skip)]
     pub hash_service: HashService,
-    pub file_system: FileSystem,
-    pub file_system_2: FileSystem,
+    pub file_system_model_1: FileSystemModel,
+    pub file_system_model_2: FileSystemModel,
 
     #[serde(skip)]
-    pub expanded: HashMap<PathBuf, bool>,
+    pub expanded: HashMap<FsNodeId, bool>,
     #[serde(skip)]
-    pub selected: HashMap<PathBuf, bool>,
+    pub selected_1: HashMap<FsNodeId, bool>,
     #[serde(skip)]
-    pub selected_2: HashMap<PathBuf, bool>,
+    pub selected_2: HashMap<FsNodeId, bool>,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -256,14 +252,14 @@ impl ZApp {
                 let mut behavior = TreeBehavior {
                     log_buffer: self.log_buffer.clone(),
                     hash_service: &mut app_ctx.hash_service,
-                    file_system: &mut app_ctx.file_system,
+                    file_system_1: &mut app_ctx.file_system_model_1,
                     expanded: &mut app_ctx.expanded,
-                    selected: &mut app_ctx.selected,
+                    selected_1: &mut app_ctx.selected_1,
                     active_conflict_hash: &mut app_ctx.active_conflict_hash,
                     conflict_map: &mut app_ctx.conflict_map,
                     conflict_map_resolved: &mut app_ctx.conflict_map_resolved,
                     diff_action_pressed: &mut diff_action_triggered,
-                    file_system_2: &mut app_ctx.file_system_2,
+                    file_system_2: &mut app_ctx.file_system_model_2,
                     selected_2: &mut app_ctx.selected_2,
                     diff_tool_config: &app_ctx.diff_config,
                 };
@@ -273,21 +269,15 @@ impl ZApp {
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
                         let out_ctx = behavior.create_duplicate_files_ctx();
-                        let count_files =
-                            out_ctx.file_system.count_files(&out_ctx.file_system.root);
-
-                        let count = if out_ctx.file_system.root.is_dir() {
-                            count_files - 1
-                        } else {
-                            count_files
-                        };
+                        let count_files = out_ctx.file_system.total_files();
+                        let count_files_and_folders = out_ctx.file_system.total_files_and_folders();
 
                         let active = out_ctx.hash_service.count_active_hashes();
                         let total_pending = out_ctx.hash_service.count_hash_queue() + active;
                         let waiting = total_pending.saturating_sub(active);
                         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
                             "ZHashDiff - {} files/folders ({} active, {} queued)",
-                            count, active, waiting
+                            count_files_and_folders, active, waiting
                         )));
 
                         break;
@@ -300,18 +290,16 @@ impl ZApp {
         if self.open_dir_window_1 {
             self.open_dir_window_1 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // ctx.file_system.root_dir_cache.clear();
-                FileSystem::read_path_recursive_flatten(&path);
-                app_ctx.file_system.root = path;
+                // ctx.file_system.get_root()_dir_cache.clear();
+                app_ctx.file_system_model_1 = FileSystemModel::new(&path);
                 app_ctx.expanded.clear();
             }
         }
         if self.open_dir_window_2 {
             self.open_dir_window_2 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // ctx.file_system.root_dir_cache.clear();
-                FileSystem::read_path_recursive_flatten(&path);
-                app_ctx.file_system.root = path;
+                // ctx.file_system.get_root()_dir_cache.clear();
+                app_ctx.file_system_model_2 = FileSystemModel::new(&path);
                 app_ctx.expanded.clear();
             }
         }

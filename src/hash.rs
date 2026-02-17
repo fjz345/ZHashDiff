@@ -11,7 +11,9 @@ use std::{
     time::Duration,
 };
 
-pub fn hash_file(path: &Path) -> io::Result<String> {
+use crate::fs::FsNodeId;
+
+pub fn hash_file(path: impl AsRef<Path>) -> io::Result<String> {
     let mut hasher = blake3::Hasher::new();
     hasher.update_mmap_rayon(path)?;
     Ok(hasher.finalize().to_hex().to_string())
@@ -134,13 +136,13 @@ impl HashService {
         }
     }
 
-    pub fn request(&self, path: PathBuf) {
+    pub fn request(&self, path: impl AsRef<Path>) {
         let mut hashes = self.hashes.write().unwrap();
-        if hashes.contains_key(&path) {
+        if hashes.contains_key(path.as_ref().into()) {
             return;
         }
-        hashes.insert(path.clone(), None);
-        let _ = self.tx.send(path);
+        hashes.insert(path.as_ref().into(), None);
+        let _ = self.tx.send(path.as_ref().into());
     }
 
     pub fn remove(&self, path: &PathBuf) {
@@ -149,8 +151,12 @@ impl HashService {
         }
     }
 
-    pub fn get(&self, path: &PathBuf) -> Option<Option<String>> {
-        self.hashes.read().unwrap().get(path).cloned()
+    pub fn get(&self, path: impl AsRef<Path>) -> Option<Option<String>> {
+        self.hashes
+            .read()
+            .unwrap()
+            .get(path.as_ref().into())
+            .cloned()
     }
 
     pub fn clear(&self) {
@@ -183,14 +189,17 @@ impl HashService {
 }
 
 pub fn find_conflicts(
-    hashes: &HashMap<PathBuf, Option<String>>,
-    selected: &HashMap<PathBuf, bool>,
+    hashes: &HashMap<FsNodeId, Option<String>>,
+    selected: &HashMap<FsNodeId, bool>,
 ) -> HashMap<String, Vec<PathBuf>> {
+    todo!();
+
+    // Hashes can not be FsNodeId, hashing reads file from fs
     let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
     for (path, hash) in hashes {
         if selected.get(path).copied().unwrap_or(false) {
             if let Some(h) = hash {
-                groups.entry(h.clone()).or_default().push(path.clone());
+                groups.entry(h.clone()).or_default().push("".into()); // path.clone()
             }
         }
     }

@@ -85,7 +85,11 @@ impl DiffToolConfig {
     }
 }
 
-pub fn open_diff_tool(config: &DiffToolConfig, file1: &Path, file2: &Path) -> io::Result<()> {
+pub fn open_diff_tool(
+    config: &DiffToolConfig,
+    file1: impl AsRef<Path>,
+    file2: impl AsRef<Path>,
+) -> io::Result<()> {
     let config = DiffToolConfig::default_tortoise();
     let mut cmd = Command::new(&config.exe_path);
 
@@ -96,12 +100,12 @@ pub fn open_diff_tool(config: &DiffToolConfig, file1: &Path, file2: &Path) -> io
     cmd.raw_arg(
         config
             .diff_path_1_args
-            .replace("{}", &file1.to_string_lossy()),
+            .replace("{}", &file1.as_ref().to_string_lossy()),
     );
     cmd.raw_arg(
         config
             .diff_path_2_args
-            .replace("{}", &file2.to_string_lossy()),
+            .replace("{}", &file2.as_ref().to_string_lossy()),
     );
     // cmd.raw_arg(format!(r#"/path:"{}""#, file1.to_string_lossy()));
     // cmd.raw_arg(format!(r#"/path2:"{}""#, file2.to_string_lossy()));

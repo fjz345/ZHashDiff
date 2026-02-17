@@ -10,7 +10,7 @@ use egui_extras::{Size, StripBuilder};
 use serde::{Deserialize, Serialize};
 use zhashdiff::{
     external_diff_tool::DiffToolConfig,
-    fs::{FileSystem, FsEntry, FsPath},
+    fs::{FileSystemModel, FsNode, FsNodeId},
     hash::{HashService, ResolveConflictsInput, execute_resolution, find_conflicts},
 };
 
@@ -29,13 +29,13 @@ pub struct TreeBehavior<'a> {
     pub log_buffer: Arc<Mutex<Vec<String>>>,
 
     pub hash_service: &'a mut HashService,
-    pub file_system: &'a mut FileSystem,
-    pub file_system_2: &'a mut FileSystem,
+    pub file_system_1: &'a mut FileSystemModel,
+    pub file_system_2: &'a mut FileSystemModel,
 
     // User Interaction State
-    pub expanded: &'a mut HashMap<PathBuf, bool>,
-    pub selected: &'a mut HashMap<PathBuf, bool>,
-    pub selected_2: &'a mut HashMap<PathBuf, bool>,
+    pub expanded: &'a mut HashMap<FsNodeId, bool>,
+    pub selected_1: &'a mut HashMap<FsNodeId, bool>,
+    pub selected_2: &'a mut HashMap<FsNodeId, bool>,
 
     // Diff Action State
     pub active_conflict_hash: &'a mut Option<String>,
@@ -50,10 +50,10 @@ impl TreeBehavior<'_> {
         PathDiffPaneCtx {
             hash_service: &mut self.hash_service,
 
-            file_system_1: &mut self.file_system,
+            file_system_1: &mut self.file_system_1,
             file_system_2: &mut self.file_system_2,
             expanded: &mut self.expanded,
-            selected_1: &mut self.selected,
+            selected_1: &mut self.selected_1,
             selected_2: &mut self.selected_2,
             diff_tool_config: &self.diff_tool_config,
         }
@@ -62,10 +62,10 @@ impl TreeBehavior<'_> {
     pub fn create_duplicate_files_ctx(&mut self) -> DuplicateFilesPaneCtx {
         DuplicateFilesPaneCtx {
             hash_service: &mut self.hash_service,
-            file_system: &mut self.file_system,
+            file_system: &mut self.file_system_1,
 
             expanded: &mut self.expanded,
-            selected: &mut self.selected,
+            selected: &mut self.selected_1,
 
             active_conflict_hash: &mut self.active_conflict_hash,
             conflict_map: &mut self.conflict_map,
@@ -168,7 +168,22 @@ impl PathDiffPane {
             let is_anything_expanded = ctx
                 .expanded
                 .iter()
-                .filter(|(k, _)| !k.as_os_str().is_empty()) // skip root
+                .filter(|(k, _)| {
+                    if **k == ctx.file_system_1.get_root_node_id()
+                        || **k == ctx.file_system_2.get_root_node_id()
+                    {
+                        return false;
+                    }
+                    let node = ctx.file_system_1.get_node(**k);
+                    if let Some(node) = node {
+                        return true;
+                    }
+                    let node = ctx.file_system_2.get_node(**k);
+                    if let Some(node) = node {
+                        return true;
+                    }
+                    return false;
+                }) // skip root
                 .any(|(_, &v)| v);
 
             let button_text = if is_anything_expanded {
@@ -182,14 +197,22 @@ impl PathDiffPane {
                     // Collapse all (not root)
                     for (key, value) in &mut ctx.expanded.iter_mut() {
                         // "" = root (relative)
-                        if !key.as_os_str().is_empty() {
+                        if *key == ctx.file_system_1.get_root_node_id() {
                             *value = false;
                         }
                     }
                 } else {
                     // Expand all
-                    recursive_expand(ctx.expanded, ctx.file_system_1, &ctx.file_system_1.root);
-                    recursive_expand(ctx.expanded, ctx.file_system_2, &ctx.file_system_2.root);
+                    recursive_expand(
+                        ctx.expanded,
+                        ctx.file_system_1,
+                        ctx.file_system_1.get_root_node_id(),
+                    );
+                    recursive_expand(
+                        ctx.expanded,
+                        ctx.file_system_2,
+                        ctx.file_system_2.get_root_node_id(),
+                    );
                 }
             }
         });
@@ -200,11 +223,9 @@ impl PathDiffPane {
         ScrollArea::vertical()
             .id_salt(&"path_diff_table")
             .show(ui, |ui| {
-                if ctx.file_system_1.root.is_dir() {
+                if ctx.file_system_1.get_root().is_dir() {
                     draw_ui_two_folder_tree_with_diff(
                         ui,
-                        &mut ctx.file_system_1.root.clone(),
-                        &mut ctx.file_system_2.root.clone(),
                         &mut ctx.expanded,
                         &mut ctx.selected_1,
                         &mut ctx.file_system_1,
@@ -217,8 +238,6 @@ impl PathDiffPane {
                     ui.label("No root dir set...");
                     draw_ui_two_folder_tree_with_diff(
                         ui,
-                        &mut ctx.file_system_1.root.clone(),
-                        &mut ctx.file_system_2.root.clone(),
                         &mut ctx.expanded,
                         &mut ctx.selected_1,
                         &mut ctx.file_system_1,
@@ -234,9 +253,8 @@ impl PathDiffPane {
         if self.open_dir_window_1 {
             self.open_dir_window_1 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // ctx.file_system.root_dir_cache.clear();
-                FileSystem::read_path_recursive_flatten(&path);
-                ctx.file_system_1.root = path;
+                // ctx.file_system.get_root()_dir_cache.clear();
+                *ctx.file_system_1 = FileSystemModel::new(path);
                 ctx.expanded.clear();
             }
         }
@@ -244,9 +262,8 @@ impl PathDiffPane {
         if self.open_dir_window_2 {
             self.open_dir_window_2 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // ctx.file_system.root_dir_cache.clear();
-                FileSystem::read_path_recursive_flatten(&path);
-                ctx.file_system_2.root = path;
+                // ctx.file_system.get_root()_dir_cache.clear();
+                *ctx.file_system_2 = FileSystemModel::new(path);
                 ctx.expanded.clear();
             }
         }
@@ -298,23 +315,23 @@ impl ZAppPane for DuplicateFilesPane {
 
 pub struct PathDiffPaneCtx<'a> {
     pub hash_service: &'a mut HashService,
-    pub file_system_1: &'a mut FileSystem,
-    pub file_system_2: &'a mut FileSystem,
+    pub file_system_1: &'a mut FileSystemModel,
+    pub file_system_2: &'a mut FileSystemModel,
 
     // User Interaction State
-    pub expanded: &'a mut HashMap<PathBuf, bool>,
-    pub selected_1: &'a mut HashMap<PathBuf, bool>,
-    pub selected_2: &'a mut HashMap<PathBuf, bool>,
+    pub expanded: &'a mut HashMap<FsNodeId, bool>,
+    pub selected_1: &'a mut HashMap<FsNodeId, bool>,
+    pub selected_2: &'a mut HashMap<FsNodeId, bool>,
     pub diff_tool_config: &'a DiffToolConfig,
 }
 
 pub struct DuplicateFilesPaneCtx<'a> {
     pub hash_service: &'a mut HashService,
-    pub file_system: &'a mut FileSystem,
+    pub file_system: &'a mut FileSystemModel,
 
     // User Interaction State
-    pub expanded: &'a mut HashMap<PathBuf, bool>,
-    pub selected: &'a mut HashMap<PathBuf, bool>,
+    pub expanded: &'a mut HashMap<FsNodeId, bool>,
+    pub selected: &'a mut HashMap<FsNodeId, bool>,
 
     // Diff Action State
     pub active_conflict_hash: &'a mut Option<String>,
@@ -356,17 +373,20 @@ impl DuplicateFilesPane {
                     if is_anything_expanded {
                         ctx.expanded.clear();
                     } else {
-                        recursive_expand(ctx.expanded, ctx.file_system, &ctx.file_system.root);
+                        recursive_expand(
+                            ctx.expanded,
+                            ctx.file_system,
+                            ctx.file_system.get_root_node_id(),
+                        );
                     }
                 }
 
                 if ui.button("Request All Hash").clicked() {
-                    let all_paths =
-                        FileSystem::read_path_recursive_flatten(&ctx.file_system.root.clone());
+                    let all_files: Vec<_> = ctx.file_system.iter_files().collect();
 
-                    for path in all_paths.entries {
-                        if let FsEntry::File { path } = path.0 {
-                            ctx.hash_service.request(path);
+                    for node_id in all_files {
+                        if let Some(node) = ctx.file_system.get_node(node_id) {
+                            ctx.hash_service.request(node.pathbuf());
                         }
                     }
                 }
@@ -377,11 +397,11 @@ impl DuplicateFilesPane {
 
                 // if ui.button("Reload Root Dir").clicked() {
                 //     ctx.file_system
-                //         .read_path_recursive_flatten(&ctx.file_system.root.clone());
+                //         .read_path_recursive_flatten(&ctx.file_system.get_root().clone());
                 // }
 
                 // if ui.button("Clear Cache").clicked() {
-                //     ctx.file_system.root_dir_cache.clear();
+                //     ctx.file_system.get_root()_dir_cache.clear();
                 // }
 
                 // let cache_text = if ctx.file_system.cache_enabled {
@@ -411,10 +431,9 @@ impl DuplicateFilesPane {
         egui::ScrollArea::vertical()
             .max_height(500.0)
             .show(ui, |ui| {
-                if ctx.file_system.root.is_dir() {
+                if ctx.file_system.get_root().is_dir() {
                     draw_ui_folder_tree_with_checkbox(
                         ui,
-                        &ctx.file_system.root.clone(),
                         ctx.expanded,
                         ctx.selected,
                         ctx.file_system,
@@ -433,7 +452,8 @@ impl DuplicateFilesPane {
             if ui.button("Diff").clicked() {
                 log::info!("Selected files for diff");
                 let snapshot = ctx.hash_service.snapshot();
-                *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.selected);
+                todo!();
+                // *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.selected);
                 *ctx.diff_action_pressed = true;
                 self.open_diff_popup = true;
             }
@@ -442,9 +462,8 @@ impl DuplicateFilesPane {
         if self.open_dir_window {
             self.open_dir_window = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // ctx.file_system.root_dir_cache.clear();
-                FileSystem::read_path_recursive_flatten(&path);
-                ctx.file_system.root = path;
+                // ctx.file_system.get_root()_dir_cache.clear();
+                *ctx.file_system = FileSystemModel::new(&path);
             }
         }
 
@@ -528,7 +547,7 @@ impl DuplicateFilesPane {
                                                     } else {
                                                         CheckboxSelectState::Partial
                                                     },
-                                                    &PathBuf::default(),
+                                                    None,
                                                 );
                                             });
                                         });
@@ -587,7 +606,7 @@ impl DuplicateFilesPane {
                                         ctx.hash_service.remove(&path);
                                     }
                                     // Directory view is now stale
-                                    // ctx.file_system.root_dir_cache.clear();
+                                    // ctx.file_system.get_root()_dir_cache.clear();
                                     // Reset diff UI state
                                     ctx.conflict_map.clear();
                                     ctx.conflict_map_resolved.clear();

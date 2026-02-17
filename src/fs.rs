@@ -5,197 +5,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub enum FsEntry {
-    File { path: PathBuf },
-    Dir { path: PathBuf },
-}
+pub type FsNodeId = usize;
+pub type FsNodeDepth = u16;
 
-impl FsEntry {
-    pub fn relative_path_buf(&self, root: &PathBuf) -> PathBuf {
-        match self {
-            FsEntry::File { path } => path.strip_prefix(root).unwrap_or(path).to_path_buf(),
-            FsEntry::Dir { path } => path.strip_prefix(root).unwrap_or(path).to_path_buf(),
-        }
-    }
-    pub fn path(&self) -> &Path {
-        match self {
-            FsEntry::File { path } => path.as_path(),
-            FsEntry::Dir { path } => path.as_path(),
-        }
-    }
-    pub fn path_buf(&self) -> &PathBuf {
-        match self {
-            FsEntry::File { path } => path,
-            FsEntry::Dir { path } => path,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct FsPath {
-    pub root: FsEntry,
-    pub entries: Vec<FsEntry>,
-    // Hint only, if false, can skip looking for files in subfolders
-    pub has_files_deep: bool,
-}
-
-impl Default for FsPath {
-    fn default() -> Self {
-        Self {
-            root: FsEntry::Dir {
-                path: PathBuf::new(),
-            },
-            entries: Vec::new(),
-            has_files_deep: true,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct FsPathFlat {
-    pub root: FsEntry,
-    // Entry with depth from root
-    pub entries: Vec<(FsEntry, usize)>,
-}
-
-impl Default for FsPathFlat {
-    fn default() -> Self {
-        Self {
-            root: FsEntry::Dir {
-                path: PathBuf::new(),
-            },
-            entries: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct FileSystem {
-    pub root: PathBuf,
-    // TODO: Cache
-    // #[serde(skip)]
-    // pub root_dir_cache: HashMap<PathBuf, Arc<PathCache>>,
-    // pub cache_enabled: bool,
-}
-
-impl FileSystem {
-    pub fn new() -> Self {
-        Self {
-            root: PathBuf::new(),
-        }
-    }
-
-    fn read_path(path: &PathBuf) -> FsPath {
-        let mut entries = vec![];
-        if let Ok(read_dir) = std::fs::read_dir(path) {
-            for entry in read_dir.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    entries.push(FsEntry::Dir { path: p });
-                } else {
-                    entries.push(FsEntry::File { path: p });
-                }
-            }
-        }
-        let root = if path.is_dir() {
-            FsEntry::Dir { path: path.clone() }
-        } else {
-            FsEntry::File { path: path.clone() }
-        };
-        FsPath {
-            root,
-            entries,
-            has_files_deep: Self::has_files_recursive(path),
-        }
-    }
-    pub fn read_path_recursive_flatten(path: &PathBuf) -> FsPathFlat {
-        let root_entry = FsEntry::Dir { path: path.clone() };
-
-        let mut flat = FsPathFlat {
-            root: root_entry,
-            entries: Vec::new(),
-        };
-
-        Self::read_path_recursive_flatten_inner(path, 0, &mut flat);
-
-        flat
-    }
-
-    fn read_path_recursive_flatten_inner(path: &PathBuf, depth: usize, flat: &mut FsPathFlat) {
-        let current = Self::read_path(path);
-
-        for entry in current.entries {
-            let entry_depth = depth + 1;
-
-            // Store entry with depth
-            flat.entries.push((entry.clone(), entry_depth));
-
-            // Recurse if directory
-            if let FsEntry::Dir { path } = &entry {
-                Self::read_path_recursive_flatten_inner(path, entry_depth, flat);
-            }
-        }
-    }
-
-    // TODO: can probably optimize to do this while reading the path
-    pub fn has_files_recursive(path: &PathBuf) -> bool {
-        if path.is_file() {
-            return false;
-        }
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if Self::has_files_recursive(&p) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    // TODO: memory optimize Arc<PathCache>
-    pub fn get(&self, path: &PathBuf) -> FsPath {
-        Self::read_path(path)
-    }
-
-    // TODO: Fix whenever to use .get()
-    pub fn count_files(&self, path: &PathBuf) -> usize {
-        let mut count = 0;
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_file() {
-                    count += 1;
-                } else {
-                    count += self.count_files(&p);
-                }
-            }
-        }
-        count
-    }
-
-    // TODO: Fix whenever to use .get()
-    pub fn count_folders(&self, path: &PathBuf) -> usize {
-        let mut count = 0;
-        if let Ok(entries) = std::fs::read_dir(path) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    count += 1;
-                    count += self.count_folders(&p);
-                }
-            }
-        }
-        count
-    }
-}
-
-// ^^^^^^^^^^^^^^^^^ OLD ^^^^^^^^^^^^^^^^
-
-type FsNodeId = usize;
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum FsNodeKind {
     File {
         path: PathBuf,
@@ -226,28 +39,186 @@ impl FsNodeKind {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct FsNode {
     pub parent: Option<FsNodeId>,
     pub kind: FsNodeKind,
 }
 
-#[derive(Debug)]
+impl FsNode {
+    pub fn is_dir(&self) -> bool {
+        match self.kind {
+            FsNodeKind::File { .. } => false,
+            FsNodeKind::Dir { .. } => true,
+        }
+    }
+    pub fn is_file(&self) -> bool {
+        match self.kind {
+            FsNodeKind::File { .. } => true,
+            FsNodeKind::Dir { .. } => false,
+        }
+    }
+
+    pub fn children(&self) -> Option<&Vec<FsNodeId>> {
+        match &self.kind {
+            FsNodeKind::File { .. } => None,
+            FsNodeKind::Dir { children, .. } => Some(children),
+        }
+    }
+
+    pub fn pathbuf(&self) -> impl AsRef<Path> {
+        match &self.kind {
+            FsNodeKind::File { path } | FsNodeKind::Dir { path, .. } => path,
+        }
+    }
+
+    pub fn display_name(&self) -> &str {
+        match &self.kind {
+            FsNodeKind::File { path } | FsNodeKind::Dir { path, .. } => path
+                .file_name()
+                .expect("failed to get file_name")
+                .to_str()
+                .expect("failed to get str"),
+        }
+    }
+}
+
+pub struct TreeIter<'a> {
+    model: &'a FileSystemModel,
+    stack: Vec<(FsNodeId, FsNodeDepth)>,
+}
+
+impl<'a> TreeIter<'a> {
+    fn new(model: &'a FileSystemModel, root: FsNodeId) -> Self {
+        Self {
+            model,
+            stack: vec![(root, 0)],
+        }
+    }
+}
+
+impl<'a> Iterator for TreeIter<'a> {
+    type Item = (FsNodeId, FsNodeDepth);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (node_id, depth) = self.stack.pop()?;
+
+        // If directory, push children in reverse order
+        // so they are visited in original order
+        if let FsNodeKind::Dir { children, .. } = &self.model.get_node(node_id)?.kind {
+            for &child_id in children.iter().rev() {
+                self.stack.push((child_id, depth + 1));
+            }
+        }
+
+        Some((node_id, depth))
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemModel {
     root_path: PathBuf,
     nodes: Vec<FsNode>,
 }
 
+impl Default for FileSystemModel {
+    fn default() -> Self {
+        Self {
+            root_path: "".into(),
+            nodes: Vec::new(),
+        }
+    }
+}
+
 impl FileSystemModel {
-    pub fn new(root_path: &Path) -> Self {
+    pub fn new(root_path: impl AsRef<Path>) -> Self {
         Self::build_model(root_path).expect("failed to build model")
     }
 
     pub fn get_node(&self, node_id: FsNodeId) -> Option<&FsNode> {
         self.nodes.get(node_id)
     }
-    pub fn get_node_mut(&mut self, node_id: FsNodeId) -> Option<&mut FsNode> {
+    fn get_node_mut(&mut self, node_id: FsNodeId) -> Option<&mut FsNode> {
         self.nodes.get_mut(node_id)
+    }
+    pub fn get_root(&self) -> &FsNode {
+        &self.nodes[0]
+    }
+    fn get_root_mut(&mut self) -> &mut FsNode {
+        &mut self.nodes[0]
+    }
+    pub fn get_root_node_id(&self) -> FsNodeId {
+        0
+    }
+
+    pub fn total_files_and_folders(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn iter_files(&self) -> impl Iterator<Item = FsNodeId> + '_ {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| matches!(n.kind, FsNodeKind::File { .. }))
+            .map(|(id, _)| id)
+    }
+
+    pub fn iter_nodes(&self) -> impl Iterator<Item = FsNodeId> + '_ {
+        self.nodes.iter().enumerate().map(|(id, _)| id)
+    }
+
+    pub fn iter_tree(&self) -> TreeIter<'_> {
+        TreeIter::new(self, 0)
+    }
+
+    pub fn iter_subtree(&self, root: FsNodeId) -> TreeIter<'_> {
+        TreeIter::new(self, root)
+    }
+
+    // Slow, avoid, Not ideal
+    pub fn get_node_id(&self, node: &FsNode) -> FsNodeId {
+        self.iter_nodes()
+            .enumerate()
+            .find_map(|(i, b)| {
+                if self.get_node(b).unwrap() == node {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .unwrap()
+    }
+
+    // Slow, avoid
+    pub fn find_path(&self, path: impl AsRef<Path>) -> Option<FsNodeId> {
+        for node_id in self.iter_nodes() {
+            if let Some(node) = self.get_node(node_id) {
+                if node.pathbuf().as_ref() == path.as_ref() {
+                    return Some(node_id);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn total_files(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|n| match n.kind {
+                FsNodeKind::File { .. } => true,
+                FsNodeKind::Dir { .. } => false,
+            })
+            .count()
+    }
+
+    pub fn total_folders(&self) -> usize {
+        self.nodes
+            .iter()
+            .filter(|n| match n.kind {
+                FsNodeKind::File { .. } => false,
+                FsNodeKind::Dir { .. } => true,
+            })
+            .count()
     }
 
     fn push_node(&mut self, parent: Option<FsNodeId>, kind: FsNodeKind) -> FsNodeId {
@@ -294,6 +265,20 @@ impl FileSystemModel {
         }
         Ok(dir_node_id)
     }
+
+    fn assert_tree_consistency(model: &FileSystemModel) {
+        for (id, node) in model.nodes.iter().enumerate() {
+            if let Some(parent_id) = node.parent {
+                let parent = model.get_node(parent_id).unwrap();
+                match &parent.kind {
+                    FsNodeKind::Dir { children, .. } => {
+                        assert!(children.contains(&id));
+                    }
+                    _ => panic!("parent is not a directory"),
+                }
+            }
+        }
+    }
 }
 
 //// TESTS
@@ -302,7 +287,7 @@ mod tests {
     use super::*;
     use std::fs::{self, File};
     use std::path::Path;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
 
     fn create_file(path: &Path) {
         File::create(path).expect("failed to create file");
@@ -359,6 +344,78 @@ mod tests {
 
         file_names.sort();
         assert_eq!(file_names, vec!["a.txt", "b.txt"]);
+    }
+
+    /// Builds a large deterministic directory tree:
+    /// - 10 top-level dirs, each with 5 subdirs and 5 files
+    /// - Each subdir has 5 files
+    /// - Deep chain 10 levels, 1 file per level
+    ///
+    /// Totals (including root):
+    /// - Directories: 72
+    /// - Files: 310
+    /// - Nodes: 382
+    ///
+    /// Returns (TempDir, FileSystemModel)
+    fn build_large_test_tree() -> (TempDir, FileSystemModel) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        // 10 top-level directories
+        for i in 0..10 {
+            let top = root.join(format!("dir_{i}"));
+            fs::create_dir(&top).unwrap();
+
+            // 5 files at top-level dir
+            for f in 0..5 {
+                create_file(&top.join(format!("file_{i}_{f}.txt")));
+            }
+
+            // 5 subdirectories
+            for j in 0..5 {
+                let sub = top.join(format!("sub_{i}_{j}"));
+                fs::create_dir(&sub).unwrap();
+
+                // 5 files per subdirectory
+                for k in 0..5 {
+                    create_file(&sub.join(format!("file_{i}_{j}_{k}.txt")));
+                }
+            }
+        }
+
+        // Deep nested chain (10 levels)
+        let mut current = root.join("deep_chain");
+        fs::create_dir(&current).unwrap();
+
+        for depth in 0..10 {
+            create_file(&current.join(format!("deep_file_{depth}.txt")));
+            let next = current.join(format!("level_{depth}"));
+            fs::create_dir(&next).unwrap();
+            current = next;
+        }
+
+        let model = FileSystemModel::new(root);
+
+        (temp, model)
+    }
+
+    #[test]
+    fn test_large_tree_consistency() {
+        let (_temp_dir, file_system_model) = build_large_test_tree();
+        FileSystemModel::assert_tree_consistency(&file_system_model);
+    }
+
+    #[test]
+    fn test_count_files_and_folders() {
+        let (_temp_dir, file_system_model) = build_large_test_tree();
+        let large_tree_num_files = 310;
+        let large_tree_num_folders = 72;
+        assert_eq!(file_system_model.total_files(), large_tree_num_files);
+        assert_eq!(file_system_model.total_folders(), large_tree_num_folders);
+        assert_eq!(
+            file_system_model.total_files_and_folders(),
+            large_tree_num_files + large_tree_num_folders
+        );
     }
 
     #[test]
