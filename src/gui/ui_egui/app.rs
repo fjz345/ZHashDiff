@@ -12,7 +12,7 @@ use zhashdiff::{
 };
 
 use crate::ui_egui::{
-    panes::{DuplicateFilesPane, LogPane, Pane, PathDiffPane, TreeBehavior},
+    panes::{DuplicateFilesPane, LogPane, Pane, PathDiffPane, PathDiffView, TreeBehavior},
     popup::show_custom_popup,
 };
 use eframe::{
@@ -31,9 +31,7 @@ pub struct AppStateCtx {
     #[serde(skip)]
     pub expanded: HashMap<FsNodeId, bool>,
     #[serde(skip)]
-    pub selected_1: HashMap<FsNodeId, bool>,
-    #[serde(skip)]
-    pub selected_2: HashMap<FsNodeId, bool>,
+    pub selected: HashMap<FsNodeId, bool>,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -249,19 +247,23 @@ impl ZApp {
 
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 let mut diff_action_triggered = false;
+                let mut path_diff_view = PathDiffView {
+                    file_system_1: &mut app_ctx.file_system_model_1,
+                    file_system_2: &mut app_ctx.file_system_model_2,
+                    expanded: &mut app_ctx.expanded,
+                    selected: &mut app_ctx.selected,
+                };
                 let mut behavior = TreeBehavior {
                     log_buffer: self.log_buffer.clone(),
                     hash_service: &mut app_ctx.hash_service,
-                    file_system_1: &mut app_ctx.file_system_model_1,
-                    expanded: &mut app_ctx.expanded,
-                    selected_1: &mut app_ctx.selected_1,
+
                     active_conflict_hash: &mut app_ctx.active_conflict_hash,
                     conflict_map: &mut app_ctx.conflict_map,
                     conflict_map_resolved: &mut app_ctx.conflict_map_resolved,
                     diff_action_pressed: &mut diff_action_triggered,
-                    file_system_2: &mut app_ctx.file_system_model_2,
-                    selected_2: &mut app_ctx.selected_2,
+
                     diff_tool_config: &app_ctx.diff_config,
+                    path_diff_view: &mut path_diff_view,
                 };
 
                 self.tree.ui(&mut behavior, ui);
@@ -269,7 +271,10 @@ impl ZApp {
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
                         let out_ctx = behavior.create_duplicate_files_ctx();
-                        let count_files_and_folders = out_ctx.file_system.total_files_and_folders();
+                        let count_files_and_folders = out_ctx
+                            .path_diff_view
+                            .file_system_1
+                            .total_files_and_folders();
 
                         let active = out_ctx.hash_service.count_active_hashes();
                         let total_pending = out_ctx.hash_service.count_hash_queue() + active;

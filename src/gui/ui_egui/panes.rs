@@ -24,17 +24,21 @@ use crate::{
         popup,
     },
 };
-pub struct TreeBehavior<'a> {
-    pub log_buffer: Arc<Mutex<Vec<String>>>,
 
-    pub hash_service: &'a mut HashService,
+pub struct PathDiffView<'a> {
     pub file_system_1: &'a mut FileSystemModel,
     pub file_system_2: &'a mut FileSystemModel,
 
-    // User Interaction State
+    pub selected: &'a mut HashMap<FsNodeId, bool>,
     pub expanded: &'a mut HashMap<FsNodeId, bool>,
-    pub selected_1: &'a mut HashMap<FsNodeId, bool>,
-    pub selected_2: &'a mut HashMap<FsNodeId, bool>,
+}
+
+pub struct TreeBehavior<'a, 'b> {
+    pub log_buffer: Arc<Mutex<Vec<String>>>,
+
+    pub hash_service: &'a mut HashService,
+
+    pub path_diff_view: &'a mut PathDiffView<'b>,
 
     // Diff Action State
     pub active_conflict_hash: &'a mut Option<String>,
@@ -44,37 +48,35 @@ pub struct TreeBehavior<'a> {
     pub diff_tool_config: &'a DiffToolConfig,
 }
 
-impl TreeBehavior<'_> {
-    pub fn create_path_diff_ctx(&mut self) -> PathDiffPaneCtx {
+impl<'a, 'b> TreeBehavior<'a, 'b> {
+    // We use a new lifetime 'c for the borrow of &mut self
+    pub fn create_path_diff_ctx<'c>(&'c mut self) -> PathDiffPaneCtx<'c, 'b> {
         PathDiffPaneCtx {
-            hash_service: &mut self.hash_service,
-
-            file_system_1: &mut self.file_system_1,
-            file_system_2: &mut self.file_system_2,
-            expanded: &mut self.expanded,
-            selected_1: &mut self.selected_1,
-            selected_2: &mut self.selected_2,
-            diff_tool_config: &self.diff_tool_config,
+            hash_service: self.hash_service, // Re-borrowing &mut
+            diff_tool_config: self.diff_tool_config,
+            path_diff_view: self.path_diff_view,
         }
     }
 
-    pub fn create_duplicate_files_ctx(&mut self) -> DuplicateFilesPaneCtx {
+    pub fn create_duplicate_files_ctx<'c>(&'c mut self) -> DuplicateFilesPaneCtx<'c, 'b>
+    where
+        'a: 'c,
+    {
         DuplicateFilesPaneCtx {
-            hash_service: &mut self.hash_service,
-            file_system: &mut self.file_system_1,
+            hash_service: self.hash_service,
+            path_diff_view: self.path_diff_view,
 
-            expanded: &mut self.expanded,
-            selected: &mut self.selected_1,
-
-            active_conflict_hash: &mut self.active_conflict_hash,
-            conflict_map: &mut self.conflict_map,
-            conflict_map_resolved: &mut self.conflict_map_resolved,
-            diff_action_pressed: &mut self.diff_action_pressed,
+            // You don't need &mut self.field here because
+            // they are already &mut references being re-borrowed
+            active_conflict_hash: self.active_conflict_hash,
+            conflict_map: self.conflict_map,
+            conflict_map_resolved: self.conflict_map_resolved,
+            diff_action_pressed: self.diff_action_pressed,
         }
     }
 }
 
-impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
+impl egui_tiles::Behavior<Pane> for TreeBehavior<'_, '_> {
     fn tab_title_for_pane(&mut self, pane: &Pane) -> egui::WidgetText {
         pane.title().into()
     }
@@ -165,19 +167,20 @@ impl PathDiffPane {
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut PathDiffPaneCtx) -> egui_tiles::UiResponse {
         ui.horizontal(|ui| {
             let is_anything_expanded = ctx
+                .path_diff_view
                 .expanded
                 .iter()
                 .filter(|(k, _)| {
-                    if **k == ctx.file_system_1.get_root_node_id()
-                        || **k == ctx.file_system_2.get_root_node_id()
+                    if **k == ctx.path_diff_view.file_system_1.get_root_node_id()
+                        || **k == ctx.path_diff_view.file_system_2.get_root_node_id()
                     {
                         return false;
                     }
-                    let node = ctx.file_system_1.get_node(**k);
+                    let node = ctx.path_diff_view.file_system_1.get_node(**k);
                     if let Some(node) = node {
                         return true;
                     }
-                    let node = ctx.file_system_2.get_node(**k);
+                    let node = ctx.path_diff_view.file_system_2.get_node(**k);
                     if let Some(node) = node {
                         return true;
                     }
@@ -194,23 +197,23 @@ impl PathDiffPane {
             if ui.button(button_text).clicked() {
                 if is_anything_expanded {
                     // Collapse all (not root)
-                    for (key, value) in &mut ctx.expanded.iter_mut() {
+                    for (key, value) in &mut ctx.path_diff_view.expanded.iter_mut() {
                         // "" = root (relative)
-                        if *key == ctx.file_system_1.get_root_node_id() {
+                        if *key == ctx.path_diff_view.file_system_1.get_root_node_id() {
                             *value = false;
                         }
                     }
                 } else {
                     // Expand all
                     recursive_expand(
-                        ctx.expanded,
-                        ctx.file_system_1,
-                        ctx.file_system_1.get_root_node_id(),
+                        ctx.path_diff_view.expanded,
+                        ctx.path_diff_view.file_system_1,
+                        ctx.path_diff_view.file_system_1.get_root_node_id(),
                     );
                     recursive_expand(
-                        ctx.expanded,
-                        ctx.file_system_2,
-                        ctx.file_system_2.get_root_node_id(),
+                        ctx.path_diff_view.expanded,
+                        ctx.path_diff_view.file_system_2,
+                        ctx.path_diff_view.file_system_2.get_root_node_id(),
                     );
                 }
             }
@@ -222,13 +225,13 @@ impl PathDiffPane {
         ScrollArea::vertical()
             .id_salt(&"path_diff_table")
             .show(ui, |ui| {
-                if ctx.file_system_1.get_root().is_dir() {
+                if ctx.path_diff_view.file_system_1.get_root().is_dir() {
                     draw_ui_two_folder_tree_with_diff(
                         ui,
-                        &mut ctx.expanded,
-                        &mut ctx.selected_1,
-                        &mut ctx.file_system_1,
-                        &mut ctx.file_system_2,
+                        &mut ctx.path_diff_view.expanded,
+                        &mut ctx.path_diff_view.selected,
+                        &mut ctx.path_diff_view.file_system_1,
+                        &mut ctx.path_diff_view.file_system_2,
                         &mut self.open_dir_window_1,
                         &mut self.open_dir_window_2,
                         &ctx.diff_tool_config,
@@ -237,10 +240,10 @@ impl PathDiffPane {
                     ui.label("No root dir set...");
                     draw_ui_two_folder_tree_with_diff(
                         ui,
-                        &mut ctx.expanded,
-                        &mut ctx.selected_1,
-                        &mut ctx.file_system_1,
-                        &mut ctx.file_system_2,
+                        &mut ctx.path_diff_view.expanded,
+                        &mut ctx.path_diff_view.selected,
+                        &mut ctx.path_diff_view.file_system_1,
+                        &mut ctx.path_diff_view.file_system_2,
                         &mut self.open_dir_window_1,
                         &mut self.open_dir_window_2,
                         &ctx.diff_tool_config,
@@ -252,18 +255,18 @@ impl PathDiffPane {
         if self.open_dir_window_1 {
             self.open_dir_window_1 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // ctx.file_system.get_root()_dir_cache.clear();
-                *ctx.file_system_1 = FileSystemModel::new(path);
-                ctx.expanded.clear();
+                // ctx.path_diff_view.file_system_1.get_root()_dir_cache.clear();
+                *ctx.path_diff_view.file_system_1 = FileSystemModel::new(path);
+                ctx.path_diff_view.expanded.clear();
             }
         }
 
         if self.open_dir_window_2 {
             self.open_dir_window_2 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // ctx.file_system.get_root()_dir_cache.clear();
-                *ctx.file_system_2 = FileSystemModel::new(path);
-                ctx.expanded.clear();
+                // ctx.path_diff_view.file_system_1.get_root()_dir_cache.clear();
+                *ctx.path_diff_view.file_system_2 = FileSystemModel::new(path);
+                ctx.path_diff_view.expanded.clear();
             }
         }
 
@@ -312,25 +315,17 @@ impl ZAppPane for DuplicateFilesPane {
     }
 }
 
-pub struct PathDiffPaneCtx<'a> {
+pub struct PathDiffPaneCtx<'a, 'b> {
     pub hash_service: &'a mut HashService,
-    pub file_system_1: &'a mut FileSystemModel,
-    pub file_system_2: &'a mut FileSystemModel,
+    pub path_diff_view: &'a mut PathDiffView<'b>,
 
     // User Interaction State
-    pub expanded: &'a mut HashMap<FsNodeId, bool>,
-    pub selected_1: &'a mut HashMap<FsNodeId, bool>,
-    pub selected_2: &'a mut HashMap<FsNodeId, bool>,
     pub diff_tool_config: &'a DiffToolConfig,
 }
 
-pub struct DuplicateFilesPaneCtx<'a> {
+pub struct DuplicateFilesPaneCtx<'a, 'b> {
     pub hash_service: &'a mut HashService,
-    pub file_system: &'a mut FileSystemModel,
-
-    // User Interaction State
-    pub expanded: &'a mut HashMap<FsNodeId, bool>,
-    pub selected: &'a mut HashMap<FsNodeId, bool>,
+    pub path_diff_view: &'a mut PathDiffView<'b>,
 
     // Diff Action State
     pub active_conflict_hash: &'a mut Option<String>,
@@ -361,7 +356,7 @@ impl DuplicateFilesPane {
                     self.open_dir_window = true;
                 }
 
-                let is_anything_expanded = !ctx.expanded.is_empty();
+                let is_anything_expanded = !ctx.path_diff_view.expanded.is_empty();
                 let button_text = if is_anything_expanded {
                     "Collapse All"
                 } else {
@@ -370,21 +365,21 @@ impl DuplicateFilesPane {
 
                 if ui.button(button_text).clicked() {
                     if is_anything_expanded {
-                        ctx.expanded.clear();
+                        ctx.path_diff_view.expanded.clear();
                     } else {
                         recursive_expand(
-                            ctx.expanded,
-                            ctx.file_system,
-                            ctx.file_system.get_root_node_id(),
+                            ctx.path_diff_view.expanded,
+                            ctx.path_diff_view.file_system_1,
+                            ctx.path_diff_view.file_system_1.get_root_node_id(),
                         );
                     }
                 }
 
                 if ui.button("Request All Hash").clicked() {
-                    let all_files: Vec<_> = ctx.file_system.iter_files().collect();
+                    let all_files: Vec<_> = ctx.path_diff_view.file_system_1.iter_files().collect();
 
                     for node_id in all_files {
-                        if let Some(node) = ctx.file_system.get_node(node_id) {
+                        if let Some(node) = ctx.path_diff_view.file_system_1.get_node(node_id) {
                             ctx.hash_service.request(node.pathbuf());
                         }
                     }
@@ -395,21 +390,21 @@ impl DuplicateFilesPane {
                 }
 
                 // if ui.button("Reload Root Dir").clicked() {
-                //     ctx.file_system
-                //         .read_path_recursive_flatten(&ctx.file_system.get_root().clone());
+                //     ctx.path_diff_view.file_system_1
+                //         .read_path_recursive_flatten(&ctx.path_diff_view.file_system_1.get_root().clone());
                 // }
 
                 // if ui.button("Clear Cache").clicked() {
-                //     ctx.file_system.get_root()_dir_cache.clear();
+                //     ctx.path_diff_view.file_system_1.get_root()_dir_cache.clear();
                 // }
 
-                // let cache_text = if ctx.file_system.cache_enabled {
+                // let cache_text = if ctx.path_diff_view.file_system_1.cache_enabled {
                 //     "Disable Cache"
                 // } else {
                 //     "Enable Cache"
                 // };
                 // if ui.button(cache_text).clicked() {
-                //     ctx.file_system.cache_enabled = !ctx.file_system.cache_enabled;
+                //     ctx.path_diff_view.file_system_1.cache_enabled = !ctx.path_diff_view.file_system_1.cache_enabled;
                 // }
 
                 ui.label("Concurrent Hashes");
@@ -430,12 +425,12 @@ impl DuplicateFilesPane {
         egui::ScrollArea::vertical()
             .max_height(500.0)
             .show(ui, |ui| {
-                if ctx.file_system.get_root().is_dir() {
+                if ctx.path_diff_view.file_system_1.get_root().is_dir() {
                     draw_ui_folder_tree_with_checkbox(
                         ui,
-                        ctx.expanded,
-                        ctx.selected,
-                        ctx.file_system,
+                        ctx.path_diff_view.expanded,
+                        ctx.path_diff_view.selected,
+                        ctx.path_diff_view.file_system_1,
                         ctx.hash_service,
                     );
                     show_diff_button = true;
@@ -452,7 +447,7 @@ impl DuplicateFilesPane {
                 log::info!("Selected files for diff");
                 let snapshot = ctx.hash_service.snapshot();
                 todo!();
-                // *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.selected);
+                // *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.path_diff_view.selected);
                 *ctx.diff_action_pressed = true;
                 self.open_diff_popup = true;
             }
@@ -461,8 +456,8 @@ impl DuplicateFilesPane {
         if self.open_dir_window {
             self.open_dir_window = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // ctx.file_system.get_root()_dir_cache.clear();
-                *ctx.file_system = FileSystemModel::new(&path);
+                // ctx.path_diff_view.file_system_1.get_root()_dir_cache.clear();
+                *ctx.path_diff_view.file_system_1 = FileSystemModel::new(&path);
             }
         }
 
@@ -539,8 +534,8 @@ impl DuplicateFilesPane {
                                             ui.centered_and_justified(|ui| {
                                                 folder_state_ui_custom_checkbox(
                                                     ui,
-                                                    ctx.file_system,
-                                                    ctx.selected,
+                                                    ctx.path_diff_view.file_system_1,
+                                                    ctx.path_diff_view.selected,
                                                     if *is_resolved {
                                                         CheckboxSelectState::Checked
                                                     } else {
@@ -605,7 +600,7 @@ impl DuplicateFilesPane {
                                         ctx.hash_service.remove(&path);
                                     }
                                     // Directory view is now stale
-                                    // ctx.file_system.get_root()_dir_cache.clear();
+                                    // ctx.path_diff_view.file_system_1.get_root()_dir_cache.clear();
                                     // Reset diff UI state
                                     ctx.conflict_map.clear();
                                     ctx.conflict_map_resolved.clear();
