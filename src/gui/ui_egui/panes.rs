@@ -1,17 +1,16 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
-    str::FromStr,
     sync::{Arc, Mutex},
 };
 
-use eframe::egui::{self, ScrollArea, Ui};
-use egui_extras::{Size, StripBuilder};
+use eframe::egui::{self, ScrollArea};
 use serde::{Deserialize, Serialize};
 use zhashdiff::{
+    conflict::{ResolveConflictsInput, execute_resolution},
     external_diff_tool::DiffToolConfig,
-    fs::{FileSystemModel, FsNode, FsNodeId},
-    hash::{HashService, ResolveConflictsInput, execute_resolution, find_conflicts},
+    fs::{FileSystemModel, FsNodeId},
+    hash::HashService,
 };
 
 use crate::{

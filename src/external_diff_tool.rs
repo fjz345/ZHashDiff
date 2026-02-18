@@ -46,31 +46,31 @@ impl Default for DiffToolConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-enum KnownDiffTools {
-    Tortoise,
-    Unknown,
-}
+// #[derive(Debug, Clone)]
+// enum KnownDiffTools {
+//     Tortoise,
+//     Unknown,
+// }
 
-impl KnownDiffTools {
-    fn match_config(config: &DiffToolConfig) -> Self {
-        const TORTOISE_KNOWN_NAMES: [&str; 2] = ["tortoiseproc.exe", "tortoisemerge.exe"];
+// impl KnownDiffTools {
+//     fn match_config(config: &DiffToolConfig) -> Self {
+//         const TORTOISE_KNOWN_NAMES: [&str; 2] = ["tortoiseproc.exe", "tortoisemerge.exe"];
 
-        let exe_name = config
-            .exe_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_ascii_lowercase());
+//         let exe_name = config
+//             .exe_path
+//             .file_name()
+//             .and_then(|n| n.to_str())
+//             .map(|s| s.to_ascii_lowercase());
 
-        if let Some(name) = exe_name {
-            if TORTOISE_KNOWN_NAMES.contains(&name.as_str()) {
-                return KnownDiffTools::Tortoise;
-            }
-        }
+//         if let Some(name) = exe_name {
+//             if TORTOISE_KNOWN_NAMES.contains(&name.as_str()) {
+//                 return KnownDiffTools::Tortoise;
+//             }
+//         }
 
-        KnownDiffTools::Unknown
-    }
-}
+//         KnownDiffTools::Unknown
+//     }
+// }
 
 impl DiffToolConfig {
     /// Returns a default config for TortoiseSVN if installed at standard location
@@ -90,7 +90,6 @@ pub fn open_diff_tool(
     file1: impl AsRef<Path>,
     file2: impl AsRef<Path>,
 ) -> io::Result<()> {
-    let config = DiffToolConfig::default_tortoise();
     let mut cmd = Command::new(&config.exe_path);
 
     for arg in &config.prefix_args.default_args {
@@ -107,8 +106,6 @@ pub fn open_diff_tool(
             .diff_path_2_args
             .replace("{}", &file2.as_ref().to_string_lossy()),
     );
-    // cmd.raw_arg(format!(r#"/path:"{}""#, file1.to_string_lossy()));
-    // cmd.raw_arg(format!(r#"/path2:"{}""#, file2.to_string_lossy()));
     for arg in &config.suffix_args.default_args {
         cmd.arg(arg);
     }

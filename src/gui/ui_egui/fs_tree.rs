@@ -860,10 +860,10 @@ fn render_row_folder_tree_with_checkbox(
     row.col(|ui| {
         if !is_dir {
             let path = file_system.get_node(*path).unwrap();
-            let hash_state = hash_service.get(path.pathbuf());
+            let hash_state = hash_service.get_hash(path.pathbuf());
 
             match hash_state {
-                Some(Some(hash_str)) => {
+                Some(hash_str) => {
                     let bg_color = hash_to_color(&hash_str);
                     egui::Frame::canvas(ui.style())
                         .fill(bg_color)
@@ -876,9 +876,6 @@ fn render_row_folder_tree_with_checkbox(
                                     .color(egui::Color32::BLACK),
                             );
                         });
-                }
-                Some(None) => {
-                    ui.weak("hashing...");
                 }
                 None => {
                     hash_service.request(path.pathbuf());

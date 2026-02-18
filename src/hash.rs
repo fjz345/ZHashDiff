@@ -19,9 +19,11 @@ pub fn hash_file(path: impl AsRef<Path>) -> io::Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+pub type HashRepresentation = String;
+
 #[derive(Debug, Clone)]
 pub struct HashServiceSnapshot {
-    pub hashes: HashMap<PathBuf, Option<String>>,
+    pub hashes: HashMap<PathBuf, Option<HashRepresentation>>,
     pub active_count: usize,
     pub queue_count: usize,
     pub num_workers: usize,
@@ -29,7 +31,7 @@ pub struct HashServiceSnapshot {
 
 #[derive(Debug)]
 pub struct HashService {
-    hashes: Arc<RwLock<HashMap<PathBuf, Option<String>>>>,
+    hashes: Arc<RwLock<HashMap<PathBuf, Option<HashRepresentation>>>>,
     tx: Sender<PathBuf>,
     rx: Arc<Mutex<Receiver<PathBuf>>>,
     in_progress: Arc<AtomicUsize>,
@@ -145,18 +147,17 @@ impl HashService {
         let _ = self.tx.send(path.as_ref().into());
     }
 
-    pub fn remove(&self, path: &PathBuf) {
+    pub fn remove(&self, path: impl AsRef<Path>) {
         if let Ok(mut hashes) = self.hashes.write() {
-            hashes.remove(path);
+            hashes.remove(path.as_ref());
         }
     }
 
-    pub fn get(&self, path: impl AsRef<Path>) -> Option<Option<String>> {
-        self.hashes
-            .read()
-            .unwrap()
-            .get(path.as_ref().into())
-            .cloned()
+    // TODO: fix to get reference instead of clone
+    pub fn get_hash(&self, path: impl AsRef<Path>) -> Option<HashRepresentation> {
+        let binding = self.hashes.read().unwrap();
+        let hash = binding.get(path.as_ref().into()).and_then(|f| f.clone());
+        hash
     }
 
     pub fn clear(&self) {
@@ -186,67 +187,4 @@ impl HashService {
             num_workers: self.count_threads(),
         }
     }
-}
-
-pub fn find_conflicts(
-    hashes: &HashMap<FsNodeId, Option<String>>,
-    selected: &HashMap<FsNodeId, bool>,
-) -> HashMap<String, Vec<PathBuf>> {
-    todo!();
-
-    // Hashes can not be FsNodeId, hashing reads file from fs
-    let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
-    for (path, hash) in hashes {
-        if selected.get(path).copied().unwrap_or(false) {
-            if let Some(h) = hash {
-                groups.entry(h.clone()).or_default().push("".into()); // path.clone()
-            }
-        }
-    }
-    groups.retain(|_, v| v.len() > 1);
-    groups
-}
-
-pub struct ResolveConflictsInput {
-    pub conflict_map: HashMap<String, Vec<PathBuf>>,
-    pub conflict_map_resolved: HashMap<String, PathBuf>,
-}
-
-pub struct ResolveConflictsOutput {
-    pub removed_files: Vec<PathBuf>,
-}
-
-pub fn execute_resolution(input: &ResolveConflictsInput) -> ResolveConflictsOutput {
-    let mut output = ResolveConflictsOutput {
-        removed_files: Vec::new(),
-    };
-
-    log::info!("Starting file resolution process...");
-
-    let conflicts = &input.conflict_map;
-    let resolutions = &input.conflict_map_resolved;
-
-    for (hash, paths) in conflicts {
-        if let Some(path_to_keep) = resolutions.get(hash) {
-            for path in paths {
-                if path != path_to_keep {
-                    match std::fs::remove_file(&path) {
-                        Ok(_) => {
-                            log::info!("Deleted duplicate: {:?}", path);
-                            output.removed_files.push(path.clone());
-                        }
-                        Err(e) => {
-                            log::error!("Failed to delete {:?}: {}", path, e);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    log::info!(
-        "Resolution complete. Removed {} files.",
-        output.removed_files.len()
-    );
-    output
 }

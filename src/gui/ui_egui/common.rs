@@ -1,7 +1,4 @@
-use eframe::egui::{self, Modifiers, Ui};
-use zhashdiff::fs::FsNode;
-
-use crate::ui_egui::panes::DuplicateFilesPaneCtx;
+use eframe::egui;
 
 pub fn hash_to_color(hash: &str) -> egui::Color32 {
     use std::collections::hash_map::DefaultHasher;

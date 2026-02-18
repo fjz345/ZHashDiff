@@ -197,54 +197,54 @@ impl ZApp {
                 });
             });
         });
+        if self.open_external_diff_window {
+            show_custom_popup(
+                ui.ctx(),
+                &mut self.open_external_diff_window,
+                "Option - External Diff Tool",
+                |ui| {
+                    ui.label("Defaults: ");
+                    ui.vertical(|ui| {
+                        if ui.button("Tortoise").clicked() {
+                            app_ctx.diff_config = DiffToolConfig::default_tortoise()
+                        }
+                    });
+
+                    let mut text_edit = app_ctx.diff_config.exe_path.to_string_lossy();
+                    ui.label("Path: ");
+                    ui.text_edit_singleline(&mut text_edit);
+                    app_ctx.diff_config.exe_path = PathBuf::from(text_edit.as_str());
+
+                    let mut text_edit = app_ctx.diff_config.diff_path_1_args.clone();
+                    ui.label("Path 1 args ({}): ");
+                    ui.text_edit_singleline(&mut text_edit);
+                    app_ctx.diff_config.diff_path_1_args = text_edit.to_string();
+
+                    let mut text_edit = app_ctx.diff_config.diff_path_2_args.clone();
+                    ui.label("Path 2 args ({}): ");
+                    ui.text_edit_singleline(&mut text_edit);
+                    app_ctx.diff_config.diff_path_2_args = text_edit.to_string();
+
+                    let mut text_edit = app_ctx.diff_config.prefix_args.to_string();
+                    ui.label("Prefix Args (\\n): ");
+                    ui.text_edit_multiline(&mut text_edit);
+                    app_ctx.diff_config.prefix_args =
+                        DiffToolDefaultArgs::from_string(text_edit.as_str());
+
+                    let mut text_edit = app_ctx.diff_config.suffix_args.to_string();
+                    ui.label("Suffix args (\\n): ");
+                    ui.text_edit_multiline(&mut text_edit);
+                    app_ctx.diff_config.suffix_args =
+                        DiffToolDefaultArgs::from_string(text_edit.as_str());
+                },
+            );
+        }
     }
 
     fn ui(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_menu(ui, app_ctx);
 
-            if self.open_external_diff_window {
-                show_custom_popup(
-                    ctx,
-                    &mut self.open_external_diff_window,
-                    "Option - External Diff Tool",
-                    |ui| {
-                        ui.label("Defaults: ");
-                        ui.vertical(|ui| {
-                            if ui.button("Tortoise").clicked() {
-                                app_ctx.diff_config = DiffToolConfig::default_tortoise()
-                            }
-                        });
-
-                        let mut text_edit = app_ctx.diff_config.exe_path.to_string_lossy();
-                        ui.label("Path: ");
-                        ui.text_edit_singleline(&mut text_edit);
-                        app_ctx.diff_config.exe_path = PathBuf::from(text_edit.as_str());
-
-                        let mut text_edit = app_ctx.diff_config.diff_path_1_args.clone();
-                        ui.label("Path 1 args ({}): ");
-                        ui.text_edit_singleline(&mut text_edit);
-                        app_ctx.diff_config.diff_path_1_args = text_edit.to_string();
-
-                        let mut text_edit = app_ctx.diff_config.diff_path_2_args.clone();
-                        ui.label("Path 2 args ({}): ");
-                        ui.text_edit_singleline(&mut text_edit);
-                        app_ctx.diff_config.diff_path_2_args = text_edit.to_string();
-
-                        let mut text_edit = app_ctx.diff_config.prefix_args.to_string();
-                        ui.label("Prefix Args (\\n): ");
-                        ui.text_edit_multiline(&mut text_edit);
-                        app_ctx.diff_config.prefix_args =
-                            DiffToolDefaultArgs::from_string(text_edit.as_str());
-
-                        let mut text_edit = app_ctx.diff_config.suffix_args.to_string();
-                        ui.label("Suffix args (\\n): ");
-                        ui.text_edit_multiline(&mut text_edit);
-                        app_ctx.diff_config.suffix_args =
-                            DiffToolDefaultArgs::from_string(text_edit.as_str());
-                    },
-                );
-            }
             ui.separator();
 
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
@@ -269,7 +269,6 @@ impl ZApp {
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
                         let out_ctx = behavior.create_duplicate_files_ctx();
-                        let count_files = out_ctx.file_system.total_files();
                         let count_files_and_folders = out_ctx.file_system.total_files_and_folders();
 
                         let active = out_ctx.hash_service.count_active_hashes();
@@ -285,24 +284,6 @@ impl ZApp {
                 }
             });
         });
-
-        // Handle folder dialogs
-        if self.open_dir_window_1 {
-            self.open_dir_window_1 = false;
-            if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // ctx.file_system.get_root()_dir_cache.clear();
-                app_ctx.file_system_model_1 = FileSystemModel::new(&path);
-                app_ctx.expanded.clear();
-            }
-        }
-        if self.open_dir_window_2 {
-            self.open_dir_window_2 = false;
-            if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // ctx.file_system.get_root()_dir_cache.clear();
-                app_ctx.file_system_model_2 = FileSystemModel::new(&path);
-                app_ctx.expanded.clear();
-            }
-        }
     }
 
     fn request_shutdown(&mut self) {
@@ -413,6 +394,21 @@ impl eframe::App for ZApp {
                     }
                 }
                 self.ui(ctx, frame, &mut state);
+                // Handle folder dialogs
+                if self.open_dir_window_1 {
+                    self.open_dir_window_1 = false;
+                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                        state.file_system_model_1 = FileSystemModel::new(&path);
+                        state.expanded.clear();
+                    }
+                }
+                if self.open_dir_window_2 {
+                    self.open_dir_window_2 = false;
+                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                        state.file_system_model_2 = FileSystemModel::new(&path);
+                        state.expanded.clear();
+                    }
+                }
                 self.process_ctx_inputs(ctx, frame);
                 AppState::Idle(state)
             }
