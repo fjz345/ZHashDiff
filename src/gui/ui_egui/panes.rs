@@ -4,10 +4,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use eframe::egui::{self, ScrollArea};
+use eframe::egui::{self};
 use serde::{Deserialize, Serialize};
 use zhashdiff::{
-    conflict::{ResolveConflictsInput, execute_resolution},
     external_diff_tool::DiffToolConfig,
     fs::{FileSystemModel, FsNodeId},
     hash::HashService,
@@ -16,14 +15,8 @@ use zhashdiff::{
 use crate::{
     logger::ui_log_window,
     ui_egui::{
-        common::{CheckboxSelectState, hash_to_color},
         duplicate_files_pane::{DuplicateFilesPane, DuplicateFilesPaneCtx},
-        fs_tree::{
-            draw_ui_folder_tree_with_checkbox, draw_ui_two_folder_tree_with_diff,
-            folder_state_ui_custom_checkbox, recursive_expand,
-        },
         path_diff_pane::{PathDiffPane, PathDiffPaneCtx},
-        popup,
     },
 };
 
@@ -39,7 +32,6 @@ pub struct TreeBehavior<'a, 'b> {
     pub log_buffer: Arc<Mutex<Vec<String>>>,
 
     pub hash_service: &'a mut HashService,
-
     pub path_diff_view: &'a mut PathDiffView<'b>,
 
     // Diff Action State

@@ -1,10 +1,9 @@
 use std::{
     collections::{BTreeMap, HashMap},
     io,
-    path::{Path, PathBuf},
 };
 
-use eframe::egui::{self, Pos2, Rect, RichText, ScrollArea, Sense, Widget};
+use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
 use zhashdiff::{
     comparison::{PathComparissonMethod, compare_paths},
