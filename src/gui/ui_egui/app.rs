@@ -12,7 +12,9 @@ use zhashdiff::{
 };
 
 use crate::ui_egui::{
-    panes::{DuplicateFilesPane, LogPane, Pane, PathDiffPane, PathDiffView, TreeBehavior},
+    duplicate_files_pane::DuplicateFilesPane,
+    panes::{LogPane, Pane, PathDiffView, TreeBehavior},
+    path_diff_pane::PathDiffPane,
     popup::show_custom_popup,
 };
 use eframe::{
