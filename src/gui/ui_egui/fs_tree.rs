@@ -118,35 +118,58 @@ pub fn draw_ui_two_folder_tree_with_diff(
     ui: &mut egui::Ui,
     expanded: &mut HashMap<FsNodeId, bool>,
     selected: &mut HashMap<FsNodeId, bool>,
-    file_system_1: &mut FileSystemModel,
-    file_system_2: &mut FileSystemModel,
+    file_system_1: &mut Option<FileSystemModel>,
+    file_system_2: &mut Option<FileSystemModel>,
     open_dir_window_1: &mut bool,
     open_dir_window_2: &mut bool,
     diff_tool_config: &DiffToolConfig,
 ) -> egui::response::Response {
-    let root_1 = file_system_1.get_root().clone();
-    let root_2 = file_system_1.get_root().clone();
+    let (Some(fs1), Some(fs2)) = (file_system_1.as_mut(), file_system_2.as_mut()) else {
+        return ui
+            .vertical_centered(|ui| {
+                ui.add_space(100.0);
+                ui.heading("Welcome to ZHashDiff");
+                ui.label("Drag and drop folders here or use the buttons below to start comparing.");
+                ui.horizontal(|ui| {
+                    if ui.button("Open Folder 1").clicked() {
+                        *open_dir_window_1 = true;
+                    }
+                    if ui.button("Open Folder 2").clicked() {
+                        *open_dir_window_2 = true;
+                    }
+                });
+                handle_drops(
+                    ui,
+                    file_system_1,
+                    file_system_2,
+                    expanded,
+                    egui::Rect::EVERYTHING,
+                    egui::Rect::EVERYTHING,
+                );
+            })
+            .response;
+    };
 
+    let root_1 = fs1.get_root().clone();
+    let root_2 = fs2.get_root().clone();
     let mut visible_rows = Vec::new();
-    let io_read_result = build_two_folder_diff_rows(
+
+    let _ = build_two_folder_diff_rows(
         expanded,
-        file_system_1,
-        file_system_2,
+        fs1,
+        fs2,
         &mut visible_rows,
         &PathComparissonMethod::CrC,
     );
-    if let Err(err) = io_read_result {
-        log::error!("{:?}", err);
-    }
-    let row_count = visible_rows.len();
 
+    let row_count = visible_rows.len();
     let available_height = ui.available_height();
     let available_width = ui.available_width();
-
-    let mut col0_rect = egui::Rect::NOTHING; // File System 1
-    let mut col2_rect = egui::Rect::NOTHING; // Fily System 2
+    let mut col0_rect = egui::Rect::NOTHING;
+    let mut col2_rect = egui::Rect::NOTHING;
     let table_top = ui.cursor().top();
-    let response = egui::Frame::default()
+
+    let frame_output = egui::Frame::default()
         .fill(egui::Color32::from_gray(20))
         .inner_margin(0.0)
         .show(ui, |ui| {
@@ -155,9 +178,9 @@ pub fn draw_ui_two_folder_tree_with_diff(
 
             let row_height = ui.text_style_height(&egui::TextStyle::Body);
             let row_height_header = ui.text_style_height(&egui::TextStyle::Heading);
-
             let available_size = ui.available_size();
-            let scroll_area_output = TableBuilder::new(ui)
+
+            TableBuilder::new(ui)
                 .sense(egui::Sense::all())
                 .id_salt(root_1.pathbuf().as_ref())
                 .striped(true)
@@ -169,58 +192,44 @@ pub fn draw_ui_two_folder_tree_with_diff(
                         .resizable(true),
                 )
                 .column(Column::auto().resizable(true).auto_size_this_frame(true))
-                .column(
-                    Column::remainder().resizable(true).clip(false), // Clip Bugged
-                )
+                .column(Column::remainder().resizable(true).clip(false))
                 .header(row_height_header, |mut header| {
-                    // COLUMN 0 (Folder 1)
                     header.col(|ui| {
                         col0_rect = ui.max_rect();
                         let available = ui.available_width();
-
                         ui.vertical(|ui| {
                             if ui
                                 .add_sized(
                                     [available, row_height_header],
                                     egui::Button::new("Open Folder 1"),
                                 )
-                                .interact(egui::Sense::HOVER)
                                 .clicked()
                             {
                                 *open_dir_window_1 = true;
                             }
-
                             let mut text = root_1.pathbuf().as_ref().to_string_lossy().to_string();
                             ui.add_sized(
                                 [available, row_height_header],
                                 egui::TextEdit::singleline(&mut text),
                             );
-
-                            ui.spacing();
                         });
                     });
 
-                    // COLUMN 1 (Diff icon)
                     header.col(|ui| {
                         ui.vertical(|ui| {
                             ui.label("≠");
-
-                            // Find the root folder row in visible_rows
-                            if let Some(root_row) = visible_rows
+                            if let Some(row) = visible_rows
                                 .iter()
-                                .find(|row| file_system_1.get_node(row.path).unwrap() == &root_1)
+                                .find(|r| fs1.get_node(r.path).map_or(false, |n| n == &root_1))
                             {
-                                // Draw the diff icon for this row
-                                ui_custom_diff_state(ui, &root_row.diff_state);
+                                ui_custom_diff_state(ui, &row.diff_state);
                             }
                         });
                     });
 
-                    // COLUMN 2 (Folder 2)
                     header.col(|ui| {
                         col2_rect = ui.max_rect();
                         let available = ui.available_width();
-
                         ui.vertical(|ui| {
                             if ui
                                 .add_sized(
@@ -231,14 +240,11 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             {
                                 *open_dir_window_2 = true;
                             }
-
                             let mut text = root_2.pathbuf().as_ref().to_string_lossy().to_string();
                             ui.add_sized(
                                 [available, row_height_header],
                                 egui::TextEdit::singleline(&mut text).clip_text(true),
                             );
-
-                            ui.spacing();
                         });
                     });
                 })
@@ -246,8 +252,8 @@ pub fn draw_ui_two_folder_tree_with_diff(
                     body.rows(row_height, row_count, |mut row| {
                         let entry = &visible_rows[row.index()];
                         render_row_folder_tree_diff_column(
-                            file_system_1,
-                            file_system_2,
+                            fs1,
+                            fs2,
                             expanded,
                             &mut row,
                             entry,
@@ -264,31 +270,42 @@ pub fn draw_ui_two_folder_tree_with_diff(
     col2_rect.set_top(table_top);
     col2_rect.set_bottom(table_bottom);
 
-    // log::error!("ASD: {:?}", response.response.interact_pointer_pos());
-    preview_files_being_dropped(ui.ctx());
-    // preview_files_being_dropped_in_rect(&ui.ctx(), col0_rect, "Folder 1");
-    // preview_files_being_dropped_in_rect(&ui.ctx(), col2_rect, "Folder 2");
+    handle_drops(
+        ui,
+        file_system_1,
+        file_system_2,
+        expanded,
+        col0_rect,
+        col2_rect,
+    );
+
+    frame_output.response
+}
+
+/// Helper function to clean up the drop logic
+fn handle_drops(
+    ui: &egui::Ui,
+    fs1: &mut Option<FileSystemModel>,
+    fs2: &mut Option<FileSystemModel>,
+    expanded: &mut HashMap<FsNodeId, bool>,
+    rect1: egui::Rect,
+    rect2: egui::Rect,
+) {
     ui.input(|i| {
-        if !i.raw.dropped_files.is_empty() {
-            // Get the drop position (where the mouse was)
-            if let Some(drop_pos) = i.pointer.hover_pos() {
-                for dropped_file in &i.raw.dropped_files {
-                    if let Some(path) = &dropped_file.path {
-                        if col0_rect.contains(drop_pos) {
-                            log::info!("File dropped in Column 1: {:?}", path);
-                            *file_system_1 = FileSystemModel::new(&path);
-                            expanded.clear();
-                        } else if col2_rect.contains(drop_pos) {
-                            log::info!("File dropped in Column 2: {:?}", path);
-                            *file_system_2 = FileSystemModel::new(&path);
-                            expanded.clear();
-                        }
+        if let Some(drop_pos) = i.pointer.hover_pos() {
+            for dropped_file in &i.raw.dropped_files {
+                if let Some(path) = &dropped_file.path {
+                    if rect1.contains(drop_pos) {
+                        *fs1 = Some(FileSystemModel::new(&path));
+                        expanded.clear();
+                    } else if rect2.contains(drop_pos) {
+                        *fs2 = Some(FileSystemModel::new(&path));
+                        expanded.clear();
                     }
                 }
             }
         }
     });
-    response.response
 }
 
 struct VisibleRow {

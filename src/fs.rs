@@ -118,16 +118,8 @@ impl<'a> Iterator for TreeIter<'a> {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemModel {
     root_path: PathBuf,
+    root_id: FsNodeId,
     nodes: Vec<FsNode>,
-}
-
-impl Default for FileSystemModel {
-    fn default() -> Self {
-        Self {
-            root_path: "".into(),
-            nodes: Vec::new(),
-        }
-    }
 }
 
 impl FileSystemModel {
@@ -142,13 +134,13 @@ impl FileSystemModel {
         self.nodes.get_mut(node_id)
     }
     pub fn get_root(&self) -> &FsNode {
-        &self.nodes[0]
+        &self.nodes[self.root_id]
     }
     fn get_root_mut(&mut self) -> &mut FsNode {
-        &mut self.nodes[0]
+        &mut self.nodes[self.root_id]
     }
     pub fn get_root_node_id(&self) -> FsNodeId {
-        0
+        self.root_id
     }
 
     pub fn total_files_and_folders(&self) -> usize {
@@ -231,10 +223,14 @@ impl FileSystemModel {
     fn build_model(root: impl AsRef<Path>) -> io::Result<Self> {
         let root_path = root.as_ref().to_path_buf();
         let nodes = Vec::new();
-        let mut model = Self { root_path, nodes };
+        let mut model = Self {
+            root_path,
+            nodes,
+            root_id: 0,
+        };
 
-        let root_node_id = model.read_dir(root.as_ref().to_path_buf(), None)?;
-        assert_eq!(root_node_id, 0);
+        model.root_id = model.read_dir(root.as_ref().to_path_buf(), None)?;
+        assert_eq!(model.root_id, 0);
 
         Ok(model)
     }

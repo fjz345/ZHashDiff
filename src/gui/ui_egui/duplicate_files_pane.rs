@@ -79,20 +79,24 @@ impl DuplicateFilesPane {
                     if is_anything_expanded {
                         ctx.path_diff_view.expanded.clear();
                     } else {
-                        recursive_expand(
-                            ctx.path_diff_view.expanded,
-                            ctx.path_diff_view.file_system_1,
-                            ctx.path_diff_view.file_system_1.get_root_node_id(),
-                        );
+                        if let Some(file_system) = ctx.path_diff_view.file_system_1 {
+                            recursive_expand(
+                                ctx.path_diff_view.expanded,
+                                file_system,
+                                file_system.get_root_node_id(),
+                            );
+                        }
                     }
                 }
 
                 if ui.button("Request All Hash").clicked() {
-                    let all_files: Vec<_> = ctx.path_diff_view.file_system_1.iter_files().collect();
+                    if let Some(file_system) = ctx.path_diff_view.file_system_1 {
+                        let all_files: Vec<_> = file_system.iter_files().collect();
 
-                    for node_id in all_files {
-                        if let Some(node) = ctx.path_diff_view.file_system_1.get_node(node_id) {
-                            ctx.hash_service.request(node.pathbuf());
+                        for node_id in all_files {
+                            if let Some(node) = file_system.get_node(node_id) {
+                                ctx.hash_service.request(node.pathbuf());
+                            }
                         }
                     }
                 }
@@ -137,12 +141,12 @@ impl DuplicateFilesPane {
         egui::ScrollArea::vertical()
             .max_height(500.0)
             .show(ui, |ui| {
-                if ctx.path_diff_view.file_system_1.get_root().is_dir() {
+                if let Some(file_system) = ctx.path_diff_view.file_system_1 {
                     draw_ui_folder_tree_with_checkbox(
                         ui,
                         ctx.path_diff_view.expanded,
                         ctx.path_diff_view.selected,
-                        ctx.path_diff_view.file_system_1,
+                        file_system,
                         ctx.hash_service,
                     );
                     show_diff_button = true;
@@ -169,7 +173,7 @@ impl DuplicateFilesPane {
             self.open_dir_window = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
                 // ctx.path_diff_view.file_system_1.get_root()_dir_cache.clear();
-                *ctx.path_diff_view.file_system_1 = FileSystemModel::new(&path);
+                *ctx.path_diff_view.file_system_1 = Some(FileSystemModel::new(&path));
             }
         }
 
@@ -244,17 +248,21 @@ impl DuplicateFilesPane {
 
                                         row.col(|ui| {
                                             ui.centered_and_justified(|ui| {
-                                                folder_state_ui_custom_checkbox(
-                                                    ui,
-                                                    ctx.path_diff_view.file_system_1,
-                                                    ctx.path_diff_view.selected,
-                                                    if *is_resolved {
-                                                        CheckboxSelectState::Checked
-                                                    } else {
-                                                        CheckboxSelectState::Partial
-                                                    },
-                                                    None,
-                                                );
+                                                if let Some(file_system) =
+                                                    ctx.path_diff_view.file_system_1
+                                                {
+                                                    folder_state_ui_custom_checkbox(
+                                                        ui,
+                                                        file_system,
+                                                        ctx.path_diff_view.selected,
+                                                        if *is_resolved {
+                                                            CheckboxSelectState::Checked
+                                                        } else {
+                                                            CheckboxSelectState::Partial
+                                                        },
+                                                        None,
+                                                    );
+                                                }
                                             });
                                         });
 

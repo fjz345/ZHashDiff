@@ -27,8 +27,8 @@ use egui_tiles::Tile;
 pub struct AppStateCtx {
     #[serde(skip)]
     pub hash_service: HashService,
-    pub file_system_model_1: FileSystemModel,
-    pub file_system_model_2: FileSystemModel,
+    pub file_system_model_1: Option<FileSystemModel>,
+    pub file_system_model_2: Option<FileSystemModel>,
 
     #[serde(skip)]
     pub expanded: HashMap<FsNodeId, bool>,
@@ -276,7 +276,9 @@ impl ZApp {
                         let count_files_and_folders = out_ctx
                             .path_diff_view
                             .file_system_1
-                            .total_files_and_folders();
+                            .as_ref()
+                            .and_then(|f| Some(f.total_files_and_folders()))
+                            .unwrap_or_default();
 
                         let active = out_ctx.hash_service.count_active_hashes();
                         let total_pending = out_ctx.hash_service.count_hash_queue() + active;
@@ -405,14 +407,14 @@ impl eframe::App for ZApp {
                 if self.open_dir_window_1 {
                     self.open_dir_window_1 = false;
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        state.file_system_model_1 = FileSystemModel::new(&path);
+                        state.file_system_model_1 = Some(FileSystemModel::new(&path));
                         state.expanded.clear();
                     }
                 }
                 if self.open_dir_window_2 {
                     self.open_dir_window_2 = false;
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        state.file_system_model_2 = FileSystemModel::new(&path);
+                        state.file_system_model_2 = Some(FileSystemModel::new(&path));
                         state.expanded.clear();
                     }
                 }

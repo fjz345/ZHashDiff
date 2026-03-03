@@ -21,8 +21,8 @@ use crate::{
 };
 
 pub struct PathDiffView<'a> {
-    pub file_system_1: &'a mut FileSystemModel,
-    pub file_system_2: &'a mut FileSystemModel,
+    pub file_system_1: &'a mut Option<FileSystemModel>,
+    pub file_system_2: &'a mut Option<FileSystemModel>,
 
     pub selected: &'a mut HashMap<FsNodeId, bool>,
     pub expanded: &'a mut HashMap<FsNodeId, bool>,

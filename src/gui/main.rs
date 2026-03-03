@@ -16,6 +16,8 @@ fn main() -> eframe::Result {
 
     let log_buffer = LogCollector::init().expect("Failed to init logger");
 
+    color_backtrace::install();
+
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([2560.0, 1440.0])
