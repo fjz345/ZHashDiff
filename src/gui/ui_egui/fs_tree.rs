@@ -13,7 +13,8 @@ use zhashdiff::{
 };
 
 use crate::ui_egui::common::{
-    CheckboxSelectState, hash_to_color, preview_files_being_dropped, ui_custom_checkbox,
+    CheckboxSelectState, draw_persistent_hint_text_edit, hash_to_color,
+    preview_files_being_dropped, ui_custom_checkbox,
 };
 
 pub fn draw_ui_folder_tree_with_checkbox(
@@ -124,7 +125,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     open_dir_window_2: &mut bool,
     diff_tool_config: &DiffToolConfig,
 ) -> egui::response::Response {
-    let (Some(fs1), Some(fs2)) = (file_system_1.as_mut(), file_system_2.as_mut()) else {
+    if file_system_1.is_none() && file_system_2.is_none() {
         return ui
             .vertical_centered(|ui| {
                 ui.add_space(100.0);
@@ -148,16 +149,12 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 );
             })
             .response;
-    };
-
-    let root_1 = fs1.get_root().clone();
-    let root_2 = fs2.get_root().clone();
+    }
     let mut visible_rows = Vec::new();
-
     let _ = build_two_folder_diff_rows(
         expanded,
-        fs1,
-        fs2,
+        file_system_1.as_ref(),
+        file_system_2.as_ref(),
         &mut visible_rows,
         &PathComparissonMethod::CrC,
     );
@@ -182,7 +179,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
 
             TableBuilder::new(ui)
                 .sense(egui::Sense::all())
-                .id_salt(root_1.pathbuf().as_ref())
+                .id_salt("two_folder_diff_table")
                 .striped(true)
                 .resizable(false)
                 .auto_shrink([false, true])
@@ -207,10 +204,22 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             {
                                 *open_dir_window_1 = true;
                             }
-                            let mut text = root_1.pathbuf().as_ref().to_string_lossy().to_string();
-                            ui.add_sized(
+                            let text = if let Some(fs1) = file_system_1 {
+                                fs1.get_root()
+                                    .pathbuf()
+                                    .as_ref()
+                                    .to_string_lossy()
+                                    .to_string()
+                            } else {
+                                "No folder".to_string()
+                            };
+                            let available = ui.available_width();
+                            let id = ui.make_persistent_id("two_folder_diff_fs1_path");
+                            let _ = draw_persistent_hint_text_edit(
+                                ui,
+                                id,
+                                text,
                                 [available, row_height_header],
-                                egui::TextEdit::singleline(&mut text),
                             );
                         });
                     });
@@ -218,11 +227,14 @@ pub fn draw_ui_two_folder_tree_with_diff(
                     header.col(|ui| {
                         ui.vertical(|ui| {
                             ui.label("≠");
-                            if let Some(row) = visible_rows
-                                .iter()
-                                .find(|r| fs1.get_node(r.path).map_or(false, |n| n == &root_1))
-                            {
-                                ui_custom_diff_state(ui, &row.diff_state);
+                            if let Some(fs1) = file_system_1 {
+                                let root_1 = fs1.get_root();
+                                if let Some(row) = visible_rows
+                                    .iter()
+                                    .find(|r| fs1.get_node(r.path).map_or(false, |n| n == root_1))
+                                {
+                                    ui_custom_diff_state(ui, &row.diff_state);
+                                }
                             }
                         });
                     });
@@ -240,10 +252,23 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             {
                                 *open_dir_window_2 = true;
                             }
-                            let mut text = root_2.pathbuf().as_ref().to_string_lossy().to_string();
-                            ui.add_sized(
+                            let text = if let Some(fs2) = file_system_2 {
+                                fs2.get_root()
+                                    .pathbuf()
+                                    .as_ref()
+                                    .to_string_lossy()
+                                    .to_string()
+                            } else {
+                                "No folder".to_string()
+                            };
+
+                            let available = ui.available_width();
+                            let id = ui.make_persistent_id("two_folder_diff_fs2_path");
+                            let _ = draw_persistent_hint_text_edit(
+                                ui,
+                                id,
+                                text,
                                 [available, row_height_header],
-                                egui::TextEdit::singleline(&mut text).clip_text(true),
                             );
                         });
                     });
@@ -252,8 +277,8 @@ pub fn draw_ui_two_folder_tree_with_diff(
                     body.rows(row_height, row_count, |mut row| {
                         let entry = &visible_rows[row.index()];
                         render_row_folder_tree_diff_column(
-                            fs1,
-                            fs2,
+                            file_system_1.as_ref(),
+                            file_system_2.as_ref(),
                             expanded,
                             &mut row,
                             entry,
@@ -561,23 +586,15 @@ pub fn folder_diff_state(
         }
     }
 }
-
 pub fn build_two_folder_diff_rows(
     expanded: &mut HashMap<FsNodeId, bool>,
-    file_system_1: &FileSystemModel,
-    file_system_2: &FileSystemModel,
+    file_system_1: Option<&FileSystemModel>,
+    file_system_2: Option<&FileSystemModel>,
     out: &mut Vec<VisibleRowTwoFolderDiff>,
     method: &PathComparissonMethod,
 ) -> io::Result<()> {
     let partial_threshold = 1.0f32;
     out.clear();
-
-    let root1 = file_system_1.get_root();
-    let root2 = file_system_2.get_root();
-
-    // Iterate both trees: returns (FsNodeId, depth)
-    let fs_tree_1 = file_system_1.iter_tree();
-    let fs_tree_2 = file_system_2.iter_tree();
 
     // Key by FsNodeId
     let mut entries_map: BTreeMap<
@@ -589,41 +606,63 @@ pub fn build_two_folder_diff_rows(
     > = BTreeMap::new();
 
     // Populate folder 1
-    for (node_id, depth) in fs_tree_1 {
-        let node = file_system_1.get_node(node_id).unwrap();
-        entries_map.insert(node_id, (Some((node_id, node, depth.into())), None));
+    if let Some(fs1) = file_system_1 {
+        for (node_id, depth) in fs1.iter_tree() {
+            let node = fs1.get_node(node_id).unwrap();
+            entries_map.insert(node_id, (Some((node_id, node, depth.into())), None));
 
-        if matches!(node.kind, FsNodeKind::Dir { .. }) {
-            expanded.entry(node_id).or_insert(false);
+            if matches!(node.kind, FsNodeKind::Dir { .. }) {
+                expanded.entry(node_id).or_insert(false);
+            }
         }
     }
 
     // Populate folder 2
-    for (node_id, depth) in fs_tree_2 {
-        let node = file_system_2.get_node(node_id).unwrap();
-        entries_map
-            .entry(node_id)
-            .and_modify(|e| e.1 = Some((node_id, node, depth.into())))
-            .or_insert((None, Some((node_id, node, depth.into()))));
+    if let Some(fs2) = file_system_2 {
+        for (node_id, depth) in fs2.iter_tree() {
+            let node = fs2.get_node(node_id).unwrap();
+            entries_map
+                .entry(node_id)
+                .and_modify(|e| e.1 = Some((node_id, node, depth.into())))
+                .or_insert((None, Some((node_id, node, depth.into()))));
 
-        if matches!(node.kind, FsNodeKind::Dir { .. }) {
-            expanded.entry(node_id).or_insert(false);
+            if matches!(node.kind, FsNodeKind::Dir { .. }) {
+                expanded.entry(node_id).or_insert(false);
+            }
         }
     }
 
     // Ensure root is included
-    let root1_id = file_system_1.get_node_id(root1);
-    let root2_id = file_system_2.get_node_id(root2);
+    let root1 = file_system_1.map(|fs| fs.get_root());
+    let root2 = file_system_2.map(|fs| fs.get_root());
 
-    entries_map
-        .entry(root1_id)
-        .or_insert((Some((root1_id, root1, 0)), Some((root2_id, root2, 0))));
+    let root_node_id = match (file_system_1, file_system_2, root1, root2) {
+        (Some(fs1), Some(fs2), Some(r1), Some(r2)) => {
+            let id1 = fs1.get_node_id(r1);
+            let id2 = fs2.get_node_id(r2);
+            entries_map
+                .entry(id1)
+                .or_insert((Some((id1, r1, 0)), Some((id2, r2, 0))));
+            id1
+        }
+        (Some(fs1), None, Some(r1), _) => {
+            let id = fs1.get_node_id(r1);
+            entries_map.entry(id).or_insert((Some((id, r1, 0)), None));
+            id
+        }
+        (None, Some(fs2), _, Some(r2)) => {
+            let id = fs2.get_node_id(r2);
+            entries_map.entry(id).or_insert((None, Some((id, r2, 0))));
+            id
+        }
+        _ => return Ok(()),
+    };
 
     // Compute root folder diff state using ID-based version
-    let root_diff_state = folder_diff_state(root1_id, &entries_map, method, partial_threshold);
+    let root_diff_state = folder_diff_state(root_node_id, &entries_map, method, partial_threshold);
 
     out.push(VisibleRowTwoFolderDiff {
-        path: root1_id,
+        path: root_node_id,
         is_dir: true,
         depth: 0,
         diff_state: root_diff_state,
@@ -631,10 +670,16 @@ pub fn build_two_folder_diff_rows(
 
     // Build visible rows
     for (&node_id, (left, right)) in &entries_map {
+        if node_id == root_node_id {
+            continue;
+        }
+
         // Skip invisible nodes
         let visible = left
-            .map(|(id, _, _)| is_visible(file_system_1, expanded, id))
-            .or_else(|| right.map(|(id, _, _)| is_visible(file_system_2, expanded, id)))
+            .and_then(|(id, _, _)| file_system_1.map(|fs| is_visible(fs, expanded, id)))
+            .or_else(|| {
+                right.and_then(|(id, _, _)| file_system_2.map(|fs| is_visible(fs, expanded, id)))
+            })
             .unwrap_or(true);
 
         if !visible {
@@ -677,8 +722,8 @@ pub fn build_two_folder_diff_rows(
 }
 
 fn on_row_item_clicked(
-    file_system_1: &FileSystemModel,
-    file_system_2: &FileSystemModel,
+    file_system_1: Option<&FileSystemModel>,
+    file_system_2: Option<&FileSystemModel>,
     entry: &VisibleRowTwoFolderDiff,
     config: &DiffToolConfig,
 ) -> bool {
@@ -694,11 +739,12 @@ fn on_row_item_clicked(
             return false;
         }
         (Some(path1), Some(path2)) => {
+            assert_eq!(file_system_1.is_some(), file_system_2.is_some()); // Model/View diff
             let diff_tool = config;
             let result = open_diff_tool(
                 &diff_tool,
-                file_system_1.get_node(path1).unwrap().pathbuf(),
-                file_system_2.get_node(path2).unwrap().pathbuf(),
+                file_system_1.unwrap().get_node(path1).unwrap().pathbuf(),
+                file_system_2.unwrap().get_node(path2).unwrap().pathbuf(),
             );
             if let Err(err) = result {
                 log::error!("diffing failed...");
@@ -710,10 +756,9 @@ fn on_row_item_clicked(
 
     return true;
 }
-
 fn render_row_folder_tree_diff_column(
-    file_system_1: &FileSystemModel,
-    file_system_2: &FileSystemModel,
+    file_system_1: Option<&FileSystemModel>,
+    file_system_2: Option<&FileSystemModel>,
     expanded: &mut HashMap<FsNodeId, bool>,
     row: &mut egui_extras::TableRow,
     entry: &VisibleRowTwoFolderDiff,
@@ -723,7 +768,6 @@ fn render_row_folder_tree_diff_column(
     let path = &entry.path;
     let is_dir = entry.is_dir;
 
-    // Column 1
     row.col(|ui| {
         ui.horizontal(|ui| {
             ui.add_space((entry.depth as f32) * 16.0);
@@ -739,10 +783,13 @@ fn render_row_folder_tree_diff_column(
                     expanded.insert(*path, !is_open);
                 }
 
-                let filename = file_system_1.get_node(*path).unwrap().display_name();
-                let label = format!("📁 {}", filename);
-                if ui.label(label).interact(egui::Sense::click()).clicked() {
-                    expanded.insert(*path, !is_open);
+                if let Some(fs1) = file_system_1 {
+                    if let Some(node) = fs1.get_node(*path) {
+                        let label = format!("📁 {}", node.display_name());
+                        if ui.label(label).interact(egui::Sense::click()).clicked() {
+                            expanded.insert(*path, !is_open);
+                        }
+                    }
                 }
             } else {
                 match &entry.diff_state {
@@ -750,14 +797,21 @@ fn render_row_folder_tree_diff_column(
                     | DiffState::Same(..)
                     | DiffState::Partial(..)
                     | DiffState::OnlyInFirst(..) => {
-                        let filename = file_system_1.get_node(*path).unwrap().display_name();
-                        if ui.label(filename).interact(egui::Sense::click()).clicked() {
-                            on_row_item_clicked(
-                                file_system_1,
-                                file_system_2,
-                                entry,
-                                diff_tool_config,
-                            );
+                        if let Some(fs1) = file_system_1 {
+                            if let Some(node) = fs1.get_node(*path) {
+                                if ui
+                                    .label(node.display_name())
+                                    .interact(egui::Sense::click())
+                                    .clicked()
+                                {
+                                    on_row_item_clicked(
+                                        file_system_1,
+                                        file_system_2,
+                                        entry,
+                                        diff_tool_config,
+                                    );
+                                }
+                            }
                         }
                     }
                     DiffState::OnlyInSecond(..) => {}
@@ -766,14 +820,12 @@ fn render_row_folder_tree_diff_column(
         });
     });
 
-    // Column 2
     row.col(|ui| {
         ui.horizontal(|ui| {
             ui_custom_diff_state(ui, &entry.diff_state);
         });
     });
 
-    // Column 3
     row.col(|ui| {
         ui.horizontal(|ui| {
             ui.add_space((entry.depth as f32) * 16.0);
@@ -789,10 +841,13 @@ fn render_row_folder_tree_diff_column(
                     expanded.insert(*path, !is_open);
                 }
 
-                let filename = file_system_1.get_node(*path).unwrap().display_name();
-                let label = format!("📁 {}", filename);
-                if ui.label(label).interact(egui::Sense::click()).clicked() {
-                    expanded.insert(*path, !is_open);
+                if let Some(fs2) = file_system_2 {
+                    if let Some(node) = fs2.get_node(*path) {
+                        let label = format!("📁 {}", node.display_name());
+                        if ui.label(label).interact(egui::Sense::click()).clicked() {
+                            expanded.insert(*path, !is_open);
+                        }
+                    }
                 }
             } else {
                 match &entry.diff_state {
@@ -800,14 +855,21 @@ fn render_row_folder_tree_diff_column(
                     | DiffState::Same(..)
                     | DiffState::Partial(..)
                     | DiffState::OnlyInSecond(..) => {
-                        let filename = file_system_1.get_node(*path).unwrap().display_name();
-                        if ui.label(filename).interact(egui::Sense::click()).clicked() {
-                            on_row_item_clicked(
-                                file_system_1,
-                                file_system_2,
-                                entry,
-                                diff_tool_config,
-                            );
+                        if let Some(fs2) = file_system_2 {
+                            if let Some(node) = fs2.get_node(*path) {
+                                if ui
+                                    .label(node.display_name())
+                                    .interact(egui::Sense::click())
+                                    .clicked()
+                                {
+                                    on_row_item_clicked(
+                                        file_system_1,
+                                        file_system_2,
+                                        entry,
+                                        diff_tool_config,
+                                    );
+                                }
+                            }
                         }
                     }
                     DiffState::OnlyInFirst(..) => {}

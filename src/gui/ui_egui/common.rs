@@ -1,4 +1,4 @@
-use eframe::egui;
+use eframe::egui::{self, Vec2};
 
 pub fn hash_to_color(hash: &str) -> egui::Color32 {
     use std::collections::hash_map::DefaultHasher;
@@ -177,4 +177,41 @@ pub fn preview_files_being_dropped_in_rect(ctx: &egui::Context, rect: egui::Rect
             );
         }
     }
+}
+
+pub fn draw_persistent_hint_text_edit(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash,
+    hint: String,
+    size: impl Into<Vec2>,
+) -> egui::Response {
+    let id = ui.make_persistent_id(id_source);
+    let mut text_edit_val = ui.data_mut(|d| d.get_persisted::<String>(id).unwrap_or_default());
+
+    let size = size.into();
+    let output = ui
+        .allocate_ui_with_layout(size, egui::Layout::top_down(egui::Align::Min), |ui| {
+            egui::TextEdit::singleline(&mut text_edit_val)
+                .clip_text(true)
+                .desired_width(size.x)
+                .show(ui)
+        })
+        .inner;
+
+    let painter = ui.painter_at(output.response.rect);
+    let text_color = egui::Color32::from_rgba_premultiplied(100, 100, 100, 100);
+    let galley = painter.layout(
+        hint,
+        egui::TextStyle::Body.resolve(ui.style()),
+        text_color,
+        size.x,
+    );
+
+    painter.galley(output.galley_pos, galley, text_color);
+
+    if output.response.changed() {
+        ui.data_mut(|d| d.insert_persisted(id, text_edit_val));
+    }
+
+    output.response
 }
