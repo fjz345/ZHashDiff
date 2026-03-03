@@ -195,6 +195,13 @@ impl ZApp {
                         self.diff_mode_path_diff = !self.diff_mode_path_diff;
                     }
                 });
+                ui.menu_button("Debug", |ui| {
+                    if ui.button("Clear FileSystemModels").clicked() {
+                        app_ctx.file_system_model_1 = None;
+                        app_ctx.file_system_model_2 = None;
+                        app_ctx.expanded.clear();
+                    }
+                });
             });
         });
         if self.open_external_diff_window {
