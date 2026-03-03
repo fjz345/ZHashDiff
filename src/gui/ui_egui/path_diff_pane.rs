@@ -70,15 +70,28 @@ impl PathDiffPane {
                             return false;
                         }
                         (true, false) => {
-                            println!("todo!!");
+                            let file_system1 = ctx.path_diff_view.file_system_1.as_ref().unwrap();
+                            if **k == file_system1.get_root_node_id() {
+                                return false;
+                            }
+                            let node = file_system1.get_node(**k);
+                            if let Some(node) = node {
+                                return true;
+                            }
                             return false;
                         }
                         (false, true) => {
-                            println!("todo!!");
+                            let file_system2 = ctx.path_diff_view.file_system_2.as_ref().unwrap();
+                            if **k == file_system2.get_root_node_id() {
+                                return false;
+                            }
+                            let node = file_system2.get_node(**k);
+                            if let Some(node) = node {
+                                return true;
+                            }
                             return false;
                         }
                         (false, false) => {
-                            println!("todo!!");
                             return false;
                         }
                     };
@@ -94,7 +107,7 @@ impl PathDiffPane {
             if ui.button(button_text).clicked() {
                 if is_anything_expanded {
                     match (has_file_system1, has_file_system2) {
-                        (true, true) => {
+                        (true, true) | (true, false) => {
                             let file_system1 = ctx.path_diff_view.file_system_1.as_ref().unwrap();
                             // Collapse all (not root)
                             for (key, value) in &mut ctx.path_diff_view.expanded.iter_mut() {
@@ -104,15 +117,17 @@ impl PathDiffPane {
                                 }
                             }
                         }
-                        (true, false) => {
-                            println!("todo!!");
-                        }
                         (false, true) => {
-                            println!("todo!!");
+                            let file_system2 = ctx.path_diff_view.file_system_2.as_ref().unwrap();
+                            // Collapse all (not root)
+                            for (key, value) in &mut ctx.path_diff_view.expanded.iter_mut() {
+                                // "" = root (relative)
+                                if *key == file_system2.get_root_node_id() {
+                                    *value = false;
+                                }
+                            }
                         }
-                        (false, false) => {
-                            println!("todo!!");
-                        }
+                        (false, false) => {}
                     }
                 } else {
                     if has_file_system1 {
