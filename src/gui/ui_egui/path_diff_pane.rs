@@ -111,7 +111,6 @@ impl PathDiffPane {
                             let file_system1 = ctx.path_diff_view.file_system_1.as_ref().unwrap();
                             // Collapse all (not root)
                             for (key, value) in &mut ctx.path_diff_view.expanded.iter_mut() {
-                                // "" = root (relative)
                                 if *key == file_system1.get_root_node_id() {
                                     *value = false;
                                 }
@@ -121,7 +120,6 @@ impl PathDiffPane {
                             let file_system2 = ctx.path_diff_view.file_system_2.as_ref().unwrap();
                             // Collapse all (not root)
                             for (key, value) in &mut ctx.path_diff_view.expanded.iter_mut() {
-                                // "" = root (relative)
                                 if *key == file_system2.get_root_node_id() {
                                     *value = false;
                                 }
@@ -137,7 +135,6 @@ impl PathDiffPane {
                             .as_ref()
                             .unwrap()
                             .get_root_node_id();
-                        // Expand all
                         recursive_expand(
                             ctx.path_diff_view.expanded,
                             ctx.path_diff_view.file_system_1.as_mut().unwrap(),
@@ -183,16 +180,13 @@ impl PathDiffPane {
         if self.open_dir_window_1 {
             self.open_dir_window_1 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // ctx.path_diff_view.file_system_1.get_root()_dir_cache.clear();
                 *ctx.path_diff_view.file_system_1 = Some(FileSystemModel::new(path));
                 ctx.path_diff_view.expanded.clear();
             }
         }
-
         if self.open_dir_window_2 {
             self.open_dir_window_2 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // ctx.path_diff_view.file_system_1.get_root()_dir_cache.clear();
                 *ctx.path_diff_view.file_system_2 = Some(FileSystemModel::new(path));
                 ctx.path_diff_view.expanded.clear();
             }
