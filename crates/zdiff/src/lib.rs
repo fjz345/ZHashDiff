@@ -3,16 +3,16 @@ pub mod lexer;
 //// TESTS
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::lexer::{Lexer, RawToken, TokenKind};
 
-    use super::*;
-    use std::fs::{self, File};
-    use std::path::Path;
-    use tempfile::{TempDir, tempdir};
+    // use std::fs::{self, File};
+    // use std::path::Path;
+    // use tempfile::{TempDir, tempdir};
 
-    fn create_file(path: &Path) {
-        File::create(path).expect("failed to create file");
-    }
+    // fn create_file(path: &Path) {
+    //     File::create(path).expect("failed to create file");
+    // }
 
     #[test]
     fn test_function_syntax() {
@@ -54,19 +54,60 @@ mod tests {
     }
 
     #[test]
-    fn test_greedy_operators() {
+    fn test_greedy_operators_exhaustive() {
         let input = "x / / y // comment\nx /* block */ y";
         let mut lexer = Lexer::new(input);
         let tokens = lexer.parse();
 
-        // input: "x / / y // comment\nx /* block */ y"
-        // tokens:
-        // [0] Ident(x), [1] Space, [2] Symbol(/), [3] Space, [4] Symbol(/), 
-        // [5] Space, [6] Ident(y), [7] Space, [8] Comment(// comment) ...
+        // Verification Table:
+        // Index | Token Kind | Value
+        // -------------------------
+        // 0     | Identifier | "x"
+        // 1     | Whitespace | " "
+        // 2     | Symbol     | "/"
+        // 3     | Whitespace | " "
+        // 4     | Symbol     | "/"
+        // 5     | Whitespace | " "
+        // 6     | Identifier | "y"
+        // 7     | Whitespace | " "
+        // 8     | Comment    | "// comment"
+        // 9     | Whitespace | "\n"
+        // 10    | Identifier | "x"
+        // 11    | Whitespace | " "
+        // 12    | Comment    | "/* block */"
+        // 13    | Whitespace | " "
+        // 14    | Identifier | "y"
 
-        assert_eq!(tokens[2].kind, TokenKind::Symbol, "Expected tokens[2] to be Symbol (/), got {:?}", tokens[2].kind);
-        assert_eq!(tokens[4].kind, TokenKind::Symbol, "Expected tokens[4] to be Symbol (/), got {:?}", tokens[4].kind);
-        assert_eq!(tokens[8].kind, TokenKind::Comment, "Expected tokens[8] to be Comment (//), got {:?}", tokens[8].kind);
+        let expected = vec![
+            (TokenKind::Identifier, "x"),
+            (TokenKind::Whitespace, " "),
+            (TokenKind::Symbol, "/"),
+            (TokenKind::Whitespace, " "),
+            (TokenKind::Symbol, "/"),
+            (TokenKind::Whitespace, " "),
+            (TokenKind::Identifier, "y"),
+            (TokenKind::Whitespace, " "),
+            (TokenKind::Comment, "// comment"),
+            (TokenKind::Whitespace, "\n"),
+            (TokenKind::Identifier, "x"),
+            (TokenKind::Whitespace, " "),
+            (TokenKind::Comment, "/* block */"),
+            (TokenKind::Whitespace, " "),
+            (TokenKind::Identifier, "y"),
+        ];
+
+        assert_eq!(tokens.len(), expected.len(), "Token count mismatch.");
+
+        for (i, (kind, value)) in expected.into_iter().enumerate() {
+            assert_eq!(
+                tokens[i].kind, kind,
+                "Token[{}] kind mismatch. Expected {:?}, got {:?}", i, kind, tokens[i].kind
+            );
+            assert_eq!(
+                lexer.token_value(&tokens[i]), value,
+                "Token[{}] value mismatch. Expected {:?}, got {:?}", i, value, lexer.token_value(&tokens[i])
+            );
+        }
     }
 
     #[test]
@@ -91,6 +132,8 @@ mod tests {
         assert_eq!(tokens[0].kind, TokenKind::Number, "Expected '123' to be Number, got {:?}", tokens[0].kind);
         assert_eq!(tokens[1].kind, TokenKind::Symbol, "Expected '.' to be Symbol, got {:?}", tokens[1].kind);
         assert_eq!(tokens[2].kind, TokenKind::Number, "Expected '456' to be Number, got {:?}", tokens[2].kind);
+        assert_eq!(tokens[3].kind, TokenKind::Whitespace, "Expected ' ' to be Whitespace, got {:?}", tokens[3].kind);
+        assert_eq!(tokens[4].kind, TokenKind::Number, "Expected '789' to be Number, got {:?}", tokens[4].kind);
     }
 
     #[test]
@@ -130,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn test_real_world_files_simple() {
+    fn test_files_simple() {
         let cpp_file = r#"
     #include <iostream>
 
@@ -203,7 +246,7 @@ mod tests {
     }
 
     #[test]
-fn test_real_world_files_advanced() {
+fn test_files_advanced() {
     let advanced_cpp = r#"
     #include <vector>
     #include <memory>
