@@ -1,4 +1,5 @@
 pub mod lexer;
+pub mod myers;
 
 //// TESTS
 #[cfg(test)]
@@ -425,6 +426,112 @@ fn test_files_advanced() {
                 },
                 _ => {}
             }
+        }
+    }
+
+
+    // Myers tests
+    use crate::myers::{backtrack, myers_diff, myers_diff_trace};
+    fn distance_from_path(path: &[(i32, i32)]) -> usize {
+        if path.is_empty() { return 0; }
+        path.windows(2)
+            .filter(|w| {
+                let (x1, y1) = w[0];
+                let (x2, y2) = w[1];
+                (x1 == x2 && y1 != y2) || (x1 != x2 && y1 == y2)
+            })
+            .count()
+    }
+
+    #[test]
+    fn test_identical_sequences() {
+        let a = vec!["a", "b", "c"];
+        let b = vec!["a", "b", "c"];
+        let cmp = |t1: &&str, t2: &&str| t1 == t2;
+
+        let dist = myers_diff(&a, &b, cmp);
+        let trace = myers_diff_trace(&a, &b, cmp);
+        let path = backtrack(trace, a.len() as i32, b.len() as i32);
+
+        assert_eq!(dist, 0);
+        assert_eq!(distance_from_path(&path), 0);
+        assert_eq!(path.len(), 4); // (0,0) -> (1,1) -> (2,2) -> (3,3)
+    }
+
+    #[test]
+    fn test_completely_different() {
+        let a = vec!["a", "b"];
+        let b = vec!["c", "d"];
+        let cmp = |t1: &&str, t2: &&str| t1 == t2;
+
+        let dist = myers_diff(&a, &b, cmp);
+        assert_eq!(dist, 4); // 2 deletes, 2 inserts
+    }
+
+    #[test]
+    fn test_empty_sequences() {
+        let a: Vec<&str> = vec![];
+        let b: Vec<&str> = vec!["a", "b"];
+        let cmp = |t1: &&str, t2: &&str| t1 == t2;
+
+        assert_eq!(myers_diff(&a, &b, cmp), 2);
+        assert_eq!(myers_diff(&b, &a, cmp), 2);
+        assert_eq!(myers_diff(&a, &a, cmp), 0);
+    }
+
+    #[test]
+    fn test_complex_interleaving() {
+        let a: Vec<char> = "ABCABBA".chars().collect();
+        let b: Vec<char> = "CBABAC".chars().collect();
+        let cmp = |t1: &char, t2: &char| t1 == t2;
+
+        let dist = myers_diff(&a, &b, cmp);
+        let trace = myers_diff_trace(&a, &b, cmp);
+        let path = backtrack(trace, a.len() as i32, b.len() as i32);
+
+        assert_eq!(dist, 5); 
+        assert_eq!(distance_from_path(&path), 5);
+    }
+
+    #[test]
+    fn test_rust_token_edit_logic() {
+        let a = vec!["fn", "main", "(", ")", "{", "}"];
+        let b = vec!["fn", "main2", "(", ")", "{", "}"];
+        let cmp = |t1: &&str, t2: &&str| t1 == t2;
+
+        let trace = myers_diff_trace(&a, &b, cmp);
+        let path = backtrack(trace, a.len() as i32, b.len() as i32);
+
+        // Distance should be 2 (Delete main, Insert main2)
+        assert_eq!(distance_from_path(&path), 2);
+        
+        // Path should include (3,3) which is the match for '('
+        assert!(path.contains(&(3, 3))); 
+    }
+
+    #[test]
+    fn test_path_continuity() {
+        let a = vec!["A", "B", "C"];
+        let b = vec!["A", "X", "C"];
+        let cmp = |t1: &&str, t2: &&str| t1 == t2;
+
+        let trace = myers_diff_trace(&a, &b, cmp);
+        let path = backtrack(trace, a.len() as i32, b.len() as i32);
+
+        // Verify every step in the path is valid (Right, Down, or Diagonal)
+        for w in path.windows(2) {
+            let (x1, y1) = w[0];
+            let (x2, y2) = w[1];
+            let dx = x2 - x1;
+            let dy = y2 - y1;
+            
+            // Valid moves: (1,0), (0,1), or (1,1)
+            assert!(
+                (dx == 1 && dy == 0) || 
+                (dx == 0 && dy == 1) || 
+                (dx == 1 && dy == 1),
+                "Invalid path jump from ({},{}) to ({},{})", x1, y1, x2, y2
+            );
         }
     }
 }

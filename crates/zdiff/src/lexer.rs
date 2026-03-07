@@ -17,7 +17,7 @@ pub struct RawToken {
     pub span: Range<usize>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Lexer<'a> {
     source: &'a str,
     cursor: usize,
@@ -145,5 +145,152 @@ impl<'a> Iterator for Lexer<'a> {
         };
 
         Some(RawToken { kind, span: start..self.cursor })
+    }
+}
+
+pub fn visualize_diff_grid(
+    lexer1: &Lexer,
+    tokens1: &[RawToken],
+    lexer2: &Lexer,
+    tokens2: &[RawToken],
+) {
+    let n = tokens1.len();
+    let m = tokens2.len();
+    let col_w = 8;
+
+    // ANSI Colors
+    let blue = "\x1b[34m";
+    let green = "\x1b[32m";
+    let gray = "\x1b[90m";
+    let reset = "\x1b[0m";
+
+    let label = |val: &str| {
+        let escaped = val.replace("\n", "\\n").replace(" ", "·");
+        if escaped.len() > col_w - 1 {
+            format!("{}…", &escaped[..col_w - 2])
+        } else {
+            escaped
+        }
+    };
+
+    // 1. Horizontal Header
+    print!("{:>width$} ", "", width = col_w);
+    for t in tokens1 {
+        print!(" {}{:^width$}{}", blue, label(lexer1.token_value(t)), reset, width = col_w - 1);
+    }
+    println!("\n");
+
+    for j in 0..=m {
+        // --- Line A: Nodes and Horizontal Edges ---
+        print!("{:>width$} ", "", width = col_w);
+        for i in 0..=n {
+            print!("{}┼{}", gray, reset);
+            if i < n {
+                print!("{}{}{}", gray, "─".repeat(col_w - 1), reset);
+            }
+        }
+        println!();
+
+        // --- Line B: Vertical Edges, Diagonals, and Vertical Labels ---
+        if j < m {
+            print!("{}{:>width$}{} ", blue, label(lexer2.token_value(&tokens2[j])), reset, width = col_w);
+            
+            for i in 0..=n {
+                print!("{}│{}", gray, reset);
+                if i < n {
+                    let is_match = tokens1[i].kind == tokens2[j].kind 
+                        && lexer1.token_value(&tokens1[i]) == lexer2.token_value(&tokens2[j]);
+                    
+                    if is_match {
+                        let pad = (col_w - 2) / 2;
+                        print!("{}{}{}{}{}{}", 
+                            " ".repeat(pad), green, "\\", reset, " ".repeat(col_w - 2 - pad), ""
+                        );
+                    } else {
+                        print!("{}", " ".repeat(col_w - 1));
+                    }
+                }
+            }
+            println!();
+        }
+    }
+}
+
+pub fn visualize_diff_grid_with_path<F>(
+    lexer1: &Lexer,
+    tokens1: &[RawToken],
+    lexer2: &Lexer,
+    tokens2: &[RawToken],
+    path: &[(i32, i32)],
+    mut cmp: F,
+) where
+    F: FnMut(&RawToken, &RawToken) -> bool,
+{
+    let (n, m) = (tokens1.len() as i32, tokens2.len() as i32);
+    let col_w = 8;
+    let (blue, green, gray, yellow, reset) = 
+        ("\x1b[34m", "\x1b[32m", "\x1b[90m", "\x1b[33m", "\x1b[0m");
+
+    let is_on_path = |x: i32, y: i32| path.contains(&(x, y));
+
+    let label = |val: &str| {
+        let escaped = val.replace("\n", "\\n").replace(" ", "·");
+        if escaped.len() > col_w - 1 {
+            format!("{}…", &escaped[..col_w - 2])
+        } else {
+            escaped
+        }
+    };
+
+    // 1. Horizontal Header
+    print!("{:>width$} ", "", width = col_w);
+    for t in tokens1 {
+        print!(" {:^width$}", format!("{}{}{}", blue, label(lexer1.token_value(t)), reset), width = col_w + 8);
+    }
+    println!("\n");
+
+    for j in 0..=m {
+        // --- Line A: Nodes and Horizontal Edges (Deletions) ---
+        print!("{:>width$} ", "", width = col_w);
+        for i in 0..=n {
+            let node = if is_on_path(i, j) {
+                format!("{}█{}", yellow, reset)
+            } else {
+                format!("{}┼{}", gray, reset)
+            };
+            print!("{}", node);
+
+            if i < n {
+                let on_path = is_on_path(i, j) && is_on_path(i + 1, j);
+                let color = if on_path { yellow } else { gray };
+                print!("{}{}{}", color, "─".repeat(col_w - 1), reset);
+            }
+        }
+        println!();
+
+        // --- Line B: Vertical Edges (Insertions), Diagonals (Matches), and Labels ---
+        if j < m {
+            print!("{}{:>width$}{} ", blue, label(lexer2.token_value(&tokens2[j as usize])), reset, width = col_w);
+            
+            for i in 0..=n {
+                let on_path_v = is_on_path(i, j) && is_on_path(i, j + 1);
+                let v_color = if on_path_v { yellow } else { gray };
+                print!("{}│{}", v_color, reset);
+                
+                if i < n {
+                    let is_match = cmp(&tokens1[i as usize], &tokens2[j as usize]);
+                    let on_diag_path = is_on_path(i, j) && is_on_path(i + 1, j + 1);
+                    
+                    if is_match {
+                        let color = if on_diag_path { green } else { gray };
+                        let pad = (col_w - 2) / 2;
+                        print!("{}{}{}{}{}", " ".repeat(pad), color, "\\", reset, " ".repeat(col_w - 2 - pad));
+                    } else {
+                        print!("{}", " ".repeat(col_w - 1));
+                    }
+                }
+            }
+            println!();
+        }
     }
 }
