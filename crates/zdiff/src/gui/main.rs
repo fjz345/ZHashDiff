@@ -1,3 +1,65 @@
+use zdiff::lexer::Lexer;
+
+const TEST_STRING: &str = r#"// #![windows_subsystem = "windows"]
+// #![allow(dead_code)]
+// #![allow(unreachable_patterns)]
+
+use std::env;
+
+use eframe::egui::{self};
+
+use crate::{logger::LogCollector, ui_egui::app::ZApp};
+
+mod logger;
+mod ui_egui;
+
+fn main() -> eframe::Result {
+    unsafe { env::set_var("RUST_LOG", "debug") }; // or "info" or "debug"
+
+    let log_buffer = LogCollector::init().expect("Failed to init logger");
+
+    color_backtrace::install();
+
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([2560.0, 1440.0])
+            .with_drag_and_drop(true),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "ZHashDiff",
+        native_options,
+        Box::new(move |cc: &eframe::CreationContext<'_>| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
+
+            #[cfg(feature = "serde")]
+            {
+                // Try to load saved state from storage
+                if let Some(storage) = cc.storage {
+                    if let Some(json) = storage.get_string(eframe::APP_KEY) {
+                        if let Ok(mut app) = serde_json::from_str::<ZApp>(&json) {
+                            log::info!("Found previous app storage");
+                            app.request_init();
+                            return Ok(Box::new(app));
+                        }
+                    }
+                }
+            }
+
+            let mut app = ZApp::new(cc, log_buffer.clone());
+            app.request_init();
+            Ok(Box::<ZApp>::new(app))
+        }),
+    )
+}
+"#;
 fn main() {
     println!("Hello, world!");
+    let mut lexer = Lexer::new(TEST_STRING);
+    let tokens = lexer.parse();
+    for token in tokens {
+        // println!("Token: kind={:?}, spawn={:?}", token.kind, token.span);
+        println!("Token: kind={:?}, value={:?}", token.kind, lexer.token_value(&token));
+    }
 }
