@@ -13,6 +13,7 @@ use zhashdiff::{
 
 use crate::ui_egui::{
     duplicate_files_pane::DuplicateFilesPane,
+    fs_tree::FileSystemView,
     panes::{LogPane, Pane, PathDiffView, TreeBehavior},
     path_diff_pane::PathDiffPane,
     popup::show_custom_popup,
@@ -27,13 +28,8 @@ use egui_tiles::Tile;
 pub struct AppStateCtx {
     #[serde(skip)]
     pub hash_service: HashService,
-    pub file_system_model_1: Option<FileSystemModel>,
-    pub file_system_model_2: Option<FileSystemModel>,
-
-    #[serde(skip)]
-    pub expanded: HashMap<FsNodeId, bool>,
-    #[serde(skip)]
-    pub selected: HashMap<FsNodeId, bool>,
+    pub file_system_model_1_view: Option<FileSystemView>,
+    pub file_system_model_2_view: Option<FileSystemView>,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -197,9 +193,8 @@ impl ZApp {
                 });
                 ui.menu_button("Debug", |ui| {
                     if ui.button("Clear FileSystemModels").clicked() {
-                        app_ctx.file_system_model_1 = None;
-                        app_ctx.file_system_model_2 = None;
-                        app_ctx.expanded.clear();
+                        app_ctx.file_system_model_1_view = None;
+                        app_ctx.file_system_model_2_view = None;
                     }
                 });
             });
@@ -257,10 +252,8 @@ impl ZApp {
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 let mut diff_action_triggered = false;
                 let mut path_diff_view = PathDiffView {
-                    file_system_1: &mut app_ctx.file_system_model_1,
-                    file_system_2: &mut app_ctx.file_system_model_2,
-                    expanded: &mut app_ctx.expanded,
-                    selected: &mut app_ctx.selected,
+                    file_system_1_view: &mut app_ctx.file_system_model_1_view,
+                    file_system_2_view: &mut app_ctx.file_system_model_2_view,
                 };
                 let mut behavior = TreeBehavior {
                     log_buffer: self.log_buffer.clone(),
@@ -282,9 +275,9 @@ impl ZApp {
                         let out_ctx = behavior.create_duplicate_files_ctx();
                         let count_files_and_folders = out_ctx
                             .path_diff_view
-                            .file_system_1
+                            .file_system_1_view
                             .as_ref()
-                            .and_then(|f| Some(f.total_files_and_folders()))
+                            .and_then(|f| Some(f.file_system.total_files_and_folders()))
                             .unwrap_or_default();
 
                         let active = out_ctx.hash_service.count_active_hashes();
@@ -414,15 +407,15 @@ impl eframe::App for ZApp {
                 if self.open_dir_window_1 {
                     self.open_dir_window_1 = false;
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        state.file_system_model_1 = Some(FileSystemModel::new(&path));
-                        state.expanded.clear();
+                        state.file_system_model_1_view =
+                            Some(FileSystemView::new(Arc::new(FileSystemModel::new(&path))));
                     }
                 }
                 if self.open_dir_window_2 {
                     self.open_dir_window_2 = false;
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        state.file_system_model_2 = Some(FileSystemModel::new(&path));
-                        state.expanded.clear();
+                        state.file_system_model_2_view =
+                            Some(FileSystemView::new(Arc::new(FileSystemModel::new(&path))));
                     }
                 }
                 self.process_ctx_inputs(ctx, frame);

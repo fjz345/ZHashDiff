@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use eframe::egui;
 use serde::Deserialize;
@@ -11,9 +12,9 @@ use zhashdiff::hash::HashService;
 
 use crate::ui_egui::common::CheckboxSelectState;
 use crate::ui_egui::common::hash_to_color;
+use crate::ui_egui::common::ui_custom_checkbox;
+use crate::ui_egui::fs_tree::FileSystemView;
 use crate::ui_egui::fs_tree::draw_ui_folder_tree_with_checkbox;
-use crate::ui_egui::fs_tree::folder_state_ui_custom_checkbox;
-use crate::ui_egui::fs_tree::recursive_expand;
 use crate::ui_egui::panes::PathDiffView;
 use crate::ui_egui::panes::ZAppPane;
 use crate::ui_egui::popup;
@@ -68,29 +69,23 @@ impl DuplicateFilesPane {
                     self.open_dir_window = true;
                 }
 
-                let is_anything_expanded = !ctx.path_diff_view.expanded.is_empty();
-                let button_text = if is_anything_expanded {
-                    "Collapse All"
-                } else {
-                    "Expand All"
-                };
-
-                if ui.button(button_text).clicked() {
-                    if is_anything_expanded {
-                        ctx.path_diff_view.expanded.clear();
+                if let Some(fs_view) = &mut ctx.path_diff_view.file_system_1_view {
+                    let nodes_considered_for_collapse = &fs_view.file_system.get_root().children().unwrap().clone();
+                    let is_anything_collapsed = fs_view.is_anything_collapsed_slice(nodes_considered_for_collapse);
+                    let button_text = if is_anything_collapsed {
+                        "Collapse All"
                     } else {
-                        if let Some(file_system) = ctx.path_diff_view.file_system_1 {
-                            recursive_expand(
-                                ctx.path_diff_view.expanded,
-                                file_system,
-                                file_system.get_root_node_id(),
-                            );
-                        }
+                        "Expand All"
+                    };
+
+                    if ui.button(button_text).clicked() {
+                        fs_view.recursive_collapse_slice(nodes_considered_for_collapse, !is_anything_collapsed);
                     }
                 }
 
                 if ui.button("Request All Hash").clicked() {
-                    if let Some(file_system) = ctx.path_diff_view.file_system_1 {
+                    if let Some(file_system_view) = ctx.path_diff_view.file_system_1_view {
+                        let file_system = &file_system_view.file_system;
                         let all_files: Vec<_> = file_system.iter_files().collect();
 
                         for node_id in all_files {
@@ -104,24 +99,6 @@ impl DuplicateFilesPane {
                 if ui.button("Clear Hashes").clicked() {
                     ctx.hash_service.clear();
                 }
-
-                // if ui.button("Reload Root Dir").clicked() {
-                //     ctx.path_diff_view.file_system_1
-                //         .read_path_recursive_flatten(&ctx.path_diff_view.file_system_1.get_root().clone());
-                // }
-
-                // if ui.button("Clear Cache").clicked() {
-                //     ctx.path_diff_view.file_system_1.get_root()_dir_cache.clear();
-                // }
-
-                // let cache_text = if ctx.path_diff_view.file_system_1.cache_enabled {
-                //     "Disable Cache"
-                // } else {
-                //     "Enable Cache"
-                // };
-                // if ui.button(cache_text).clicked() {
-                //     ctx.path_diff_view.file_system_1.cache_enabled = !ctx.path_diff_view.file_system_1.cache_enabled;
-                // }
 
                 ui.label("Concurrent Hashes");
                 let mut slider_concurrent_hashes = ctx.hash_service.count_threads();
@@ -141,14 +118,8 @@ impl DuplicateFilesPane {
         egui::ScrollArea::vertical()
             .max_height(500.0)
             .show(ui, |ui| {
-                if let Some(file_system) = ctx.path_diff_view.file_system_1 {
-                    draw_ui_folder_tree_with_checkbox(
-                        ui,
-                        ctx.path_diff_view.expanded,
-                        ctx.path_diff_view.selected,
-                        file_system,
-                        ctx.hash_service,
-                    );
+                if let Some(file_system_view) = ctx.path_diff_view.file_system_1_view {
+                    draw_ui_folder_tree_with_checkbox(ui, file_system_view, ctx.hash_service);
                     show_diff_button = true;
                 } else {
                     ui.label("No root dir set...");
@@ -161,8 +132,8 @@ impl DuplicateFilesPane {
         if show_diff_button {
             if ui.button("Diff").clicked() {
                 log::info!("Selected files for diff");
-                let snapshot = ctx.hash_service.snapshot();
                 todo!();
+                let snapshot = ctx.hash_service.snapshot();
                 // *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.path_diff_view.selected);
                 *ctx.diff_action_pressed = true;
                 self.open_diff_popup = true;
@@ -173,7 +144,8 @@ impl DuplicateFilesPane {
             self.open_dir_window = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
                 // ctx.path_diff_view.file_system_1.get_root()_dir_cache.clear();
-                *ctx.path_diff_view.file_system_1 = Some(FileSystemModel::new(&path));
+                *ctx.path_diff_view.file_system_1_view =
+                    Some(FileSystemView::new(Arc::new(FileSystemModel::new(path))));
             }
         }
 
@@ -182,10 +154,11 @@ impl DuplicateFilesPane {
 
     fn ui_popups(&mut self, ui: &mut egui::Ui, ctx: &mut DuplicateFilesPaneCtx) {
         if self.open_diff_popup {
-            let mut temp_show_diff_popup: bool = self.open_diff_popup;
+            let mut temp_show_diff_popup = self.open_diff_popup;
             let mut did_resolve = false;
+            let mut deferred_hash_toggle: Option<String> = None;
 
-            let mut conflicts: Vec<_> = ctx
+            let mut conflicts: Vec<(String, Vec<std::path::PathBuf>, bool)> = ctx
                 .conflict_map
                 .iter()
                 .map(|(hash, paths)| {
@@ -215,7 +188,6 @@ impl DuplicateFilesPane {
 
                     egui::Frame::new()
                         .fill(egui::Color32::from_gray(25))
-                        .inner_margin(0.0)
                         .show(ui, |ui| {
                             use egui_extras::{Column, TableBuilder};
 
@@ -246,57 +218,53 @@ impl DuplicateFilesPane {
                                         let index = row.index();
                                         let (hash, paths, is_resolved) = &conflicts[index];
 
+                                        // Checkbox Column
                                         row.col(|ui| {
-                                            ui.centered_and_justified(|ui| {
-                                                if let Some(file_system) =
-                                                    ctx.path_diff_view.file_system_1
-                                                {
-                                                    folder_state_ui_custom_checkbox(
-                                                        ui,
-                                                        file_system,
-                                                        ctx.path_diff_view.selected,
-                                                        if *is_resolved {
-                                                            CheckboxSelectState::Checked
-                                                        } else {
-                                                            CheckboxSelectState::Partial
-                                                        },
-                                                        None,
-                                                    );
-                                                }
-                                            });
+                                            let state = if *is_resolved {
+                                                CheckboxSelectState::Checked
+                                            } else {
+                                                CheckboxSelectState::Unchecked
+                                            };
+
+                                            if ui_custom_checkbox(ui, state).clicked() {
+                                                deferred_hash_toggle = Some(hash.clone());
+                                            }
                                         });
 
+                                        // Hash Column
                                         row.col(|ui| {
                                             let color = hash_to_color(hash);
-                                            let response = egui::Frame::new()
+                                            let rect = egui::Frame::new()
                                                 .fill(color)
                                                 .corner_radius(4.0)
                                                 .inner_margin(2.0)
                                                 .show(ui, |ui| {
-                                                    ui.monospace(
+                                                    ui.label(
                                                         egui::RichText::new(&hash[0..8])
                                                             .color(egui::Color32::BLACK)
                                                             .strong(),
-                                                    )
+                                                    );
                                                 })
-                                                .response;
+                                                .response
+                                                .rect;
 
                                             if ui
                                                 .interact(
-                                                    response.rect.expand(10.0),
+                                                    rect.expand(4.0),
                                                     ui.id().with(hash),
                                                     egui::Sense::click(),
                                                 )
                                                 .clicked()
                                             {
-                                                *ctx.active_conflict_hash = Some(hash.clone());
+                                                deferred_hash_toggle = Some(hash.clone());
                                             }
                                         });
 
+                                        // Occurrences Column
                                         row.col(|ui| {
                                             let label_text = format!("{} files", paths.len());
                                             if ui.selectable_label(false, label_text).clicked() {
-                                                *ctx.active_conflict_hash = Some(hash.clone());
+                                                deferred_hash_toggle = Some(hash.clone());
                                             }
                                         });
                                     });
@@ -305,6 +273,7 @@ impl DuplicateFilesPane {
 
                     ui.separator();
 
+                    // Resolution Button
                     ui.add_enabled_ui(resolved_count > 0, |ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("Resolve All Selected").clicked() {
@@ -312,32 +281,34 @@ impl DuplicateFilesPane {
                                     conflict_map: ctx.conflict_map.clone(),
                                     conflict_map_resolved: ctx.conflict_map_resolved.clone(),
                                 };
+
                                 let removed_files =
                                     execute_resolution(&resolution_input).removed_files;
-                                if removed_files.len() > 0 {
-                                    // HashService needs to remove hashes for deleted files
-                                    for path in removed_files {
-                                        ctx.hash_service.remove(&path);
-                                    }
-                                    // Directory view is now stale
-                                    // ctx.path_diff_view.file_system_1.get_root()_dir_cache.clear();
-                                    // Reset diff UI state
-                                    ctx.conflict_map.clear();
-                                    ctx.conflict_map_resolved.clear();
-                                    *ctx.active_conflict_hash = None;
-                                    self.open_diff_popup = false;
-                                    did_resolve = true;
+                                for path in removed_files {
+                                    ctx.hash_service.remove(&path);
                                 }
+
+                                ctx.conflict_map.clear();
+                                ctx.conflict_map_resolved.clear();
+                                *ctx.active_conflict_hash = None;
+                                did_resolve = true;
                             }
                         });
                     });
                 });
             });
 
-            self.open_diff_popup = temp_show_diff_popup;
-            if did_resolve {
-                self.open_diff_popup = false;
+            if let Some(hash) = deferred_hash_toggle {
+                if ctx.conflict_map_resolved.contains_key(&hash) {
+                    ctx.conflict_map_resolved.remove(&hash);
+                } else {
+                    ctx.conflict_map_resolved
+                        .insert(hash.clone(), PathBuf::new()); // Placeholder
+                }
+                *ctx.active_conflict_hash = Some(hash);
             }
+
+            self.open_diff_popup = temp_show_diff_popup && !did_resolve;
         }
 
         self.ui_conflict_details(ui, ctx);

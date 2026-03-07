@@ -98,20 +98,26 @@ impl<'a> TreeIter<'a> {
 }
 
 impl<'a> Iterator for TreeIter<'a> {
-    type Item = (FsNodeId, FsNodeDepth);
+    type Item = (FsNodeId, &'a FsNode, FsNodeDepth);
 
     fn next(&mut self) -> Option<Self::Item> {
         let (node_id, depth) = self.stack.pop()?;
+        let node = self.model.get_node(node_id)?;
 
-        // If directory, push children in reverse order
-        // so they are visited in original order
-        if let FsNodeKind::Dir { children, .. } = &self.model.get_node(node_id)?.kind {
-            for &child_id in children.iter().rev() {
-                self.stack.push((child_id, depth + 1));
+        if let FsNodeKind::Dir { children, .. } = &node.kind {
+            if let Some(next_depth) = depth.checked_add(1) {
+                for &child_id in children.iter().rev() {
+                    self.stack.push((child_id, next_depth));
+                }
+            } else {
+                log::warn!(
+                    "Maximum tree depth (65535) reached. Pruning subtree at {:?}",
+                    node_id
+                );
             }
         }
 
-        Some((node_id, depth))
+        Some((node_id, node, depth))
     }
 }
 
@@ -140,6 +146,7 @@ impl FileSystemModel {
         &mut self.nodes[self.root_id]
     }
     pub fn get_root_node_id(&self) -> FsNodeId {
+        assert_eq!(self.root_id, 0);
         self.root_id
     }
 
@@ -167,18 +174,10 @@ impl FileSystemModel {
         TreeIter::new(self, root)
     }
 
-    // Slow, avoid, Not ideal
     pub fn get_node_id(&self, node: &FsNode) -> FsNodeId {
-        self.iter_nodes()
-            .enumerate()
-            .find_map(|(i, b)| {
-                if self.get_node(b).unwrap() == node {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
-            .unwrap()
+        let start = self.nodes.as_ptr() as usize;
+        let current = node as *const FsNode as usize;
+        (current - start) / std::mem::size_of::<FsNode>()
     }
 
     // Slow, avoid

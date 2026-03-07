@@ -4,8 +4,6 @@ pub fn show_custom_popup<F>(ctx: &egui::Context, open: &mut bool, title: &str, a
 where
     F: FnOnce(&mut egui::Ui),
 {
-    // We pass the open bool directly. egui::Window handles
-    // the internal logic of setting it to false if "X" is clicked.
     egui::Window::new(title)
         .open(open)
         .resizable(true)

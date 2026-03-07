@@ -6,26 +6,20 @@ use std::{
 
 use eframe::egui::{self};
 use serde::{Deserialize, Serialize};
-use zhashdiff::{
-    external_diff_tool::DiffToolConfig,
-    fs::{FileSystemModel, FsNodeId},
-    hash::HashService,
-};
+use zhashdiff::{external_diff_tool::DiffToolConfig, hash::HashService};
 
 use crate::{
     logger::ui_log_window,
     ui_egui::{
         duplicate_files_pane::{DuplicateFilesPane, DuplicateFilesPaneCtx},
+        fs_tree::FileSystemView,
         path_diff_pane::{PathDiffPane, PathDiffPaneCtx},
     },
 };
 
 pub struct PathDiffView<'a> {
-    pub file_system_1: &'a mut Option<FileSystemModel>,
-    pub file_system_2: &'a mut Option<FileSystemModel>,
-
-    pub selected: &'a mut HashMap<FsNodeId, bool>,
-    pub expanded: &'a mut HashMap<FsNodeId, bool>,
+    pub file_system_1_view: &'a mut Option<FileSystemView>,
+    pub file_system_2_view: &'a mut Option<FileSystemView>,
 }
 
 pub struct TreeBehavior<'a, 'b> {
@@ -43,10 +37,9 @@ pub struct TreeBehavior<'a, 'b> {
 }
 
 impl<'a, 'b> TreeBehavior<'a, 'b> {
-    // We use a new lifetime 'c for the borrow of &mut self
     pub fn create_path_diff_ctx<'c>(&'c mut self) -> PathDiffPaneCtx<'c, 'b> {
         PathDiffPaneCtx {
-            hash_service: self.hash_service, // Re-borrowing &mut
+            hash_service: self.hash_service,
             diff_tool_config: self.diff_tool_config,
             path_diff_view: self.path_diff_view,
         }
@@ -60,8 +53,6 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
             hash_service: self.hash_service,
             path_diff_view: self.path_diff_view,
 
-            // You don't need &mut self.field here because
-            // they are already &mut references being re-borrowed
             active_conflict_hash: self.active_conflict_hash,
             conflict_map: self.conflict_map,
             conflict_map_resolved: self.conflict_map_resolved,
