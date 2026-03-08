@@ -91,6 +91,7 @@ pub fn ui_custom_checkbox(
 }
 
 /// Preview hovering files:
+#[allow(dead_code)]
 pub fn preview_files_being_dropped(ctx: &egui::Context) {
     use egui::{Align2, Color32, Id, LayerId, Order, TextStyle};
     use std::fmt::Write as _;
@@ -125,7 +126,8 @@ pub fn preview_files_being_dropped(ctx: &egui::Context) {
     }
 }
 
-pub fn preview_files_being_dropped_in_rect(ctx: &egui::Context, rect: egui::Rect, label: &str) {
+#[allow(dead_code)]
+pub fn preview_files_being_dropped_in_rect(ctx: &egui::Context, rect: egui::Rect, _label: &str) {
     use egui::{Align2, Color32, Id, LayerId, Order, TextStyle};
     use std::fmt::Write as _;
 

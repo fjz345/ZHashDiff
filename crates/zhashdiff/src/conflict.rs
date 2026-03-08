@@ -1,25 +1,23 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use crate::{fs::FsNodeId, hash::HashRepresentation};
+// pub fn find_conflicts(
+//     hashes: &HashMap<FsNodeId, Option<HashRepresentation>>,
+//     selected: &HashMap<FsNodeId, bool>,
+// ) -> HashMap<String, Vec<PathBuf>> {
+//     todo!();
 
-pub fn find_conflicts(
-    hashes: &HashMap<FsNodeId, Option<HashRepresentation>>,
-    selected: &HashMap<FsNodeId, bool>,
-) -> HashMap<String, Vec<PathBuf>> {
-    todo!();
-
-    // Hashes can not be FsNodeId, hashing reads file from fs
-    let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
-    for (path, hash) in hashes {
-        if selected.get(path).copied().unwrap_or(false) {
-            if let Some(h) = hash {
-                groups.entry(h.clone()).or_default().push("".into()); // path.clone()
-            }
-        }
-    }
-    groups.retain(|_, v| v.len() > 1);
-    groups
-}
+//     // Hashes can not be FsNodeId, hashing reads file from fs
+//     let mut groups: HashMap<String, Vec<PathBuf>> = HashMap::new();
+//     for (path, hash) in hashes {
+//         if selected.get(path).copied().unwrap_or(false) {
+//             if let Some(h) = hash {
+//                 groups.entry(h.clone()).or_default().push("".into()); // path.clone()
+//             }
+//         }
+//     }
+//     groups.retain(|_, v| v.len() > 1);
+//     groups
+// }
 
 pub struct ResolveConflictsInput {
     pub conflict_map: HashMap<String, Vec<PathBuf>>,

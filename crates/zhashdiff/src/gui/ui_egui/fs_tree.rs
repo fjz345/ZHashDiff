@@ -542,18 +542,18 @@ pub enum DiffState {
 impl DiffState {
     pub fn first(&self) -> Option<FsNodeId> {
         match &self {
-            DiffState::Same(path_buf, path_buf1)
-            | DiffState::Different(path_buf, path_buf1)
-            | DiffState::Partial(path_buf, path_buf1) => Some(*path_buf),
+            DiffState::Same(path_buf, _)
+            | DiffState::Different(path_buf, _)
+            | DiffState::Partial(path_buf, _) => Some(*path_buf),
             DiffState::OnlyInFirst(path_buf) => Some(*path_buf),
             DiffState::OnlyInSecond(..) => None,
         }
     }
     pub fn second(&self) -> Option<FsNodeId> {
         match &self {
-            DiffState::Same(path_buf, path_buf1)
-            | DiffState::Different(path_buf, path_buf1)
-            | DiffState::Partial(path_buf, path_buf1) => Some(*path_buf1),
+            DiffState::Same(_, path_buf1)
+            | DiffState::Different(_, path_buf1)
+            | DiffState::Partial(_, path_buf1) => Some(*path_buf1),
             DiffState::OnlyInFirst(..) => None,
             DiffState::OnlyInSecond(path_buf) => Some(*path_buf),
         }
@@ -622,7 +622,7 @@ pub fn folder_diff_state(
     let mut has_children = false;
 
     // Find children of this node
-    for (&child_id, (left, right)) in entries_map {
+    for (&_child_id, (left, right)) in entries_map {
         let parent_id = left
             .as_ref()
             .map(|(_, n, _)| n.parent)

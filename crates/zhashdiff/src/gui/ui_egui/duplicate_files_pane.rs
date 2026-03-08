@@ -44,6 +44,7 @@ pub struct DuplicateFilesPaneCtx<'a, 'b> {
     pub active_conflict_hash: &'a mut Option<String>,
     pub conflict_map: &'a mut HashMap<String, Vec<PathBuf>>,
     pub conflict_map_resolved: &'a mut HashMap<String, PathBuf>,
+    #[allow(dead_code)]
     pub diff_action_pressed: &'a mut bool,
 }
 
@@ -133,10 +134,10 @@ impl DuplicateFilesPane {
             if ui.button("Diff").clicked() {
                 log::info!("Selected files for diff");
                 todo!();
-                let snapshot = ctx.hash_service.snapshot();
+                // let snapshot = ctx.hash_service.snapshot();
                 // *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.path_diff_view.selected);
-                *ctx.diff_action_pressed = true;
-                self.open_diff_popup = true;
+                // *ctx.diff_action_pressed = true;
+                // self.open_diff_popup = true;
             }
         }
 

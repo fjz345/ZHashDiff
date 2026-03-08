@@ -142,6 +142,7 @@ impl FileSystemModel {
     pub fn get_root(&self) -> &FsNode {
         &self.nodes[self.root_id]
     }
+    #[allow(dead_code)]
     fn get_root_mut(&mut self) -> &mut FsNode {
         &mut self.nodes[self.root_id]
     }
@@ -261,6 +262,7 @@ impl FileSystemModel {
         Ok(dir_node_id)
     }
 
+    #[allow(dead_code)]
     fn assert_tree_consistency(model: &FileSystemModel) {
         for (id, node) in model.nodes.iter().enumerate() {
             if let Some(parent_id) = node.parent {

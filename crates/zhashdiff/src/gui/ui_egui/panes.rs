@@ -39,7 +39,6 @@ pub struct TreeBehavior<'a, 'b> {
 impl<'a, 'b> TreeBehavior<'a, 'b> {
     pub fn create_path_diff_ctx<'c>(&'c mut self) -> PathDiffPaneCtx<'c, 'b> {
         PathDiffPaneCtx {
-            hash_service: self.hash_service,
             diff_tool_config: self.diff_tool_config,
             path_diff_view: self.path_diff_view,
         }

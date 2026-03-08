@@ -7,14 +7,14 @@ use std::{
 };
 use zhashdiff::{
     external_diff_tool::{DiffToolConfig, DiffToolDefaultArgs},
-    fs::{FileSystemModel, FsNodeId},
+    fs::{FileSystemModel},
     hash::HashService,
 };
 
 use crate::ui_egui::{
     duplicate_files_pane::DuplicateFilesPane,
     fs_tree::FileSystemView,
-    panes::{LogPane, Pane, PathDiffView, TreeBehavior},
+    panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::PathDiffPane,
     popup::show_custom_popup,
 };
@@ -52,16 +52,6 @@ enum AppState {
 impl Default for AppState {
     fn default() -> Self {
         AppState::Startup(AppStateCtx::default())
-    }
-}
-
-impl AppState {
-    fn into_ctx(self) -> AppStateCtx {
-        match self {
-            AppState::Startup(ctx) => ctx,
-            AppState::Idle(ctx) => ctx,
-            AppState::Exit() => panic!("Exit has no ctx"),
-        }
     }
 }
 
@@ -130,10 +120,10 @@ impl ZApp {
 
         let mut tabs = vec![];
 
-        let tile_console = tiles.insert_pane(Pane::Log(LogPane {
-            title: Some("Log".to_string()),
-            scroll_to_bottom: true,
-        }));
+        // let tile_console = tiles.insert_pane(Pane::Log(LogPane {
+        //     title: Some("Log".to_string()),
+        //     scroll_to_bottom: true,
+        // }));
 
         let tile_path_diff = tiles.insert_pane(Pane::PathDiff(PathDiffPane::new(Some(
             "Path Diff".to_string(),
@@ -250,7 +240,7 @@ impl ZApp {
         }
     }
 
-    fn ui(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
+    fn ui(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_menu(ui, app_ctx);
 

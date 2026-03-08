@@ -13,7 +13,10 @@ mod ui_egui;
 
 fn main() -> eframe::Result {
     unsafe { env::set_var("RUST_LOG", "debug") }; // or "info" or "debug"
-    color_backtrace::install();
+    #[cfg(feature = "pretty-backtrace")]
+    {
+        color_backtrace::install();
+    }
 
     let log_buffer = LogCollector::init().expect("Failed to init logger");
 

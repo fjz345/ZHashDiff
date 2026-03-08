@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use eframe::egui::{self, ScrollArea};
 use serde::{Deserialize, Serialize};
-use zhashdiff::{external_diff_tool::DiffToolConfig, fs::FileSystemModel, hash::HashService};
+use zhashdiff::{external_diff_tool::DiffToolConfig, fs::FileSystemModel};
 
 use crate::ui_egui::{
     fs_tree::{FileSystemView, draw_ui_two_folder_tree_with_diff},
@@ -10,7 +10,6 @@ use crate::ui_egui::{
 };
 
 pub struct PathDiffPaneCtx<'a, 'b> {
-    pub hash_service: &'a mut HashService,
     pub path_diff_view: &'a mut PathDiffView<'b>,
 
     // User Interaction State
