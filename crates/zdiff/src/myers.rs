@@ -1,76 +1,50 @@
-
-pub fn myers_diff<T, F>(a: &[T], b: &[T], mut cmp: F) -> i32 
+/*
+returns "cost" between source/target comparing each entry
+*/
+pub fn myers_diff<T, F>(source: &[T], target: &[T], cmp: F) -> i32 
 where 
     F: FnMut(&T, &T) -> bool 
 {
-    let n = a.len() as i32;
-    let m = b.len() as i32;
-    let max = n + m;
-    
-    if max == 0 { return 0; }
-
-    // V array stores the furthest reaching x-coordinate for each diagonal k.
-    // Index range is -max..=max, so we size it to 2*max + 1.
-    let mut v = vec![0; (2 * max + 1) as usize];
-    let offset = max as usize;
-
-    for d in 0..=max {
-        // k is the diagonal: k = x - y
-        for k in (-d..=d).step_by(2) {
-            let idx = (k + (max as i32)) as usize;
-            
-            let mut x = if k == -d || (k != d && v[idx - 1] < v[idx + 1]) {
-                v[idx + 1] // Move down
-            } else {
-                v[idx - 1] + 1 // Move right
-            };
-
-            let mut y = x - k;
-
-            // Greedily follow diagonals (matches)
-            while x < n && y < m && cmp(&a[x as usize], &b[y as usize]) {
-                x += 1;
-                y += 1;
-            }
-
-            v[idx] = x;
-
-            if x >= n && y >= m {
-                return d;
-            }
-        }
-    }
-    max
+    let trace = myers_diff_trace(source, target, cmp);
+    (trace.len() as i32) - 1 // D = trace.len() - 1
 }
 
-pub fn myers_diff_trace<T, F>(a: &[T], b: &[T], mut cmp: F) -> Vec<Vec<i32>>
+/*
+returns the path of lowest cost (edits) to get from source to target
+*/
+pub fn myers_diff_trace<T, F>(source: &[T], target: &[T], mut cmp: F) -> Vec<Vec<i32>>
 where
     F: FnMut(&T, &T) -> bool,
 {
-    let n = a.len() as i32;
-    let m = b.len() as i32;
-    let max = n + m;
-    let mut v = vec![0; (2 * max + 1) as usize];
-    let mut trace = Vec::new();
+    let source_len = source.len() as i32;            // N
+    let target_len = target.len() as i32;            // M
+    let max_edit_distance = source_len + target_len; // MAX = N + M
+    
+    if max_edit_distance == 0 { return vec![vec![0]]; }
 
-    for d in 0..=max {
-        trace.push(v.clone());
-        for k in (-d..=d).step_by(2) {
-            let idx = (k + max) as usize;
-            let mut x = if k == -d || (k != d && v[idx - 1] < v[idx + 1]) {
-                v[idx + 1] // Move Down (Insert)
+    let mut furthest_x = vec![0; (2 * max_edit_distance + 1) as usize]; // V array
+    let mut trace = Vec::with_capacity(max_edit_distance as usize + 1);
+
+    for edit_distance in 0..=max_edit_distance {
+        trace.push(furthest_x.clone());
+        
+        for diagonal in (-edit_distance..=edit_distance).step_by(2) {
+            let v_idx = (diagonal + max_edit_distance) as usize; 
+            
+            let mut x = if diagonal == -edit_distance || (diagonal != edit_distance && furthest_x[v_idx - 1] < furthest_x[v_idx + 1]) {
+                furthest_x[v_idx + 1]     // Move Down (Insertion)
             } else {
-                v[idx - 1] + 1 // Move Right (Delete)
+                furthest_x[v_idx - 1] + 1 // Move Right (Deletion)
             };
 
-            let mut y = x - k;
-            while x < n && y < m && cmp(&a[x as usize], &b[y as usize]) {
-                x += 1;
+            let mut y = x - diagonal; // y = x - k
+            while x < source_len && y < target_len && cmp(&source[x as usize], &target[y as usize]) {
+                x += 1; // Greedy snake (Match)
                 y += 1;
             }
-            v[idx] = x;
+            furthest_x[v_idx] = x;
 
-            if x >= n && y >= m {
+            if x >= source_len && y >= target_len {
                 return trace;
             }
         }
@@ -78,43 +52,37 @@ where
     trace
 }
 
-pub fn backtrack(trace: Vec<Vec<i32>>, n: i32, m: i32) -> Vec<(i32, i32)> {
+pub fn backtrack(trace: Vec<Vec<i32>>, source_len: i32, target_len: i32) -> Vec<(i32, i32)> {
     let mut path = Vec::new();
-    let mut x = n;
-    let mut y = m;
-    let max = n + m;
+    let mut x = source_len;
+    let mut y = target_len;
+    let max_edit_distance = source_len + target_len; // MAX offset
 
-    // Iterate backwards from the last depth 'd' to 0
-    for (d, v) in trace.into_iter().enumerate().rev() {
-        let d = d as i32;
-        let k = x - y;
-        let idx = (k + max) as usize;
+    for (edit_distance, furthest_x) in trace.into_iter().enumerate().rev() {
+        let d = edit_distance as i32; // D
+        let diagonal = x - y;         // k
+        let v_idx = (diagonal + max_edit_distance) as usize;
 
-        // Determine if we got here via a move from k-1 (Right/Delete) or k+1 (Down/Insert)
-        // We check the same logic used in the forward pass
-        let prev_k = if k == -d || (k != d && v[idx - 1] < v[idx + 1]) {
-            k + 1 // We came from above (Vertical/Insert)
+        let prev_diagonal = if diagonal == -d || (diagonal != d && furthest_x[v_idx - 1] < furthest_x[v_idx + 1]) {
+            diagonal + 1 // Came from k + 1
         } else {
-            k - 1 // We came from the left (Horizontal/Delete)
+            diagonal - 1 // Came from k - 1
         };
 
-        let prev_x = v[(prev_k + max) as usize];
-        let prev_y = prev_x - prev_k;
+        let prev_x = furthest_x[(prev_diagonal + max_edit_distance) as usize];
+        let prev_y = prev_x - prev_diagonal; // prev_y = prev_x - prev_k
 
-        // The diagonal matches (snakes) happened AFTER the move to (x,y).
-        // So in reverse, we process them BEFORE moving to the previous k.
         while x > prev_x && y > prev_y {
-            path.push((x, y));
+            path.push((x, y));  // Step back through snake
             x -= 1;
             y -= 1;
         }
 
-        path.push((x, y));
+        path.push((x, y));      // Step back through edit
         x = prev_x;
         y = prev_y;
     }
 
-    // (0,0) is handled by the last iteration of the loop (d=0)
     path.reverse();
     path
 }
