@@ -38,10 +38,12 @@ impl FileDiffPane {
             },
             (None, Some(_), None) | (Some(_), Some(_), None) => {
                 ui.centered_and_justified(|ui| { ui.label("Load Target file to see diff."); });
+                ui.centered_and_justified(|ui| { ui.label("Target tokens were not set"); });
                 return egui_tiles::UiResponse::None;
             },
             (None, None, Some(_)) | (Some(_), None, Some(_)) => {
                 ui.centered_and_justified(|ui| { ui.label("Load Source file to see diff."); });
+                ui.centered_and_justified(|ui| { ui.label("Source tokens were not set"); });
                 return egui_tiles::UiResponse::None;
             },
             (None, Some(_), Some(_)) => {

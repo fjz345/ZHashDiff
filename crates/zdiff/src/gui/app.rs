@@ -167,13 +167,13 @@ impl ZApp {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 ui.menu_button("File", |ui| {
-                    if ui.button("Open File 1").clicked() {
+                    if ui.button("Open Source").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_file() {
                             app_ctx.file_1_path = Some(path.clone());
                             app_ctx.file_1_contents = Some(read_file_contents(path).expect("Failed to read file"));
                         }
                     }
-                    if ui.button("Open File 2").clicked() {
+                    if ui.button("Open Target").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_file() {
                             app_ctx.file_2_path = Some(path.clone());
                             app_ctx.file_2_contents = Some(read_file_contents(path).expect("Failed to read file"));
