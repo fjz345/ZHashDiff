@@ -4,3 +4,19 @@ members = [
     "crates/zhashdiff",
 ]
 resolver = "2"
+
+[profile.release]
+# Optimize for size (use "s" for "small", or "z" for "tiny")
+opt-level = "z" 
+
+# Link Time Optimization: Aggressively optimizes across crate boundaries
+lto = true 
+
+# Reduces parallel build tasks to 1, allowing better global optimization
+codegen-units = 1 
+
+# Automatically strip symbols from the binary (replaces the 'strip' command)
+strip = true 
+
+# Removes stack unwinding code (saves space, but panics will just abort)
+panic = "abort"

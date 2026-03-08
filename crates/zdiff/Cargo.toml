@@ -12,23 +12,16 @@ name = "zdiff"
 
 [dependencies]
 eframe = {version = "0.33.3", features = ["serde", "persistence"]}
-env_logger = "0.10"
 serde = { version = "1.0.48", features = ["derive"], optional = true}
 serde_json = "1.0.48"
 egui_tiles =  {version = "0.14.1", features = ["serde"]}
 log = "0.4.27"
-winapi = "0.3.5"
-blake3 = { version = "1.8.2", features = ["rayon", "mmap"] }
 rfd = "0.17.1"
-egui_extras = { version = "0.33.3" }
-crc32fast = "1.5.0"
-tempfile = "3.25.0"
-color-backtrace = "0.7.2"
+egui_extras = { version = "0.33.3", features = ["image"] }
+color-backtrace = { version = "0.7.2", optional = true }
 
 [features]
-default = ["serde"]
+default = ["serde", "pretty-backtrace"]
+pretty-backtrace = ["dep:color-backtrace"]
 serde = ["dep:serde"]
 accesskit = []
-
-[target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.5", features = ["winnt", "winuser"] }
