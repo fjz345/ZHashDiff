@@ -1,5 +1,6 @@
 use eframe::egui::{self, Layout, PointerButton, TextBuffer};
 use serde::{Deserialize, Serialize};
+use zdiff::read_file_contents;
 use std::{
     path::PathBuf,
     sync::{Arc},
@@ -11,11 +12,14 @@ use eframe::{
 };
 use egui_tiles::Tile;
 
-use crate::ui_egui::{diff_pane::FileDiffPane, panes::{Pane, TreeBehavior}};
+use crate::{app, ui_egui::{diff_pane::{FileDiffPane, FileDiffPaneCtx}, panes::{Pane, TreeBehavior}}};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AppStateCtx {
- 
+    file_1_name: Option<String>,
+    file_2_name: Option<String>,
+    file_1: Option<String>,
+    file_2: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -111,8 +115,16 @@ impl ZApp {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 ui.menu_button("File", |ui| {
                     if ui.button("Open File 1").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_file() {
+                            app_ctx.file_1_name = Some(path.file_name().unwrap_or_default().to_string_lossy().into_owned());
+                            app_ctx.file_1 = Some(read_file_contents(path).expect("Failed to read file"));
+                        }
                     }
                     if ui.button("Open File 2").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_file() {
+                            app_ctx.file_2_name = Some(path.file_name().unwrap_or_default().to_string_lossy().into_owned());
+                            app_ctx.file_2 = Some(read_file_contents(path).expect("Failed to read file"));
+                        }
                     }
                 });
             });
@@ -126,8 +138,13 @@ impl ZApp {
             ui.separator();
 
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
-                let mut diff_action_triggered = false;
                 let mut behavior = TreeBehavior {
+                    ctx_file_diff: FileDiffPaneCtx {
+                        file_1: app_ctx.file_1.as_ref(),
+                        file_2: app_ctx.file_2.as_ref(),
+                        file_1_name: app_ctx.file_1_name.as_ref(),
+                        file_2_name: app_ctx.file_2_name.as_ref(),
+                    },
                 };
 
                 self.tree.ui(&mut behavior, ui);
@@ -135,7 +152,9 @@ impl ZApp {
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::FileDiff(..)) = tile {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-                            "zdiff - $1, $2",
+                            "zdiff - {0}, {1}",
+                            behavior.ctx_file_diff.file_1_name.as_ref().map_or_else(|| "N/A", |s| s),
+                            behavior.ctx_file_diff.file_2_name.as_ref().map_or_else(|| "N/A", |s| s),
                         )));
                         break;
                     }

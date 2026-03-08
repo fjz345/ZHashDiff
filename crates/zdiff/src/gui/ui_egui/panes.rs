@@ -3,14 +3,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::ui_egui::diff_pane::{FileDiffPane, FileDiffPaneCtx};
 
-pub struct TreeBehavior {
+pub struct TreeBehavior<'a> {
+    pub ctx_file_diff: FileDiffPaneCtx<'a>,
 }
 
-impl TreeBehavior {
-    
-}
-
-impl egui_tiles::Behavior<Pane> for TreeBehavior {
+impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
     fn tab_title_for_pane(&mut self, pane: &Pane) -> egui::WidgetText {
         pane.title().into()
     }
@@ -23,7 +20,7 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
     ) -> egui_tiles::UiResponse {
         let response = match pane {
             Pane::FileDiff(file_diff_pane) => {
-                let mut ctx = FileDiffPaneCtx{};
+                let mut ctx = &mut self.ctx_file_diff;
                 let response = file_diff_pane.ui(ui, &mut ctx);
                 egui_tiles::UiResponse::from(response)
             }

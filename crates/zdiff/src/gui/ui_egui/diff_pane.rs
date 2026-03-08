@@ -3,8 +3,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::ui_egui::panes::ZAppPane;
 
-
-pub struct FileDiffPaneCtx {
+pub struct FileDiffPaneCtx<'a> {
+    pub file_1_name: Option<&'a String>,
+    pub file_2_name: Option<&'a String>,
+    pub file_1: Option<&'a String>,
+    pub file_2: Option<&'a String>,
 }
 
 #[derive(Serialize, Deserialize)]
