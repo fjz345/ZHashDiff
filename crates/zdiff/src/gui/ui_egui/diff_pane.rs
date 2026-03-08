@@ -1,4 +1,4 @@
-use eframe::egui;
+use eframe::egui::{self, UiBuilder};
 use serde::{Deserialize, Serialize};
 use zdiff::lexer::{Lexer, RawToken, TokenKind};
 use crate::ui_egui::panes::ZAppPane;
@@ -107,7 +107,7 @@ impl FileDiffPane {
             LineContent::Code { tokens, line_num, bg } => {
                 ui.painter().rect_filled(rect, 0.0, *bg);
 
-                ui.allocate_ui_at_rect(rect, |ui| {
+                ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                     ui.horizontal_centered(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0; // Keep tokens tight
 

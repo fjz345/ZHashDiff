@@ -6,7 +6,7 @@ pub mod diff_ir;
 
 pub fn read_file_contents<P: AsRef<Path>>(path: P) -> std::io::Result<String> {
     use std::fs::File;
-    use std::io::{self, Read};
+    use std::io::{Read};
 
     let mut file = File::open(&path)?;
     let mut contents = String::new();

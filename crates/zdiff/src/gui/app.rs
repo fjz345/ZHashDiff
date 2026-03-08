@@ -1,8 +1,8 @@
-use eframe::egui::{self, Layout, PointerButton, TextBuffer};
+use eframe::egui::{self, Layout, PointerButton};
 use serde::{Deserialize, Serialize};
-use zdiff::{diff_ir::DiffIR, lexer::{Lexer, RawToken}, myers::{backtrack, myers_diff_trace}, read_file_contents};
+use zdiff::{lexer::{Lexer, RawToken}, myers::{backtrack, myers_diff_trace}, read_file_contents};
 use std::{
-    env, path::PathBuf, sync::Arc
+    env, path::PathBuf
 };
 
 use eframe::{
@@ -11,7 +11,7 @@ use eframe::{
 };
 use egui_tiles::Tile;
 
-use crate::{app, ui_egui::{diff_pane::{DiffRow, FileDiffPane, FileDiffPaneCtx, build_diff_rows}, panes::{Pane, TreeBehavior}}};
+use crate::{ui_egui::{diff_pane::{DiffRow, FileDiffPane, FileDiffPaneCtx, build_diff_rows}, panes::{Pane, TreeBehavior}}};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AppStateCtx {
@@ -41,16 +41,6 @@ enum AppState {
 impl Default for AppState {
     fn default() -> Self {
         AppState::Startup(AppStateCtx::default())
-    }
-}
-
-impl AppState {
-    fn into_ctx(self) -> AppStateCtx {
-        match self {
-            AppState::Startup(ctx) => ctx,
-            AppState::Idle(ctx) => ctx,
-            AppState::Exit() => panic!("Exit has no ctx"),
-        }
     }
 }
 
@@ -166,7 +156,7 @@ impl ZApp {
         });
     }
 
-    fn ui(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
+    fn ui(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_menu(ui, app_ctx);
 
