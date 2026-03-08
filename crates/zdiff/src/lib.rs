@@ -2,6 +2,7 @@ use std::{path::Path};
 
 pub mod lexer;
 pub mod myers;
+pub mod diff_ir;
 
 pub fn read_file_contents<P: AsRef<Path>>(path: P) -> std::io::Result<String> {
     use std::fs::File;

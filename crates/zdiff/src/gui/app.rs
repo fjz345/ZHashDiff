@@ -1,6 +1,6 @@
 use eframe::egui::{self, Layout, PointerButton, TextBuffer};
 use serde::{Deserialize, Serialize};
-use zdiff::read_file_contents;
+use zdiff::{diff_ir::DiffIR, lexer::{Lexer, RawToken}, myers::{backtrack, myers_diff_trace}, read_file_contents};
 use std::{
     path::PathBuf,
     sync::{Arc},
@@ -20,6 +20,14 @@ pub struct AppStateCtx {
     file_2_name: Option<String>,
     file_1: Option<String>,
     file_2: Option<String>,
+
+    // Myers
+    #[serde(skip)]
+    pub diff_path: Option<Vec<(i32, i32)>>,
+    #[serde(skip)]
+    pub tokens_1: Option<Vec<RawToken>>,
+    #[serde(skip)]
+    pub tokens_2: Option<Vec<RawToken>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -144,6 +152,9 @@ impl ZApp {
                         file_2: app_ctx.file_2.as_ref(),
                         file_1_name: app_ctx.file_1_name.as_ref(),
                         file_2_name: app_ctx.file_2_name.as_ref(),
+                        diff_path: app_ctx.diff_path.as_ref(),
+                        tokens_1: app_ctx.tokens_1.as_ref(),
+                        tokens_2: app_ctx.tokens_2.as_ref(),
                     },
                 };
 
@@ -194,6 +205,22 @@ impl ZApp {
             self.request_shutdown();
         }
     }
+
+    fn update_diff_path(&mut self, app_ctx: &mut AppStateCtx) {
+        app_ctx.tokens_1 = Some(Lexer::new(app_ctx.file_1.as_ref().unwrap()).collect());
+        app_ctx.tokens_2 = Some(Lexer::new(app_ctx.file_2.as_ref().unwrap()).collect());
+        let tokens_1 = app_ctx.tokens_1.as_ref().unwrap();
+        let tokens_2 = app_ctx.tokens_2.as_ref().unwrap();
+
+        let lexer_1 = Lexer::new(app_ctx.file_1.as_ref().unwrap());
+        let lexer_2 = Lexer::new(app_ctx.file_2.as_ref().unwrap());
+        let cmp = |t1: &RawToken, t2: &RawToken| {
+            t1.kind == t2.kind && lexer_1.token_value(t1) == lexer_2.token_value(t2)
+        };
+
+        let trace = myers_diff_trace(&tokens_1, &tokens_2, cmp);
+        app_ctx.diff_path = Some(backtrack(trace, tokens_1.len() as i32, tokens_2.len() as i32));
+    }
 }
 
 impl eframe::App for ZApp {
@@ -225,6 +252,9 @@ impl eframe::App for ZApp {
                 AppState::Idle(state_ctx)
             }
             AppState::Idle(mut state) => {
+                if let (Some(_file_1), Some(_file_2)) = (state.file_1.as_ref(), state.file_2.as_ref()) {
+                    self.update_diff_path(&mut state);
+                }
                 self.ui(ctx, frame, &mut state);
                 self.process_ctx_inputs(ctx, frame);
                 AppState::Idle(state)
