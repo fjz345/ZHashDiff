@@ -13,10 +13,15 @@ mod ui_egui;
 
 fn main() -> eframe::Result {
     unsafe { env::set_var("RUST_LOG", "debug") }; // or "info" or "debug"
+    color_backtrace::install();
 
     let log_buffer = LogCollector::init().expect("Failed to init logger");
 
-    color_backtrace::install();
+    // Test build with zdiff
+    {
+        let zdiff_path = env!("ZDIFF_BIN_PATH");
+        println!("The zdiff binary is located at: {}", zdiff_path);
+    }
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
