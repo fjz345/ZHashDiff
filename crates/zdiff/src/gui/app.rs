@@ -15,10 +15,14 @@ use crate::{ui_egui::{diff_pane::{DiffRow, FileDiffPane, FileDiffPaneCtx, build_
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AppStateCtx {
-    file_1_name: Option<String>,
-    file_2_name: Option<String>,
-    file_1: Option<String>,
-    file_2: Option<String>,
+    file_1_path: Option<PathBuf>,
+    file_2_path: Option<PathBuf>,
+    
+    // Reopen contents on startup
+    #[serde(skip)]
+    file_1_contents: Option<String>,
+    #[serde(skip)]
+    file_2_contents: Option<String>,
 
     // Myers
     #[serde(skip)]
@@ -27,8 +31,6 @@ pub struct AppStateCtx {
     pub tokens_1: Option<Vec<RawToken>>,
     #[serde(skip)]
     pub tokens_2: Option<Vec<RawToken>>,
-
-    invalidate_diff: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -56,6 +58,34 @@ pub struct ZApp {
 
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
 impl ZApp {
+    fn update_file_contents(&mut self, app_ctx: &mut AppStateCtx)
+    {
+        if app_ctx.file_1_contents.is_none()
+        {
+            if let Some(file_1_path) = &app_ctx.file_1_path
+            {
+                log::info!("Reading file 1: {}", file_1_path.display());
+                match read_file_contents(file_1_path.clone())
+                {
+                    Ok(contents) => {app_ctx.file_1_contents = Some(contents);},
+                    Err(e) => {log::error!("Failed to read file 1: {}", e);},
+                };
+            }
+        }
+        if app_ctx.file_2_contents.is_none()
+        {
+            if let Some(file_2_path) = &app_ctx.file_2_path
+            {
+                log::info!("Reading file 2: {}", file_2_path.display());
+                match read_file_contents(file_2_path.clone())
+                {
+                    Ok(contents) => {app_ctx.file_2_contents = Some(contents);},
+                    Err(e) => {log::error!("Failed to read file 2: {}", e);},
+                };
+            }
+        }
+    }
+
     pub fn request_init(&mut self) {
         if let Some(state) = &mut self.state
         {
@@ -64,19 +94,19 @@ impl ZApp {
                     let args: Vec<String> = env::args().collect();
                     let p1 = args.get(1).cloned();
                     let p2 = args.get(2).cloned();
-                    ctx.file_1_name = p1.clone();
-                    ctx.file_2_name = p2.clone();
+
                     if let (Some(p1), Some(p2)) = (p1, p2) {
-                        match read_file_contents(PathBuf::from(p1))
+                        ctx.file_1_path = Some(PathBuf::from(p1));
+                        ctx.file_2_path = Some(PathBuf::from(p2));
+
+                        match read_file_contents(ctx.file_1_path.clone().unwrap_or_default())
                         {
-                            Ok(contents) => {ctx.file_1 = Some(contents);
-                            ctx.invalidate_diff = true;},
+                            Ok(contents) => {ctx.file_1_contents = Some(contents);},
                             Err(e) => {log::error!("Failed to read file 1: {}", e);},
                         };
-                        match read_file_contents(PathBuf::from(p2))
+                        match read_file_contents(ctx.file_2_path.clone().unwrap_or_default())
                         {
-                            Ok(contents) => {ctx.file_2 = Some(contents);
-                            ctx.invalidate_diff = true;},
+                            Ok(contents) => {ctx.file_2_contents = Some(contents);},
                             Err(e) => {log::error!("Failed to read file 2: {}", e);},
                         };
                     }
@@ -139,17 +169,29 @@ impl ZApp {
                 ui.menu_button("File", |ui| {
                     if ui.button("Open File 1").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_file() {
-                            app_ctx.file_1_name = Some(path.file_name().unwrap_or_default().to_string_lossy().into_owned());
-                            app_ctx.file_1 = Some(read_file_contents(path).expect("Failed to read file"));
-                            app_ctx.invalidate_diff = true;
+                            app_ctx.file_1_path = Some(path.clone());
+                            app_ctx.file_1_contents = Some(read_file_contents(path).expect("Failed to read file"));
                         }
                     }
                     if ui.button("Open File 2").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_file() {
-                            app_ctx.file_2_name = Some(path.file_name().unwrap_or_default().to_string_lossy().into_owned());
-                            app_ctx.file_2 = Some(read_file_contents(path).expect("Failed to read file"));
-                            app_ctx.invalidate_diff = true;
+                            app_ctx.file_2_path = Some(path.clone());
+                            app_ctx.file_2_contents = Some(read_file_contents(path).expect("Failed to read file"));
                         }
+                    }
+                });
+
+                ui.menu_button("Debug", |ui| {
+                    if ui.button("Clear File Paths").clicked() {
+                        app_ctx.file_1_path = None;
+                        app_ctx.file_2_path = None;
+                    }
+                    if ui.button("Clear File contents").clicked() {
+                        app_ctx.file_1_contents = None;
+                        app_ctx.file_2_contents = None;
+                    }
+                    if ui.button("Clear Diff Rows").clicked() {
+                        app_ctx.diff_rows = None;
                     }
                 });
             });
@@ -165,10 +207,6 @@ impl ZApp {
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 let mut behavior = TreeBehavior {
                     ctx_file_diff: FileDiffPaneCtx {
-                        file_1: app_ctx.file_1.as_ref(),
-                        file_2: app_ctx.file_2.as_ref(),
-                        file_1_name: app_ctx.file_1_name.as_ref(),
-                        file_2_name: app_ctx.file_2_name.as_ref(),
                         diff_rows: app_ctx.diff_rows.as_ref(),
                         tokens_1: app_ctx.tokens_1.as_ref(),
                         tokens_2: app_ctx.tokens_2.as_ref(),
@@ -181,8 +219,8 @@ impl ZApp {
                     if let Tile::Pane(Pane::FileDiff(..)) = tile {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
                             "zdiff - {0}, {1}",
-                            behavior.ctx_file_diff.file_1_name.as_ref().map_or_else(|| "N/A", |s| s),
-                            behavior.ctx_file_diff.file_2_name.as_ref().map_or_else(|| "N/A", |s| s),
+                            app_ctx.file_1_path.as_ref().map_or_else(|| "N/A", |p| p.file_name().unwrap_or_default().to_str().unwrap_or_default()),
+                            app_ctx.file_2_path.as_ref().map_or_else(|| "N/A", |p| p.file_name().unwrap_or_default().to_str().unwrap_or_default()),
                         )));
                         break;
                     }
@@ -223,14 +261,14 @@ impl ZApp {
         }
     }
 
-    fn update_diff_path(&mut self, app_ctx: &mut AppStateCtx) {
-        app_ctx.tokens_1 = Some(Lexer::new(app_ctx.file_1.as_ref().unwrap()).collect());
-        app_ctx.tokens_2 = Some(Lexer::new(app_ctx.file_2.as_ref().unwrap()).collect());
+    fn update_diff_rows(&mut self, app_ctx: &mut AppStateCtx) {
+        app_ctx.tokens_1 = Some(Lexer::new(app_ctx.file_1_contents.as_ref().unwrap()).collect());
+        app_ctx.tokens_2 = Some(Lexer::new(app_ctx.file_2_contents.as_ref().unwrap()).collect());
         let tokens_1 = app_ctx.tokens_1.as_ref().unwrap();
         let tokens_2 = app_ctx.tokens_2.as_ref().unwrap();
 
-        let lexer_1 = Lexer::new(app_ctx.file_1.as_ref().unwrap());
-        let lexer_2 = Lexer::new(app_ctx.file_2.as_ref().unwrap());
+        let lexer_1 = Lexer::new(app_ctx.file_1_contents.as_ref().unwrap());
+        let lexer_2 = Lexer::new(app_ctx.file_2_contents.as_ref().unwrap());
         let cmp = |t1: &RawToken, t2: &RawToken| {
             t1.kind == t2.kind && lexer_1.token_value(t1) == lexer_2.token_value(t2)
         };
@@ -270,9 +308,25 @@ impl eframe::App for ZApp {
                 AppState::Idle(state_ctx)
             }
             AppState::Idle(mut state) => {
-                if state.invalidate_diff && state.file_1.is_some() && state.file_2.is_some() {
-                    state.invalidate_diff = false;
-                    self.update_diff_path(&mut state);
+                if state.file_1_path.is_none()
+                {
+                    state.file_1_contents = None;
+                }
+                if state.file_2_path.is_none()
+                {
+                    state.file_2_contents = None;
+                }
+                if state.file_1_contents.is_none()
+                {
+                    state.diff_rows = None;
+                }
+                if state.file_2_contents.is_none()
+                {
+                    state.diff_rows = None;
+                }
+                self.update_file_contents(&mut state);
+                if state.diff_rows.is_none() && state.file_1_contents.is_some() && state.file_2_contents.is_some(){
+                    self.update_diff_rows(&mut state);
                 }
                 self.ui(ctx, frame, &mut state);
                 self.process_ctx_inputs(ctx, frame);

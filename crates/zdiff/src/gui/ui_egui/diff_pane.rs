@@ -4,10 +4,6 @@ use zdiff::lexer::{Lexer, RawToken, TokenKind};
 use crate::ui_egui::panes::ZAppPane;
 
 pub struct FileDiffPaneCtx<'a> {
-    pub file_1_name: Option<&'a String>,
-    pub file_2_name: Option<&'a String>,
-    pub file_1: Option<&'a String>,
-    pub file_2: Option<&'a String>,
     pub diff_rows: Option<&'a Vec<DiffRow>>,
     pub tokens_1: Option<&'a Vec<RawToken>>,
     pub tokens_2: Option<&'a Vec<RawToken>>,
@@ -32,11 +28,29 @@ impl FileDiffPane {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut FileDiffPaneCtx) -> egui_tiles::UiResponse {
-        let (Some(_f1), Some(_f2), Some(rows), Some(_t1), Some(_t2)) = 
-            (ctx.file_1, ctx.file_2, ctx.diff_rows, ctx.tokens_1, ctx.tokens_2) else {
-            ui.centered_and_justified(|ui| { ui.label("Load files to see diff."); });
-            return egui_tiles::UiResponse::None;
-        };
+        // Currently tokens are only computed when diff_rows is calcualted.
+        // This means that match only matches on diff_rows
+        match (&ctx.diff_rows, &ctx.tokens_1, &ctx.tokens_2)
+        {
+            (Some(_), None, None) | (None, None, None) => {
+                ui.centered_and_justified(|ui| { ui.label("Load Source & Target files to see diff."); });
+                return egui_tiles::UiResponse::None;
+            },
+            (None, Some(_), None) | (Some(_), Some(_), None) => {
+                ui.centered_and_justified(|ui| { ui.label("Load Target file to see diff."); });
+                return egui_tiles::UiResponse::None;
+            },
+            (None, None, Some(_)) | (Some(_), None, Some(_)) => {
+                ui.centered_and_justified(|ui| { ui.label("Load Source file to see diff."); });
+                return egui_tiles::UiResponse::None;
+            },
+            (None, Some(_), Some(_)) => {
+                ui.centered_and_justified(|ui| { ui.label("Waiting for diff results..."); });
+                return egui_tiles::UiResponse::None;
+            },
+            (Some(_), Some(_), Some(_)) =>  {},
+        }
+        let rows = ctx.diff_rows.unwrap();
 
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
         let available_width = ui.available_width();
