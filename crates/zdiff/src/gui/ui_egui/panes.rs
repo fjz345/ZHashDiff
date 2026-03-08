@@ -26,14 +26,7 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
             }
         };
 
-        if ui
-            .add(egui::Button::new("Drag me!").sense(egui::Sense::drag()))
-            .drag_started()
-        {
-            egui_tiles::UiResponse::DragStarted
-        } else {
-            response
-        }
+        response
     }
 }
 

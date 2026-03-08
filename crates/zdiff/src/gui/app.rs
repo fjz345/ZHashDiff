@@ -2,8 +2,7 @@ use eframe::egui::{self, Layout, PointerButton, TextBuffer};
 use serde::{Deserialize, Serialize};
 use zdiff::{diff_ir::DiffIR, lexer::{Lexer, RawToken}, myers::{backtrack, myers_diff_trace}, read_file_contents};
 use std::{
-    path::PathBuf,
-    sync::{Arc},
+    env, path::PathBuf, sync::Arc
 };
 
 use eframe::{
@@ -68,9 +67,33 @@ pub struct ZApp {
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
 impl ZApp {
     pub fn request_init(&mut self) {
-        // if self.state.ctx().hash_service.is_none() {
-        // self.state.ctx().hash_service = HashService::default();
-        // }
+        if let Some(state) = &mut self.state
+        {
+            match state {
+                 AppState::Startup(ctx) | AppState::Idle(ctx) => {
+                    let args: Vec<String> = env::args().collect();
+                    let p1 = args.get(1).cloned();
+                    let p2 = args.get(2).cloned();
+                    ctx.file_1_name = p1.clone();
+                    ctx.file_2_name = p2.clone();
+                    if let (Some(p1), Some(p2)) = (p1, p2) {
+                        match read_file_contents(PathBuf::from(p1))
+                        {
+                            Ok(contents) => {ctx.file_1 = Some(contents);
+                            ctx.invalidate_diff = true;},
+                            Err(e) => {log::error!("Failed to read file 1: {}", e);},
+                        };
+                        match read_file_contents(PathBuf::from(p2))
+                        {
+                            Ok(contents) => {ctx.file_2 = Some(contents);
+                            ctx.invalidate_diff = true;},
+                            Err(e) => {log::error!("Failed to read file 2: {}", e);},
+                        };
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     pub fn new(cc: &CreationContext<'_>) -> Self {
