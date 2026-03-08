@@ -17,7 +17,6 @@ pub fn read_file_contents<P: AsRef<Path>>(path: P) -> std::io::Result<String> {
 //// TESTS
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::lexer::{Lexer, RawToken, TokenKind};
 
     // use std::fs::{self, File};
@@ -192,7 +191,7 @@ mod tests {
         let win_input = "a\r\nb";
 
         // Test Unix Lexing
-        let mut lex_unix = Lexer::new(unix_input);
+        let lex_unix = Lexer::new(unix_input);
         let tokens_unix: Vec<RawToken> = lex_unix.collect();
 
         // Expect: [Identifier("a"), Newline("\n"), Identifier("b")]
@@ -202,7 +201,7 @@ mod tests {
         assert_eq!(&unix_input[tokens_unix[1].span.clone()], "\n");
 
         // Test Windows Lexing
-        let mut lex_win = Lexer::new(win_input);
+        let lex_win = Lexer::new(win_input);
         let tokens_win: Vec<RawToken> = lex_win.collect();
 
         // Expect: [Identifier("a"), Newline("\r\n"), Identifier("b")]
