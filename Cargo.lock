@@ -4653,7 +4653,7 @@ dependencies = [
 
 [[package]]
 name = "zdiff"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "color-backtrace",
@@ -4746,7 +4746,7 @@ dependencies = [
 
 [[package]]
 name = "zhashdiff"
-version = "1.1.4"
+version = "1.2.0"
 dependencies = [
  "blake3",
  "color-backtrace",
