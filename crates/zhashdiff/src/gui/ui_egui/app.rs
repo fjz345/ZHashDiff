@@ -327,12 +327,12 @@ impl ZApp {
     // Quick hacky funtion to determine if path_diff is open or duplicate_diff is open
     fn is_path_diff(&self) -> bool {
         for (tileid, tile) in self.tree.tiles.iter() {
-            if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
+            if let Tile::Pane(Pane::PathDiff(_path_diff)) = tile {
+                return true;
+            } else if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
                 if self.tree.is_visible(*tileid) {
                     return false;
                 }
-            } else if let Tile::Pane(Pane::PathDiff(_path_diff)) = tile {
-                return true;
             }
         }
         panic!("PathDiff or DuplicateFiles should always be active");
