@@ -12,7 +12,7 @@ use eframe::{
 };
 use egui_tiles::Tile;
 
-use crate::{app, ui_egui::{diff_pane::{FileDiffPane, FileDiffPaneCtx}, panes::{Pane, TreeBehavior}}};
+use crate::{app, ui_egui::{diff_pane::{DiffRow, FileDiffPane, FileDiffPaneCtx, build_diff_rows}, panes::{Pane, TreeBehavior}}};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AppStateCtx {
@@ -23,11 +23,13 @@ pub struct AppStateCtx {
 
     // Myers
     #[serde(skip)]
-    pub diff_path: Option<Vec<(i32, i32)>>,
+    pub diff_rows: Option<Vec<DiffRow>>,
     #[serde(skip)]
     pub tokens_1: Option<Vec<RawToken>>,
     #[serde(skip)]
     pub tokens_2: Option<Vec<RawToken>>,
+
+    invalidate_diff: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -126,12 +128,14 @@ impl ZApp {
                         if let Some(path) = rfd::FileDialog::new().pick_file() {
                             app_ctx.file_1_name = Some(path.file_name().unwrap_or_default().to_string_lossy().into_owned());
                             app_ctx.file_1 = Some(read_file_contents(path).expect("Failed to read file"));
+                            app_ctx.invalidate_diff = true;
                         }
                     }
                     if ui.button("Open File 2").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_file() {
                             app_ctx.file_2_name = Some(path.file_name().unwrap_or_default().to_string_lossy().into_owned());
                             app_ctx.file_2 = Some(read_file_contents(path).expect("Failed to read file"));
+                            app_ctx.invalidate_diff = true;
                         }
                     }
                 });
@@ -152,7 +156,7 @@ impl ZApp {
                         file_2: app_ctx.file_2.as_ref(),
                         file_1_name: app_ctx.file_1_name.as_ref(),
                         file_2_name: app_ctx.file_2_name.as_ref(),
-                        diff_path: app_ctx.diff_path.as_ref(),
+                        diff_rows: app_ctx.diff_rows.as_ref(),
                         tokens_1: app_ctx.tokens_1.as_ref(),
                         tokens_2: app_ctx.tokens_2.as_ref(),
                     },
@@ -219,7 +223,8 @@ impl ZApp {
         };
 
         let trace = myers_diff_trace(&tokens_1, &tokens_2, cmp);
-        app_ctx.diff_path = Some(backtrack(trace, tokens_1.len() as i32, tokens_2.len() as i32));
+        let diff_path = backtrack(trace, tokens_1.len() as i32, tokens_2.len() as i32);
+        app_ctx.diff_rows = Some(build_diff_rows(&diff_path, tokens_1, tokens_2, &lexer_1, &lexer_2));
     }
 }
 
@@ -252,7 +257,8 @@ impl eframe::App for ZApp {
                 AppState::Idle(state_ctx)
             }
             AppState::Idle(mut state) => {
-                if let (Some(_file_1), Some(_file_2)) = (state.file_1.as_ref(), state.file_2.as_ref()) {
+                if state.invalidate_diff && state.file_1.is_some() && state.file_2.is_some() {
+                    state.invalidate_diff = false;
                     self.update_diff_path(&mut state);
                 }
                 self.ui(ctx, frame, &mut state);

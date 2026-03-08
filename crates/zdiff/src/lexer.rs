@@ -2,13 +2,14 @@ use std::ops::Range;
 
 #[derive(Debug, PartialEq)]
 pub enum TokenKind {
+    Unknown,
     Identifier,
     Number,
     String,
     Symbol,
     Whitespace,
     Comment,
-    Unknown,
+    Newline,
 }
 
 #[derive(Debug)]
@@ -59,9 +60,22 @@ impl<'a> Iterator for Lexer<'a> {
         let start = self.cursor;
 
         let kind = match c {
+            '\r' => {
+                self.consume();
+                if self.peek() == Some('\n') {
+                    self.consume();
+                }
+                TokenKind::Newline
+            }
+            '\n' => {
+                self.consume();
+                TokenKind::Newline
+            }
             _ if c.is_whitespace() => {
                 self.consume();
-                while self.peek().map_or(false, |next| next.is_whitespace()) {
+                while self.peek().map_or(false, |next| {
+                    next.is_whitespace() && next != '\n' && next != '\r'
+                }) {
                     self.consume();
                 }
                 TokenKind::Whitespace

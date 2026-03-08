@@ -102,7 +102,7 @@ mod tests {
             (TokenKind::Identifier, "y"),
             (TokenKind::Whitespace, " "),
             (TokenKind::Comment, "// comment"),
-            (TokenKind::Whitespace, "\n"),
+            (TokenKind::Newline, "\n"),
             (TokenKind::Identifier, "x"),
             (TokenKind::Whitespace, " "),
             (TokenKind::Comment, "/* block */"),
@@ -184,6 +184,47 @@ mod tests {
             assert_eq!(t1.span, t2.span, 
                 "Token spawn mismatch at index {}.\nToken 1: {:?}\nToken 2: {:?}", i, t1, t2);
         }
+    }
+
+    #[test]
+    fn test_lexer_newline_formats() {
+        let unix_input = "a\nb";
+        let win_input = "a\r\nb";
+
+        // Test Unix Lexing
+        let mut lex_unix = Lexer::new(unix_input);
+        let tokens_unix: Vec<RawToken> = lex_unix.collect();
+
+        // Expect: [Identifier("a"), Newline("\n"), Identifier("b")]
+        assert_eq!(tokens_unix.len(), 3);
+        assert_eq!(tokens_unix[1].kind, TokenKind::Newline);
+        assert_eq!(tokens_unix[1].span.end - tokens_unix[1].span.start, 1);
+        assert_eq!(&unix_input[tokens_unix[1].span.clone()], "\n");
+
+        // Test Windows Lexing
+        let mut lex_win = Lexer::new(win_input);
+        let tokens_win: Vec<RawToken> = lex_win.collect();
+
+        // Expect: [Identifier("a"), Newline("\r\n"), Identifier("b")]
+        assert_eq!(tokens_win.len(), 3);
+        assert_eq!(tokens_win[1].kind, TokenKind::Newline);
+        assert_eq!(tokens_win[1].span.end - tokens_win[1].span.start, 2);
+        assert_eq!(&win_input[tokens_win[1].span.clone()], "\r\n");
+    }
+
+    #[test]
+    fn test_lexer_mixed_whitespace_and_newlines() {
+        let input = " \n \r\n ";
+        let tokens: Vec<RawToken> = Lexer::new(input).collect();
+
+        dbg!(&tokens);
+
+        // Should distinguish between Whitespace (spaces) and Newline
+        assert_eq!(tokens[0].kind, TokenKind::Whitespace);
+        assert_eq!(tokens[1].kind, TokenKind::Newline);
+        assert_eq!(tokens[2].kind, TokenKind::Whitespace);
+        assert_eq!(tokens[3].kind, TokenKind::Newline);
+        assert_eq!(tokens[4].kind, TokenKind::Whitespace);
     }
 
     #[test]

@@ -26,6 +26,24 @@
         {
             "type": "lldb",
             "request": "launch",
+            "name": "Debug executable 'zdiff-gui'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=zdiff-gui",
+                    "--package=zdiff"
+                ],
+                "filter": {
+                    "name": "zdiff-gui",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
             "name": "Debug executable 'zhashdiff-gui'",
             "cargo": {
                 "args": [
@@ -55,6 +73,44 @@
                 "filter": {
                     "name": "zhashdiff-gui",
                     "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'zdiff-gui'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=zdiff-gui",
+                    "--package=zdiff"
+                ],
+                "filter": {
+                    "name": "zdiff-gui",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug Lib Tests",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib", // Target the library
+                    "--package=zdiff"
+                ],
+                "filter": {
+                    "name": "zdiff",
+                    "kind": "lib" // Change kind from 'bin' to 'lib'
                 }
             },
             "args": [],
