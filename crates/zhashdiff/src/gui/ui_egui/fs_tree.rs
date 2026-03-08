@@ -791,7 +791,7 @@ fn render_row_folder_tree_diff_column(
         ui.horizontal(|ui| {
             ui.add_space((entry.depth as f32) * 16.0);
 
-            if is_dir {
+            if is_dir && entry.diff_state.first().is_some(){
                 let openness = if is_open { 1.0 } else { 0.0 };
                 let (_rect, response) =
                     ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
@@ -845,8 +845,8 @@ fn render_row_folder_tree_diff_column(
         ui.horizontal(|ui| {
             ui.add_space((entry.depth as f32) * 16.0);
 
-            if is_dir {
-                let openness = if is_open { 1.0 } else { 0.0 };
+            if is_dir && entry.diff_state.second().is_some(){
+                let openness = if is_open{ 1.0 } else { 0.0 };
                 let (_rect, response) =
                     ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
                 egui::collapsing_header::paint_default_icon(ui, openness, &response);
