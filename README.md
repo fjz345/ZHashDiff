@@ -19,3 +19,4 @@ Good reference & aim for this project: https://www.scootersoftware.com/
 * image file comparison
 * user defined comparison per file format
 * Fix file watcher or limit update on reading fs
+* Add option to not include zdiff-gui

@@ -42,7 +42,7 @@ pub struct DiffToolConfig {
 
 impl Default for DiffToolConfig {
     fn default() -> Self {
-        Self::default_tortoise()
+        Self::default_zdiff()
     }
 }
 
@@ -74,6 +74,15 @@ impl Default for DiffToolConfig {
 
 impl DiffToolConfig {
     /// Returns a default config for TortoiseSVN if installed at standard location
+    pub fn default_zdiff() -> Self {
+        Self {
+            exe_path: PathBuf::from(r"zdiff-gui.exe"),
+            prefix_args: DiffToolDefaultArgs::from_string(""),
+            diff_path_1_args: String::from_str(r#"{}"#).unwrap(),
+            diff_path_2_args: String::from_str(r#"{}"#).unwrap(),
+            suffix_args: DiffToolDefaultArgs::from_string(""),
+        }
+    }
     pub fn default_tortoise() -> Self {
         Self {
             exe_path: PathBuf::from(r"C:\Program Files\TortoiseSVN\bin\TortoiseProc.exe"),

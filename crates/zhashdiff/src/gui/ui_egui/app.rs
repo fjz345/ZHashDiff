@@ -207,9 +207,16 @@ impl ZApp {
                 |ui| {
                     ui.label("Defaults: ");
                     ui.vertical(|ui| {
-                        if ui.button("Tortoise").clicked() {
-                            app_ctx.diff_config = DiffToolConfig::default_tortoise()
-                        }
+                        ui.horizontal(|ui|
+                        {
+                            if ui.button("ZDiff").clicked() {
+                                app_ctx.diff_config = DiffToolConfig::default_zdiff()
+                            }
+                            if ui.button("Tortoise").clicked() {
+                                app_ctx.diff_config = DiffToolConfig::default_tortoise()
+                            }
+                        });
+                        
                     });
 
                     let mut text_edit = app_ctx.diff_config.exe_path.to_string_lossy();
