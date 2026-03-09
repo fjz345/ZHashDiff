@@ -8,9 +8,11 @@ pub enum TokenKind {
     String,
     Symbol,
     Whitespace,
+    Tab,
     Comment,
     Newline,
     Keyword,
+    Preprocessor,
 }
 
 impl TokenKind
@@ -19,7 +21,7 @@ impl TokenKind
         matches!(self, TokenKind::Keyword)
     }
     pub fn is_whitespace(&self) -> bool {
-        matches!(self, TokenKind::Whitespace | TokenKind::Newline)
+        matches!(self, TokenKind::Whitespace | TokenKind::Tab | TokenKind::Newline)
     }
 }
 
@@ -64,7 +66,7 @@ impl<'a> Lexer<'a> {
 }
 
 const KEYWORDS: &[&str] = &[
-    "abstract", "as", "async", "await", "become", "box", "break", "byte", "case", 
+    "abstract", "as", "async", "await", "become", "bool", "box", "break", "byte", "case", 
     "catch", "class", "const", "continue", "crate", "default", "do", "dyn", "else", 
     "enum", "extern", "false", "final", "fn", "for", "if", "impl", "in", "interface", 
     "let", "loop", "macro", "macro_rules", "match", "mod", "move", "mut", "new", 
@@ -91,6 +93,10 @@ impl<'a> Iterator for Lexer<'a> {
             '\n' => {
                 self.consume();
                 TokenKind::Newline
+            }
+            '\t' => {
+                self.consume();
+                TokenKind::Tab
             }
             _ if c.is_whitespace() => {
                 self.consume();
@@ -157,6 +163,16 @@ impl<'a> Iterator for Lexer<'a> {
                     self.consume();
                 }
                 TokenKind::Number
+            }
+            '#' => {
+                self.consume(); 
+                while let Some(next_c) = self.peek() {
+                    if next_c == '\n' || next_c == '\r' {
+                        break;
+                    }
+                    self.consume();
+                }
+                TokenKind::Preprocessor
             }
             _ if "!@#$%^&*()-=+[]{}|;:'<>,.?/".contains(c) => {
                 let start_index = self.cursor;

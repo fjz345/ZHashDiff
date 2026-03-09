@@ -286,10 +286,10 @@ mod tests {
 
             match filename {
                 "main.cpp" => {
-                    assert!(tokens.iter().any(|t| lexer.token_value(t) == "#"));
+                    assert!(tokens.iter().any(|t| lexer.token_value(t) == "#include <iostream>"));
                 },
                 "main.rs" => {
-                    assert!(tokens.iter().any(|t| lexer.token_value(t) == "!"));
+                    assert!(tokens.iter().any(|t| lexer.token_value(t) == "/* Macros use the ! symbol */"));
                 },
                 "main.py" => {
                     assert!(tokens.iter().any(|t| lexer.token_value(t) == "__name__"));
@@ -482,6 +482,81 @@ fn test_files_advanced() {
         }
     }
 
+
+    #[test]
+    fn test_files_simple_header() {
+        let source = "\t#define hello_there
+\t// Keyboard/Gamepad Navigation options
+    bool        ConfigNavSwapGamepadButtons;    // = false
+\tbool        ConfigNavMoveSetMousePos;       // = false
+";
+        
+        let expected = [
+            ("\t", TokenKind::Tab),
+            ("#define hello_there", TokenKind::Preprocessor),
+            ("\n", TokenKind::Newline),
+            ("\t", TokenKind::Tab),
+            ("// Keyboard/Gamepad Navigation options", TokenKind::Comment),
+            ("\n", TokenKind::Newline),
+            ("    ", TokenKind::Whitespace),
+            ("bool", TokenKind::Keyword),
+            ("        ", TokenKind::Whitespace),
+            ("ConfigNavSwapGamepadButtons", TokenKind::Identifier),
+            (";", TokenKind::Symbol),
+            ("    ", TokenKind::Whitespace),
+            ("// = false", TokenKind::Comment),
+            ("\n", TokenKind::Newline),
+            ("\t", TokenKind::Tab),
+            ("bool", TokenKind::Keyword),
+            ("        ", TokenKind::Whitespace),
+            ("ConfigNavMoveSetMousePos", TokenKind::Identifier),
+            (";", TokenKind::Symbol),
+            ("       ", TokenKind::Whitespace),
+            ("// = false", TokenKind::Comment),
+            ("\n", TokenKind::Newline),
+        ];
+
+        let mut lexer = Lexer::new(source);
+        let tokens = lexer.parse();
+
+        let unknown: Vec<_> = tokens.iter()
+            .filter(|t| t.kind == TokenKind::Unknown)
+            .map(|t| lexer.token_value(t))
+            .collect();
+        assert!(unknown.is_empty(), "Lexer produced Unknown tokens: {:?}", unknown);
+
+        if tokens.len() != expected.len() || !tokens.iter().enumerate().all(|(i, t)| {
+            let actual_val = lexer.token_value(t);
+            i < expected.len() && (actual_val, t.kind) == expected[i]
+        }) {
+            let mut report = String::new();
+            report.push_str("\nTOKEN MATCH FAILURE\n");
+            report.push_str(&format!("{:<3} | {:<20} | {:<15} | {:<20} | {:<15}\n", "IDX", "ACTUAL VAL", "ACTUAL KIND", "EXPECTED VAL", "EXPECTED KIND"));
+            report.push_str(&"-".repeat(80));
+            report.push('\n');
+
+            let max_len = tokens.len().max(expected.len());
+            for i in 0..max_len {
+                let actual = tokens.get(i);
+                let exp = expected.get(i);
+
+                let a_val = actual.map(|t| format!("{:?}", lexer.token_value(t))).unwrap_or_else(|| "MISSING".to_string());
+                let a_kind = actual.map(|t| format!("{:?}", t.kind)).unwrap_or_else(|| "".to_string());
+                
+                let e_val = exp.map(|(v, _)| format!("{:?}", v)).unwrap_or_else(|| "EXTRA".to_string());
+                let e_kind = exp.map(|(_, k)| format!("{:?}", k)).unwrap_or_else(|| "".to_string());
+
+                let marker = if actual.is_some() && exp.is_some() && (lexer.token_value(actual.unwrap()), actual.unwrap().kind) == (exp.unwrap().0, exp.unwrap().1) {
+                    " "
+                } else {
+                    "!"
+                };
+
+                report.push_str(&format!("{:<3}{} | {:<20} | {:<15} | {:<20} | {:<15}\n", i, marker, a_val, a_kind, e_val, e_kind));
+            }
+            panic!("{}", report);
+        }
+    }
 
     // Myers tests
     use crate::myers::{backtrack, myers_diff, myers_diff_trace};
