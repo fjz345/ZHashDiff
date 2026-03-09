@@ -102,15 +102,15 @@ impl PathDiffPane {
         if self.open_dir_window_1 {
             self.open_dir_window_1 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                *ctx.path_diff_view.file_system_1_view =
-                    Some(FileSystemView::new(Arc::new(FileSystemModel::new(path))));
+                *ctx.path_diff_view.file_system_1_root_path =
+                    Some(path);
             }
         }
         if self.open_dir_window_2 {
             self.open_dir_window_2 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                *ctx.path_diff_view.file_system_2_view =
-                    Some(FileSystemView::new(Arc::new(FileSystemModel::new(path))));
+                *ctx.path_diff_view.file_system_2_root_path =
+                    Some(path);
             }
         }
 

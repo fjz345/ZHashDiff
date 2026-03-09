@@ -67,7 +67,7 @@ impl FsNode {
         }
     }
 
-    pub fn pathbuf(&self) -> impl AsRef<Path> {
+    pub fn as_path(&self) -> impl AsRef<Path> {
         match &self.kind {
             FsNodeKind::File { path } | FsNodeKind::Dir { path, .. } => path,
         }
@@ -186,7 +186,7 @@ impl FileSystemModel {
     pub fn find_path(&self, path: impl AsRef<Path>) -> Option<FsNodeId> {
         for node_id in self.iter_nodes() {
             if let Some(node) = self.get_node(node_id) {
-                if node.pathbuf().as_ref() == path.as_ref() {
+                if node.as_path().as_ref() == path.as_ref() {
                     return Some(node_id);
                 }
             }

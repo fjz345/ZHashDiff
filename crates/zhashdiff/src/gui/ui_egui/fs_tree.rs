@@ -25,9 +25,8 @@ pub struct FileSystemView {
 
 #[derive(Debug)]
 pub struct VisibleRowTwoFolderDiff {
-    path: FsNodeId,
     is_dir: bool,
-    depth: u16,
+    depth: FsNodeDepth,
     diff_state: DiffState,
 }
 
@@ -35,7 +34,7 @@ pub struct VisibleRowTwoFolderDiff {
 pub struct VisibleRow {
     path: FsNodeId,
     is_dir: bool,
-    depth: u16,
+    depth: FsNodeDepth,
 }
 
 impl FileSystemView {
@@ -72,16 +71,8 @@ impl FileSystemView {
         nodes.iter().any(|&id| self.is_anything_collapsed(id))
     }
 
-    pub fn recursive_selection(&mut self, node_id: FsNodeId, value: bool) {
-        let ids: Vec<FsNodeId> = self.iter_nodes(node_id).map(|(id, _, _)| id).collect();
-        for id in ids {
-            self.selected.insert(id, value);
-        }
-    }
-
     pub fn recursive_collapse(&mut self, node_id: FsNodeId, collapse: bool) {
-        let ids: Vec<FsNodeId> = self
-            .iter_nodes(node_id)
+        let ids: Vec<FsNodeId> = self.iter_nodes(node_id)
             .filter(|(_, node, _)| node.is_dir())
             .map(|(id, _, _)| id)
             .collect();
@@ -90,9 +81,18 @@ impl FileSystemView {
             if collapse {
                 self.collapsed.insert(id, true);
             } else {
-                self.collapsed.insert(id, false);
-                // self.collapsed.remove(&id);
+                self.collapsed.remove(&id);
             }
+        }
+    }
+
+    pub fn toggle_collapse(&mut self, id: FsNodeId) {
+        let currently_collapsed = self.collapsed.get(&id).copied().unwrap_or(false);
+        
+        if currently_collapsed {
+            self.collapsed.remove(&id); 
+        } else {
+            self.collapsed.insert(id, true);
         }
     }
     
@@ -102,9 +102,11 @@ impl FileSystemView {
         }
     }
 
-    pub fn toggle_collapse(&mut self, id: FsNodeId) {
-        let entry = self.collapsed.entry(id).or_insert(false);
-        *entry = !*entry;
+    pub fn recursive_selection(&mut self, node_id: FsNodeId, value: bool) {
+        let ids: Vec<FsNodeId> = self.iter_nodes(node_id).map(|(id, _, _)| id).collect();
+        for id in ids {
+            self.selected.insert(id, value);
+        }
     }
 
     pub fn build_two_folder_diff_rows(
@@ -122,11 +124,11 @@ impl FileSystemView {
             if id == root_id { return String::new(); }
             
             let root_node = view.file_system.get_node(root_id).unwrap();
-            let root_path = root_node.pathbuf();
+            let root_path = root_node.as_path();
             
             // Use components to rebuild the path cleanly, avoiding slash/prefix issues
-            node.pathbuf().as_ref().strip_prefix(&root_path)
-                .unwrap_or(node.pathbuf().as_ref())
+            node.as_path().as_ref().strip_prefix(&root_path)
+                .unwrap_or(node.as_path().as_ref())
                 .components()
                 .map(|c| c.as_os_str().to_string_lossy())
                 .collect::<Vec<_>>()
@@ -153,7 +155,7 @@ impl FileSystemView {
         let initial_capacity = num_files_and_folders_1.max(num_files_and_folders_2);
         let mut out_rows = Vec::with_capacity(initial_capacity);
 
-        let mut skip_below_depth: Option<u16> = None;
+        let mut skip_below_depth: Option<FsNodeDepth> = None;
         for (rel_path, (left, right)) in &entries_map {
             let depth = left.map(|l| l.2).or(right.map(|r| r.2)).unwrap_or(0);
 
@@ -194,10 +196,7 @@ impl FileSystemView {
                 (None, None) => panic!("unreachable"),
             };
 
-            let representative_id = left.map(|l| l.0).or(right.map(|r| r.0)).unwrap();
-
             out_rows.push(VisibleRowTwoFolderDiff {
-                path: representative_id,
                 is_dir,
                 depth,
                 diff_state,
@@ -207,7 +206,7 @@ impl FileSystemView {
         Ok(out_rows)
     }
 
-    pub fn build_collapsed_rows(&self, start_id: FsNodeId, start_depth: u16) -> Vec<VisibleRow> {
+    pub fn build_collapsed_rows(&self, start_id: FsNodeId, start_depth: FsNodeDepth) -> Vec<VisibleRow> {
         let mut out = Vec::new();
         let mut stack = vec![(start_id, start_depth)];
 
@@ -244,7 +243,7 @@ pub fn draw_ui_folder_tree_with_checkbox(
     let root_path_clone = file_system_view
         .file_system
         .get_root()
-        .pathbuf()
+        .as_path()
         .as_ref()
         .to_path_buf();
 
@@ -350,9 +349,9 @@ mod tests {
             return String::new();
         }
         
-        node.pathbuf().as_ref()
+        node.as_path().as_ref()
             .strip_prefix(root)
-            .unwrap_or(node.pathbuf().as_ref())
+            .unwrap_or(node.as_path().as_ref())
             .components()
             .map(|c| c.as_os_str().to_string_lossy())
             .collect::<Vec<_>>()
@@ -377,7 +376,7 @@ mod tests {
         }
     }
 
-    fn format_tree(rows: &[(String, u16)]) -> String {
+    fn format_tree(rows: &[(String, FsNodeDepth)]) -> String {
         rows.iter()
             .map(|(path, depth)| {
                 let indent = "  ".repeat(*depth as usize);
@@ -398,8 +397,8 @@ mod tests {
         output.push_str(&"-".repeat(96));
         output.push('\n');
 
-        let l_map: HashMap<&str, u16> = left.iter().map(|(p, d)| (p.as_str(), *d)).collect();
-        let r_map: HashMap<&str, u16> = right.iter().map(|(p, d)| (p.as_str(), *d)).collect();
+        let l_map: HashMap<&str, FsNodeDepth> = left.iter().map(|(p, d)| (p.as_str(), *d)).collect();
+        let r_map: HashMap<&str, FsNodeDepth> = right.iter().map(|(p, d)| (p.as_str(), *d)).collect();
         
         for (path, depth, marker) in diff {
             let l_row = l_map.get(path.as_str())
@@ -496,9 +495,9 @@ mod tests {
             let root_id = view.file_system.get_root_node_id();
             let result = view.build_collapsed_rows(root_id, 0);
 
-            let actual: Vec<(String, u16)> = result.into_iter().map(|row| {
+            let actual: Vec<(String, FsNodeDepth)> = result.into_iter().map(|row| {
             let node = view.file_system.get_node(row.path).unwrap();
-            let rel = node.pathbuf().as_ref()
+            let rel = node.as_path().as_ref()
                 .strip_prefix(root_path).unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
@@ -506,7 +505,7 @@ mod tests {
                 (rel, row.depth)
             }).collect();
 
-            let expected_mapped: Vec<(String, u16)> = case.expected.iter()
+            let expected_mapped: Vec<(String, FsNodeDepth)> = case.expected.iter()
                 .map(|(p, d)| (p.to_string(), *d))
                 .collect();
 
@@ -627,7 +626,7 @@ mod tests {
             ).unwrap();
             
 
-            let actual_diff: Vec<(String, u16, String)> = out.into_iter().map(|row| {
+            let actual_diff: Vec<(String, FsNodeDepth, String)> = out.into_iter().map(|row| {
                 let rel = get_rel_from_diff_state(&view_l.file_system, &view_r.file_system, temp_l.path(), temp_r.path(), &row.diff_state);
                 let marker = match row.diff_state {
                     DiffState::OnlyInFirst(_) => "-",
@@ -690,7 +689,7 @@ mod tests {
     fn find_id_by_rel_path(fs: &FileSystemModel, root: &Path, rel: &str) -> FsNodeId {
         let target = root.join(rel);
         for (id, node, _) in fs.iter_tree() {
-            if node.pathbuf().as_ref() == target {
+            if node.as_path().as_ref() == target {
                 return id;
             }
         }
@@ -785,7 +784,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                                 fs1_view
                                     .file_system
                                     .get_root()
-                                    .pathbuf()
+                                    .as_path()
                                     .as_ref()
                                     .to_string_lossy()
                                     .to_string()
@@ -802,23 +801,22 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             );
                         });
                     });
-
                     header.col(|ui| {
                         ui.vertical(|ui| {
                             ui.label("≠");
-                            if let Some(fs1_fiew) = file_system_1_view {
-                                let fs1 = &fs1_fiew.file_system;
-                                let root_1 = fs1.get_root();
-                                if let Some(row) = visible_rows
-                                    .iter()
-                                    .find(|r| fs1.get_node(r.path).map_or(false, |n| n == root_1))
-                                {
+                            if let Some(fs1_view) = file_system_1_view {
+                                let root_1_id = fs1_view.file_system.get_root_node_id();
+                                if let Some(row) = visible_rows.iter().find(|r| r.diff_state.first() == Some(root_1_id)) {
+                                    ui_custom_diff_state(ui, &row.diff_state);
+                                }
+                            } else if let Some(fs2_view) = file_system_2_view {
+                                let root_2_id = fs2_view.file_system.get_root_node_id();
+                                if let Some(row) = visible_rows.iter().find(|r| r.diff_state.second() == Some(root_2_id)) {
                                     ui_custom_diff_state(ui, &row.diff_state);
                                 }
                             }
                         });
                     });
-
                     header.col(|ui| {
                         col2_rect = ui.max_rect();
                         let available = ui.available_width();
@@ -835,7 +833,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             let text = if let Some(fs2_view) = file_system_2_view {
                                 let fs2 = &fs2_view.file_system;
                                 fs2.get_root()
-                                    .pathbuf()
+                                    .as_path()
                                     .as_ref()
                                     .to_string_lossy()
                                     .to_string()
@@ -966,8 +964,8 @@ fn file_diff_state(
     method: &PathComparissonMethod,
     partial_threshold: f32,
 ) -> DiffState {
-    let path1 = left.1.pathbuf();
-    let path2 = right.1.pathbuf();
+    let path1 = left.1.as_path();
+    let path2 = right.1.as_path();
 
     let result = match compare_paths(path1, path2, method) {
         Ok(r) => r,
@@ -987,7 +985,7 @@ fn file_diff_state(
 
 fn folder_diff_state(
     parent_path: &str,
-    entries_map: &BTreeMap<String, (Option<(FsNodeId, &FsNode, u16)>, Option<(FsNodeId, &FsNode, u16)>)>,
+    entries_map: &BTreeMap<String, (Option<(FsNodeId, &FsNode, FsNodeDepth)>, Option<(FsNodeId, &FsNode, FsNodeDepth)>)>,
     method: &PathComparissonMethod,
     threshold: f32,
 ) -> DiffState {
@@ -1047,13 +1045,13 @@ fn on_row_item_clicked(
                     .file_system
                     .get_node(path1)
                     .unwrap()
-                    .pathbuf(),
+                    .as_path(),
                 file_system_2_view
                     .unwrap()
                     .file_system
                     .get_node(path2)
                     .unwrap()
-                    .pathbuf(),
+                    .as_path(),
             );
             if let Err(err) = result {
                 log::error!("diffing failed...");
@@ -1066,146 +1064,141 @@ fn on_row_item_clicked(
     return true;
 }
 
+fn render_diff_side(
+    ui: &mut egui::Ui,
+    view: Option<&FileSystemView>,
+    node_id: Option<FsNodeId>,
+    depth: FsNodeDepth,
+    is_dir: bool,
+    is_collapsed: bool,
+    row_height: f32,
+    mut on_click: impl FnMut(),
+    mut on_toggle: impl FnMut(),
+) {
+    ui.horizontal(|ui| {
+        ui.add_space((depth as f32) * 16.0);
+
+        if let (Some(v), Some(id)) = (view, node_id) {
+            if let Some(node) = v.file_system.get_node(id) {
+                if is_dir {
+                    // Openness: 0.0 is closed, 1.0 is open
+                    let openness = if is_collapsed { 0.0 } else { 1.0 };
+                    let (_rect, response) = ui.allocate_exact_size(
+                        egui::vec2(12.0, row_height), 
+                        egui::Sense::click()
+                    );
+                    egui::collapsing_header::paint_default_icon(ui, openness, &response);
+
+                    if response.clicked() {
+                        on_toggle();
+                    }
+
+                    let label_resp = ui
+                        .label(format!("📁 {}", node.display_name()))
+                        .interact(egui::Sense::click());
+
+                    if label_resp.clicked() {
+                        on_toggle();
+                    }
+                } else {
+                    if ui
+                        .label(node.display_name())
+                        .interact(egui::Sense::click())
+                        .clicked()
+                    {
+                        on_click();
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn render_row_folder_tree_diff_column(
-    file_system_1_view: Option<&mut FileSystemView>,
-    file_system_2_view: Option<&mut FileSystemView>,
+    mut file_system_1_view: Option<&mut FileSystemView>,
+    mut file_system_2_view: Option<&mut FileSystemView>,
     row: &mut egui_extras::TableRow,
     entry: &VisibleRowTwoFolderDiff,
     row_height: f32,
     diff_tool_config: &DiffToolConfig,
 ) {
-    let path = entry.path;
-    let is_dir = entry.is_dir;
-    let mut should_toggle = false;
+    let first_node_id = entry.diff_state.first();
+    let second_node_id = entry.diff_state.second();
+    let mut should_toggle_row = false;
 
-    let is_root = match (&file_system_1_view, &file_system_2_view) {
-        (Some(v1), _) => path == v1.file_system.get_root_node_id(),
-        (_, Some(v2)) => path == v2.file_system.get_root_node_id(),
+    let is_root = match (&file_system_1_view, &file_system_2_view, &first_node_id, &second_node_id) {
+        (Some(v1), _, Some(first_id), _) => *first_id == v1.file_system.get_root_node_id(),
+        (_, Some(v2), _, Some(second_id)) => *second_id == v2.file_system.get_root_node_id(),
         _ => false,
     };
-
     // Skip the root
     if is_root {
         return;
     }
 
-    let is_open = if is_root {
-        true
+    // In case we decide to show the root at some point
+    let is_collapsed = if is_root {
+        false
     } else {
-        match (&file_system_1_view, &file_system_2_view) {
-            (Some(v1), _) => v1.collapsed.get(&path).copied().unwrap_or(false),
-            (_, Some(v2)) => v2.collapsed.get(&path).copied().unwrap_or(false),
+        match (&file_system_1_view, &file_system_2_view, &first_node_id, &second_node_id) {
+            (Some(v1), Some(v2), Some(first_id), Some(second_id)) => v1.collapsed.get(&first_id).copied().unwrap_or(false) || v2.collapsed.get(second_id).copied().unwrap_or(false),
+            (Some(v), _, Some(first_id), _) => v.collapsed.get(first_id).copied().unwrap_or(false),
+            (_, Some(v), _, Some(second_id)) => v.collapsed.get(second_id).copied().unwrap_or(false),
             _ => false,
         }
     };
 
     // --- Left Column (Folder 1) ---
     row.col(|ui| {
-        ui.horizontal(|ui| {
-            ui.add_space((entry.depth as f32) * 16.0);
-
-            if is_dir && entry.diff_state.first().is_some(){
-                let openness = if is_open { 1.0 } else { 0.0 };
-                let (_rect, response) =
-                    ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
-                egui::collapsing_header::paint_default_icon(ui, openness, &response);
-
-                if response.clicked() {
-                    should_toggle = true;
-                }
-
-                if let Some(v1) = &file_system_1_view {
-                    if let Some(node) = v1.file_system.get_node(path) {
-                        let label_resp = ui
-                            .label(format!("📁 {}", node.display_name()))
-                            .interact(egui::Sense::click());
-
-                        if label_resp.clicked() {
-                            should_toggle = true;
-                        }
-                    }
-                }
-            } else if !matches!(entry.diff_state, DiffState::OnlyInSecond(..)) {
-                if let Some(v1) = &file_system_1_view {
-                    if let Some(node) = v1.file_system.get_node(path) {
-                        if ui
-                            .label(node.display_name())
-                            .interact(egui::Sense::click())
-                            .clicked()
-                        {
-                            on_row_item_clicked(
-                                file_system_1_view.as_deref(),
-                                file_system_2_view.as_deref(),
-                                entry,
-                                diff_tool_config,
-                            );
-                        }
-                    }
-                }
-            }
-        });
+        render_diff_side(ui, file_system_1_view.as_deref(), first_node_id, entry.depth, entry.is_dir, is_collapsed, row_height, ||{
+            on_row_item_clicked(
+                file_system_1_view.as_deref(),
+                file_system_2_view.as_deref(),
+                entry,
+                diff_tool_config,
+            );
+        }, ||{should_toggle_row = true});
     });
-
     // --- Middle Column (Diff Status) ---
     row.col(|ui| {
         ui.horizontal(|ui| {
             ui_custom_diff_state(ui, &entry.diff_state);
         });
     });
-
     // --- Right Column (Folder 2) ---
     row.col(|ui| {
-        ui.horizontal(|ui| {
-            ui.add_space((entry.depth as f32) * 16.0);
-
-            if is_dir && entry.diff_state.second().is_some(){
-                let openness = if is_open{ 1.0 } else { 0.0 };
-                let (_rect, response) =
-                    ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
-                egui::collapsing_header::paint_default_icon(ui, openness, &response);
-
-                if response.clicked() {
-                    should_toggle = true;
-                }
-
-                if let Some(v2) = &file_system_2_view {
-                    if let Some(node) = v2.file_system.get_node(path) {
-                        let label_resp = ui
-                            .label(format!("📁 {}", node.display_name()))
-                            .interact(egui::Sense::click());
-
-                        if label_resp.clicked() {
-                            should_toggle = true;
-                        }
-                    }
-                }
-            } else if !matches!(entry.diff_state, DiffState::OnlyInFirst(..)) {
-                if let Some(v2) = &file_system_2_view {
-                    if let Some(node) = v2.file_system.get_node(path) {
-                        if ui
-                            .label(node.display_name())
-                            .interact(egui::Sense::click())
-                            .clicked()
-                        {
-                            on_row_item_clicked(
-                                file_system_1_view.as_deref(),
-                                file_system_2_view.as_deref(),
-                                entry,
-                                diff_tool_config,
-                            );
-                        }
-                    }
-                }
-            }
-        });
+        render_diff_side(ui, file_system_2_view.as_deref(), second_node_id, entry.depth, entry.is_dir, is_collapsed, row_height, ||{
+            on_row_item_clicked(
+                file_system_1_view.as_deref(),
+                file_system_2_view.as_deref(),
+                entry,
+                diff_tool_config,
+            );
+        }, ||{should_toggle_row = true});
     });
 
-    if should_toggle {
-        if let Some(v1) = file_system_1_view {
-            v1.toggle_collapse(path);
+    if should_toggle_row {
+        println!("Should toggle row");
+        if let Some(first) = &entry.diff_state.first()
+        {
+            println!("FIRST");
+            if let Some(view) = file_system_1_view.as_mut() {
+                {
+                    println!("diff_staet: [{}]{:?}", first, &entry.diff_state);
+                    println!("first: [{}]{:?}", first, view.file_system.get_node(*first).unwrap());
+                    view.toggle_collapse(*first);
+                }
+            }
         }
-        if let Some(v2) = file_system_2_view {
-            v2.toggle_collapse(path);
+        if let Some(second) = &entry.diff_state.second()
+        {
+            println!("SECOND");
+            if let Some(view) = file_system_2_view.as_mut()
+            {
+                println!("diff_staet: [{}]{:?}", second, &entry.diff_state);
+                println!("second: [{}]{:?}", second, view.file_system.get_node(*second).unwrap());
+                view.toggle_collapse(*second);
+            }
         }
     }
 }
@@ -1224,7 +1217,7 @@ fn render_row_folder_tree_with_checkbox(
     let mut toggle_selection = false;
 
     let node = file_system_view.file_system.get_node(path_id).unwrap();
-    let is_open = file_system_view
+    let is_collapsed = file_system_view
         .collapsed
         .get(&path_id)
         .copied()
@@ -1257,7 +1250,7 @@ fn render_row_folder_tree_with_checkbox(
             ui.add_space((entry.depth as f32) * 16.0);
 
             if is_dir {
-                let openness = if is_open { 1.0 } else { 0.0 };
+                let openness = if is_collapsed { 1.0 } else { 0.0 };
                 let (_rect, response) =
                     ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
                 egui::collapsing_header::paint_default_icon(ui, openness, &response);
@@ -1278,7 +1271,7 @@ fn render_row_folder_tree_with_checkbox(
 
     // Column 3: Hash / Progress
     row.col(|ui| {
-        let full_path = node.pathbuf();
+        let full_path = node.as_path();
         if !is_dir {
             match hash_service.get_hash(&full_path) {
                 Some(hash_str) => {

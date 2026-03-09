@@ -91,7 +91,7 @@ impl DuplicateFilesPane {
 
                         for node_id in all_files {
                             if let Some(node) = file_system.get_node(node_id) {
-                                ctx.hash_service.request(node.pathbuf());
+                                ctx.hash_service.request(node.as_path());
                             }
                         }
                     }

@@ -18,6 +18,8 @@ use crate::{
 };
 
 pub struct PathDiffView<'a> {
+    pub file_system_1_root_path: &'a mut Option<PathBuf>,
+    pub file_system_2_root_path: &'a mut Option<PathBuf>,
     pub file_system_1_view: &'a mut Option<FileSystemView>,
     pub file_system_2_view: &'a mut Option<FileSystemView>,
 }

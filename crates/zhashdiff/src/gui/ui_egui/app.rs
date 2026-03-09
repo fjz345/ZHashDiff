@@ -28,7 +28,11 @@ use egui_tiles::Tile;
 pub struct AppStateCtx {
     #[serde(skip)]
     pub hash_service: HashService,
+    pub file_system_1_root_path: Option<PathBuf>,
+    pub file_system_2_root_path: Option<PathBuf>,
+    #[serde(skip)]
     pub file_system_model_1_view: Option<FileSystemView>,
+    #[serde(skip)]
     pub file_system_model_2_view: Option<FileSystemView>,
 
     #[serde(skip)]
@@ -182,6 +186,10 @@ impl ZApp {
                     }
                 });
                 ui.menu_button("Debug", |ui| {
+                    if ui.button("Clear Root Paths").clicked() {
+                        app_ctx.file_system_1_root_path = None;
+                        app_ctx.file_system_2_root_path = None;
+                    }
                     if ui.button("Clear FileSystemModels").clicked() {
                         app_ctx.file_system_model_1_view = None;
                         app_ctx.file_system_model_2_view = None;
@@ -251,6 +259,8 @@ impl ZApp {
                 let mut path_diff_view = PathDiffView {
                     file_system_1_view: &mut app_ctx.file_system_model_1_view,
                     file_system_2_view: &mut app_ctx.file_system_model_2_view,
+                    file_system_1_root_path: &mut app_ctx.file_system_1_root_path,
+                    file_system_2_root_path: &mut app_ctx.file_system_2_root_path,
                 };
                 let mut behavior = TreeBehavior {
                     log_buffer: self.log_buffer.clone(),
@@ -328,7 +338,9 @@ impl ZApp {
     fn is_path_diff(&self) -> bool {
         for (tileid, tile) in self.tree.tiles.iter() {
             if let Tile::Pane(Pane::PathDiff(_path_diff)) = tile {
-                return true;
+                if self.tree.is_visible(*tileid) {
+                    return true;
+                }
             } else if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
                 if self.tree.is_visible(*tileid) {
                     return false;
@@ -399,22 +411,45 @@ impl eframe::App for ZApp {
                         self.set_path_diff_visible(true);
                     }
                 }
-                self.ui(ctx, frame, &mut state);
                 // Handle folder dialogs
                 if self.open_dir_window_1 {
                     self.open_dir_window_1 = false;
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        state.file_system_model_1_view =
-                            Some(FileSystemView::new(Arc::new(FileSystemModel::new(&path))));
+                        state.file_system_1_root_path =
+                            Some(path);
                     }
                 }
                 if self.open_dir_window_2 {
                     self.open_dir_window_2 = false;
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        state.file_system_model_2_view =
-                            Some(FileSystemView::new(Arc::new(FileSystemModel::new(&path))));
+                        state.file_system_2_root_path =
+                            Some(path);
                     }
                 }
+                // Invalidate state
+                if let Some(path) = &state.file_system_1_root_path {
+                    let needs_reload = state.file_system_model_1_view.as_ref()
+                        .map_or(true, |v| v.file_system.get_root().as_path().as_ref() != path);
+                    if needs_reload {
+                        state.file_system_model_1_view = Some(FileSystemView::new(Arc::new(FileSystemModel::new(path))));
+                    }
+                }
+                else{
+                    state.file_system_model_1_view = None;
+                }
+                if let Some(path) = &state.file_system_2_root_path {
+                    let needs_reload = state.file_system_model_2_view.as_ref()
+                        .map_or(true, |v| v.file_system.get_root().as_path().as_ref() != path);
+                    if needs_reload {
+                        state.file_system_model_2_view = Some(FileSystemView::new(Arc::new(FileSystemModel::new(path))));
+                    }
+                }
+                else{
+                    state.file_system_model_2_view = None;
+                }
+
+                self.ui(ctx, frame, &mut state);
+                
                 self.process_ctx_inputs(ctx, frame);
                 AppState::Idle(state)
             }
