@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 pub type FsNodeId = usize;
 pub type FsNodeDepth = u16;
+pub type FsIsDir = bool;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum FsNodeKind {
