@@ -228,99 +228,74 @@ pub fn build_diff_rows(
     options: &FileDiffPaneOptions,
 ) -> Vec<DiffRow> {
     let mut rows = Vec::new();
-    let mut left_buf = Vec::new();
-    let mut right_buf = Vec::new();
-    
+    let (mut left_buf, mut right_buf) = (Vec::new(), Vec::new());
     let (mut l_num, mut r_num) = (1, 1);
-    let (mut is_del, mut is_ins) = (false, false);
+    let (mut has_del, mut has_ins) = (false, false);
+    let (mut l_started, mut r_started) = (false, false);
 
-    let ghost_alpha = if options.ghost_rows { 60 } else { 255 };
-    let del_color = egui::Color32::from_rgba_unmultiplied(255, 100, 100, ghost_alpha);
-    let ins_color = egui::Color32::from_rgba_unmultiplied(100, 255, 100, ghost_alpha);
-    let match_color = if options.ghost_rows { egui::Color32::from_gray(80) } else { egui::Color32::GRAY };
+    let ghost_color = egui::Color32::from_rgba_unmultiplied(150, 150, 150, 80);
+    let kw_color = egui::Color32::from_rgb(86, 156, 214);
 
     for window in path.windows(2) {
-        let (x1, y1) = window[0];
-        let (x2, y2) = window[1];
+        let (x1, y1) = (window[0].0 as usize, window[0].1 as usize);
+        let (x2, y2) = (window[1].0 as usize, window[1].1 as usize);
 
         if x2 > x1 && y2 > y1 { // MATCH
-            // Pulling from both lexers ensures actual indentation is preserved 
-            // even if the contents were 'ignored' during diffing.
-            let val1 = lex1.token_value(&t1[x1 as usize]);
-            let val2 = lex2.token_value(&t2[y1 as usize]);
-            let kind = &t1[x1 as usize].kind;
+            let (tok, val) = (&t1[x1], lex1.token_value(&t1[x1]));
+            let color = if options.keyword_highlight && tok.kind.is_keyword() { kw_color } else { egui::Color32::GRAY };
             
-            let text_color = if options.keyword_highlight && kind.is_keyword() {
-                egui::Color32::from_rgb(86, 156, 214) 
-            } else {
-                match_color
-            };
-
-            left_buf.push((val1.to_string(), text_color));
-            right_buf.push((val2.to_string(), text_color));
-            
-            if *kind == TokenKind::Newline {
-                rows.push(flush_row(&mut left_buf, &mut right_buf, l_num, r_num, is_del, is_ins));
-                l_num += 1; r_num += 1;
-                is_del = false; is_ins = false;
-            }
-        } else if x2 > x1 { // DELETE
-            is_del = true;
-            let val = lex1.token_value(&t1[x1 as usize]);
-            let kind = t1[x1 as usize].kind;
-
-            // highlight_rows determines if we use the high-visibility red
-            let color = if options.highlight_rows && kind != TokenKind::Newline {
-                 del_color 
-            } else {
-                 del_color
-            };
-
             left_buf.push((val.to_string(), color));
-            if kind == TokenKind::Newline {
-                rows.push(flush_row(&mut left_buf, &mut Vec::new(), l_num, 0, true, false));
-                l_num += 1;
-            }
-        } else if y2 > y1 { // INSERT
-            is_ins = true;
-            let val = lex2.token_value(&t2[y1 as usize]);
-            let kind = t2[y1 as usize].kind;
-
-            let color = if options.highlight_rows && kind != TokenKind::Newline {
-                ins_color
-            } else {
-                ins_color
-            };
-            
             right_buf.push((val.to_string(), color));
-            if kind == TokenKind::Newline {
-                rows.push(flush_row(&mut Vec::new(), &mut right_buf, 0, r_num, false, true));
-                r_num += 1;
+
+            if tok.kind != TokenKind::Whitespace && tok.kind != TokenKind::Newline {
+                l_started = true; r_started = true;
+            }
+            if tok.kind == TokenKind::Newline {
+                rows.push(flush_row(&mut left_buf, &mut right_buf, l_num, r_num, has_del && options.highlight_rows, has_ins && options.highlight_rows));
+                l_num += 1; r_num += 1;
+                has_del = false; has_ins = false; l_started = false; r_started = false;
+            }
+        } else { // DIFF (Delete or Insert)
+            let is_del = x2 > x1;
+            let (tok, lex, active_buf, other_buf, active_started, other_started) = if is_del {
+                (&t1[x1], lex1, &mut left_buf, &mut right_buf, &mut l_started, &r_started)
+            } else {
+                (&t2[y1], lex2, &mut right_buf, &mut left_buf, &mut r_started, &l_started)
+            };
+
+            if is_del { has_del = true; } else { has_ins = true; }
+            let val = lex.token_value(tok);
+            let color = if is_del { egui::Color32::from_rgb(255, 100, 100) } else { egui::Color32::from_rgb(100, 255, 100) };
+            
+            active_buf.push((val.to_string(), color));
+
+            // Logic for mirroring indentation or ghosting
+            let is_special = tok.kind == TokenKind::Newline || (tok.kind == TokenKind::Whitespace && !other_started);
+            if is_special || options.ghost_rows {
+                let g_color = if is_special { egui::Color32::TRANSPARENT } else { ghost_color };
+                other_buf.push((val.to_string(), g_color));
+            }
+
+            if tok.kind != TokenKind::Whitespace && tok.kind != TokenKind::Newline { *active_started = true; }
+
+            if tok.kind == TokenKind::Newline {
+                rows.push(flush_row(&mut left_buf, &mut right_buf, if is_del { l_num } else { 0 }, if is_del { 0 } else { r_num }, has_del && options.highlight_rows, has_ins && options.highlight_rows));
+                if is_del { l_num += 1; } else { r_num += 1; }
+                has_del = false; has_ins = false; l_started = false; r_started = false;
             }
         }
     }
-
-    if !left_buf.is_empty() || !right_buf.is_empty() {
-        rows.push(flush_row(&mut left_buf, &mut right_buf, l_num, r_num, is_del, is_ins));
-    }
-
     rows
 }
 
 fn flush_row(l: &mut Vec<(String, egui::Color32)>, r: &mut Vec<(String, egui::Color32)>, ln: i32, rn: i32, is_del: bool, is_ins: bool) -> DiffRow {
-    let left = if l.is_empty() { LineContent::Void } else {
-        LineContent::Code { 
-            tokens: l.drain(..).collect(), 
-            line_num: ln, 
-            bg: if is_del { egui::Color32::from_rgba_unmultiplied(255, 0, 0, 20) } else { egui::Color32::TRANSPARENT }
-        }
+    let make_line = |buf: &mut Vec<(String, egui::Color32)>, num, bg| {
+        if buf.is_empty() { LineContent::Void } 
+        else { LineContent::Code { tokens: buf.drain(..).collect(), line_num: num, bg } }
     };
-    let right = if r.is_empty() { LineContent::Void } else {
-        LineContent::Code { 
-            tokens: r.drain(..).collect(), 
-            line_num: rn, 
-            bg: if is_ins { egui::Color32::from_rgba_unmultiplied(0, 255, 0, 20) } else { egui::Color32::TRANSPARENT }
-        }
-    };
-    DiffRow { left, right }
+
+    DiffRow {
+        left: make_line(l, ln, if is_del { egui::Color32::from_rgba_unmultiplied(255, 0, 0, 20) } else { egui::Color32::TRANSPARENT }),
+        right: make_line(r, rn, if is_ins { egui::Color32::from_rgba_unmultiplied(0, 255, 0, 20) } else { egui::Color32::TRANSPARENT }),
+    }
 }
