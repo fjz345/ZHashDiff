@@ -241,46 +241,56 @@ pub fn build_diff_rows(
         let (x2, y2) = (window[1].0 as usize, window[1].1 as usize);
 
         if x2 > x1 && y2 > y1 { // MATCH
-            let (tok, val) = (&t1[x1], lex1.token_value(&t1[x1]));
-            let color = if options.keyword_highlight && tok.kind.is_keyword() { kw_color } else { egui::Color32::GRAY };
+            let (tok1, val1) = (&t1[x1], lex1.token_value(&t1[x1]));
+            let (tok2, val2) = (&t2[y1], lex2.token_value(&t2[y1]));
             
-            left_buf.push((val.to_string(), color));
-            right_buf.push((val.to_string(), color));
+            let color1 = if options.keyword_highlight && tok1.kind.is_keyword() { kw_color } else { egui::Color32::GRAY };
+            let color2 = if options.keyword_highlight && tok2.kind.is_keyword() { kw_color } else { egui::Color32::GRAY };
 
-            if tok.kind != TokenKind::Whitespace && tok.kind != TokenKind::Newline {
-                l_started = true; r_started = true;
-            }
-            if tok.kind == TokenKind::Newline {
+            left_buf.push((val1.to_string(), color1));
+            right_buf.push((val2.to_string(), color2));
+
+            if tok1.kind != TokenKind::Whitespace && tok1.kind != TokenKind::Newline { l_started = true; }
+            if tok2.kind != TokenKind::Whitespace && tok2.kind != TokenKind::Newline { r_started = true; }
+
+            if tok1.kind == TokenKind::Newline {
                 rows.push(flush_row(&mut left_buf, &mut right_buf, l_num, r_num, has_del && options.highlight_rows, has_ins && options.highlight_rows));
                 l_num += 1; r_num += 1;
                 has_del = false; has_ins = false; l_started = false; r_started = false;
             }
-        } else { // DIFF (Delete or Insert)
+        } else { // DIFF
             let is_del = x2 > x1;
-            let (tok, lex, active_buf, other_buf, active_started, other_started) = if is_del {
-                (&t1[x1], lex1, &mut left_buf, &mut right_buf, &mut l_started, &r_started)
-            } else {
-                (&t2[y1], lex2, &mut right_buf, &mut left_buf, &mut r_started, &l_started)
-            };
-
-            if is_del { has_del = true; } else { has_ins = true; }
+            let (tok, lex) = if is_del { (&t1[x1], lex1) } else { (&t2[y1], lex2) };
             let val = lex.token_value(tok);
-            let color = if is_del { egui::Color32::from_rgb(255, 100, 100) } else { egui::Color32::from_rgb(100, 255, 100) };
-            
-            active_buf.push((val.to_string(), color));
+            let is_ws = tok.kind == TokenKind::Whitespace || tok.kind == TokenKind::Newline;
 
-            // Logic for mirroring indentation or ghosting
-            let is_special = tok.kind == TokenKind::Newline || (tok.kind == TokenKind::Whitespace && !other_started);
-            if is_special || options.ghost_rows {
-                let g_color = if is_special { egui::Color32::TRANSPARENT } else { ghost_color };
-                other_buf.push((val.to_string(), g_color));
+            if !options.ignore_whitespace || !is_ws {
+                if is_del { has_del = true; } else { has_ins = true; }
             }
 
-            if tok.kind != TokenKind::Whitespace && tok.kind != TokenKind::Newline { *active_started = true; }
+            let color = if is_del { egui::Color32::from_rgb(255, 100, 100) } else { egui::Color32::from_rgb(100, 255, 100) };
+
+            if is_del {
+                left_buf.push((val.to_string(), color));
+                if tok.kind == TokenKind::Newline || (tok.kind == TokenKind::Whitespace && !r_started) || options.ghost_rows {
+                    let g_color = if is_ws && !r_started { egui::Color32::TRANSPARENT } else { ghost_color };
+                    right_buf.push((val.to_string(), g_color));
+                }
+                if !is_ws { l_started = true; }
+            } else {
+                right_buf.push((val.to_string(), color));
+                if tok.kind == TokenKind::Newline || (tok.kind == TokenKind::Whitespace && !l_started) || options.ghost_rows {
+                    let g_color = if is_ws && !l_started { egui::Color32::TRANSPARENT } else { ghost_color };
+                    left_buf.push((val.to_string(), g_color));
+                }
+                if !is_ws { r_started = true; }
+            }
 
             if tok.kind == TokenKind::Newline {
-                rows.push(flush_row(&mut left_buf, &mut right_buf, if is_del { l_num } else { 0 }, if is_del { 0 } else { r_num }, has_del && options.highlight_rows, has_ins && options.highlight_rows));
+                rows.push(flush_row(&mut left_buf, &mut right_buf, l_num, r_num, has_del && options.highlight_rows, has_ins && options.highlight_rows));
+                
                 if is_del { l_num += 1; } else { r_num += 1; }
+                
                 has_del = false; has_ins = false; l_started = false; r_started = false;
             }
         }
