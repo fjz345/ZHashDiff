@@ -16,7 +16,7 @@ pub enum TokenKind {
 impl TokenKind
 {
     pub fn is_keyword(&self) -> bool {
-        matches!(self, TokenKind::Identifier)
+        matches!(self, TokenKind::Identifier | TokenKind::Keyword)
     }
     pub fn is_whitespace(&self) -> bool {
         matches!(self, TokenKind::Whitespace | TokenKind::Newline)
