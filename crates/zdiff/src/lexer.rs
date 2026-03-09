@@ -10,6 +10,7 @@ pub enum TokenKind {
     Whitespace,
     Comment,
     Newline,
+    Keyword,
 }
 
 impl TokenKind
@@ -61,6 +62,16 @@ impl<'a> Lexer<'a> {
         tokens.iter().map(|t| self.token_value(t)).collect()
     }
 }
+
+const KEYWORDS: &[&str] = &[
+    "abstract", "as", "async", "await", "become", "box", "break", "byte", "case", 
+    "catch", "class", "const", "continue", "crate", "default", "do", "dyn", "else", 
+    "enum", "extern", "false", "final", "fn", "for", "if", "impl", "in", "interface", 
+    "let", "loop", "macro", "macro_rules", "match", "mod", "move", "mut", "new", 
+    "override", "priv", "pub", "ref", "return", "self", "Self", "static", "struct", 
+    "super", "switch", "throw", "trait", "true", "try", "type", "typeof", "union", 
+    "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
+];
 
 impl<'a> Iterator for Lexer<'a> {
     type Item = RawToken;
@@ -124,13 +135,21 @@ impl<'a> Iterator for Lexer<'a> {
                 TokenKind::String
             }
             _ if c.is_alphabetic() || c == '_' || (c > '\x7f' && !c.is_control() && !c.is_whitespace()) => {
+                let start = self.cursor;
                 self.consume();
+
                 while self.peek().map_or(false, |next| {
                     next.is_alphanumeric() || next == '_' || (next > '\x7f' && !next.is_control() && !next.is_whitespace())
                 }) {
                     self.consume();
                 }
-                TokenKind::Identifier
+
+                let word = &self.source[start..self.cursor];
+                if KEYWORDS.binary_search(&word).is_ok() {
+                    TokenKind::Keyword
+                } else {
+                    TokenKind::Identifier
+                }
             }
             _ if c.is_digit(10) => {
                 self.consume();
