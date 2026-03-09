@@ -14,7 +14,7 @@ impl Default for FileDiffPaneOptions {
     fn default() -> Self {
         Self {
             ignore_whitespace: false,
-            highlight_rows: false,
+            highlight_rows: true,
             ghost_rows: true,
             keyword_highlight: true,
         }
