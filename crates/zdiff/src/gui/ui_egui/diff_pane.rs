@@ -3,10 +3,29 @@ use serde::{Deserialize, Serialize};
 use zdiff::lexer::{Lexer, RawToken, TokenKind};
 use crate::ui_egui::panes::ZAppPane;
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct FileDiffPaneOptions {
+    pub ignore_whitespace: bool,
+    pub highlight_rows: bool,
+    pub ghost_rows: bool,
+    pub keyword_highlight: bool,
+}
+impl Default for FileDiffPaneOptions {
+    fn default() -> Self {
+        Self {
+            ignore_whitespace: false,
+            highlight_rows: false,
+            ghost_rows: true,
+            keyword_highlight: true,
+        }
+    }
+}
+
 pub struct FileDiffPaneCtx<'a> {
     pub diff_rows: Option<&'a Vec<DiffRow>>,
     pub tokens_1: Option<&'a Vec<RawToken>>,
     pub tokens_2: Option<&'a Vec<RawToken>>,
+    pub options: &'a mut FileDiffPaneOptions,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -53,6 +72,34 @@ impl FileDiffPane {
             (Some(_), Some(_), Some(_)) =>  {},
         }
         let rows = ctx.diff_rows.unwrap();
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let button_size = egui::vec2(24.0, 24.0);
+
+            let ws_btn = egui::Button::new(egui::RichText::new("W").strong())
+                .selected(ctx.options.ignore_whitespace);
+            if ui.add_sized(button_size, ws_btn).on_hover_text("Ignore Whitespace").clicked() {
+                ctx.options.ignore_whitespace = !ctx.options.ignore_whitespace;
+            }
+            let hl_btn = egui::Button::new(egui::RichText::new("H").strong())
+                .selected(ctx.options.highlight_rows);
+            if ui.add_sized(button_size, hl_btn).on_hover_text("Highlight Rows").clicked() {
+                ctx.options.highlight_rows = !ctx.options.highlight_rows;
+            }
+            let gst_btn = egui::Button::new("👻") // Emoji works because of egui's emoji font
+                .selected(ctx.options.ghost_rows);
+            if ui.add_sized(button_size, gst_btn).on_hover_text("Ghost Rows").clicked() {
+                ctx.options.ghost_rows = !ctx.options.ghost_rows;
+            }
+            let kw_btn = egui::Button::new(egui::RichText::new("K").strong())
+                .selected(ctx.options.keyword_highlight);
+            if ui.add_sized(button_size, kw_btn).on_hover_text("Keyword Highlight").clicked() {
+                ctx.options.keyword_highlight = !ctx.options.keyword_highlight;
+            }
+        });
+
+        ui.add_space(4.0);
 
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
         let available_width = ui.available_width();
@@ -171,12 +218,14 @@ pub enum LineContent {
     },
     Void,
 }
+
 pub fn build_diff_rows(
     path: &[(i32, i32)],
     t1: &[RawToken],
     t2: &[RawToken],
     lex1: &Lexer,
     lex2: &Lexer,
+    options: &FileDiffPaneOptions,
 ) -> Vec<DiffRow> {
     let mut rows = Vec::new();
     let mut left_buf = Vec::new();
@@ -185,16 +234,32 @@ pub fn build_diff_rows(
     let (mut l_num, mut r_num) = (1, 1);
     let (mut is_del, mut is_ins) = (false, false);
 
+    let ghost_alpha = if options.ghost_rows { 60 } else { 255 };
+    let del_color = egui::Color32::from_rgba_unmultiplied(255, 100, 100, ghost_alpha);
+    let ins_color = egui::Color32::from_rgba_unmultiplied(100, 255, 100, ghost_alpha);
+    let match_color = if options.ghost_rows { egui::Color32::from_gray(80) } else { egui::Color32::GRAY };
+
     for window in path.windows(2) {
         let (x1, y1) = window[0];
         let (x2, y2) = window[1];
 
         if x2 > x1 && y2 > y1 { // MATCH
-            let val = lex1.token_value(&t1[x1 as usize]);
-            left_buf.push((val.to_string(), egui::Color32::GRAY));
-            right_buf.push((val.to_string(), egui::Color32::GRAY));
+            // Pulling from both lexers ensures actual indentation is preserved 
+            // even if the contents were 'ignored' during diffing.
+            let val1 = lex1.token_value(&t1[x1 as usize]);
+            let val2 = lex2.token_value(&t2[y1 as usize]);
+            let kind = &t1[x1 as usize].kind;
             
-            if t1[x1 as usize].kind == TokenKind::Newline {
+            let text_color = if options.keyword_highlight && kind.is_keyword() {
+                egui::Color32::from_rgb(86, 156, 214) 
+            } else {
+                match_color
+            };
+
+            left_buf.push((val1.to_string(), text_color));
+            right_buf.push((val2.to_string(), text_color));
+            
+            if *kind == TokenKind::Newline {
                 rows.push(flush_row(&mut left_buf, &mut right_buf, l_num, r_num, is_del, is_ins));
                 l_num += 1; r_num += 1;
                 is_del = false; is_ins = false;
@@ -202,16 +267,33 @@ pub fn build_diff_rows(
         } else if x2 > x1 { // DELETE
             is_del = true;
             let val = lex1.token_value(&t1[x1 as usize]);
-            left_buf.push((val.to_string(), egui::Color32::from_rgb(255, 100, 100)));
-            if t1[x1 as usize].kind == TokenKind::Newline {
+            let kind = t1[x1 as usize].kind;
+
+            // highlight_rows determines if we use the high-visibility red
+            let color = if options.highlight_rows && kind != TokenKind::Newline {
+                 del_color 
+            } else {
+                 del_color
+            };
+
+            left_buf.push((val.to_string(), color));
+            if kind == TokenKind::Newline {
                 rows.push(flush_row(&mut left_buf, &mut Vec::new(), l_num, 0, true, false));
                 l_num += 1;
             }
         } else if y2 > y1 { // INSERT
             is_ins = true;
             let val = lex2.token_value(&t2[y1 as usize]);
-            right_buf.push((val.to_string(), egui::Color32::from_rgb(100, 255, 100)));
-            if t2[y1 as usize].kind == TokenKind::Newline {
+            let kind = t2[y1 as usize].kind;
+
+            let color = if options.highlight_rows && kind != TokenKind::Newline {
+                ins_color
+            } else {
+                ins_color
+            };
+            
+            right_buf.push((val.to_string(), color));
+            if kind == TokenKind::Newline {
                 rows.push(flush_row(&mut Vec::new(), &mut right_buf, 0, r_num, false, true));
                 r_num += 1;
             }

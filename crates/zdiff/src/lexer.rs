@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum TokenKind {
     Unknown,
     Identifier,
@@ -10,6 +10,16 @@ pub enum TokenKind {
     Whitespace,
     Comment,
     Newline,
+}
+
+impl TokenKind
+{
+    pub fn is_keyword(&self) -> bool {
+        matches!(self, TokenKind::Identifier)
+    }
+    pub fn is_whitespace(&self) -> bool {
+        matches!(self, TokenKind::Whitespace | TokenKind::Newline)
+    }
 }
 
 #[derive(Debug)]

@@ -1,6 +1,6 @@
 use eframe::egui::{self, Layout, PointerButton};
 use serde::{Deserialize, Serialize};
-use zdiff::{lexer::{Lexer, RawToken}, myers::{backtrack, myers_diff_trace}, read_file_contents};
+use zdiff::{lexer::{Lexer, RawToken, TokenKind}, myers::{backtrack, myers_diff_trace}, read_file_contents};
 use std::{
     env, path::PathBuf
 };
@@ -11,7 +11,7 @@ use eframe::{
 };
 use egui_tiles::Tile;
 
-use crate::{ui_egui::{diff_pane::{DiffRow, FileDiffPane, FileDiffPaneCtx, build_diff_rows}, panes::{Pane, TreeBehavior}}};
+use crate::ui_egui::{diff_pane::{DiffRow, FileDiffPane, FileDiffPaneCtx, FileDiffPaneOptions, build_diff_rows}, panes::{Pane, TreeBehavior}};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AppStateCtx {
@@ -31,6 +31,8 @@ pub struct AppStateCtx {
     pub tokens_1: Option<Vec<RawToken>>,
     #[serde(skip)]
     pub tokens_2: Option<Vec<RawToken>>,
+
+    pub diff_option: FileDiffPaneOptions,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -205,15 +207,22 @@ impl ZApp {
             ui.separator();
 
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
+                let diff_options_before  = app_ctx.diff_option.clone();
                 let mut behavior = TreeBehavior {
                     ctx_file_diff: FileDiffPaneCtx {
                         diff_rows: app_ctx.diff_rows.as_ref(),
                         tokens_1: app_ctx.tokens_1.as_ref(),
                         tokens_2: app_ctx.tokens_2.as_ref(),
+                        options: &mut app_ctx.diff_option,
                     },
                 };
 
                 self.tree.ui(&mut behavior, ui);
+
+                // Invalidate diff_rows if options changed
+                if diff_options_before != app_ctx.diff_option {
+                    app_ctx.diff_rows = None;
+                }
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::FileDiff(..)) = tile {
@@ -269,13 +278,17 @@ impl ZApp {
 
         let lexer_1 = Lexer::new(app_ctx.file_1_contents.as_ref().unwrap());
         let lexer_2 = Lexer::new(app_ctx.file_2_contents.as_ref().unwrap());
+        let ignore_ws = app_ctx.diff_option.ignore_whitespace;
         let cmp = |t1: &RawToken, t2: &RawToken| {
+            if ignore_ws && t1.kind.is_whitespace() && t2.kind.is_whitespace() {
+                return true;
+            }
             t1.kind == t2.kind && lexer_1.token_value(t1) == lexer_2.token_value(t2)
         };
 
         let trace = myers_diff_trace(&tokens_1, &tokens_2, cmp);
         let diff_path = backtrack(trace, tokens_1.len() as i32, tokens_2.len() as i32);
-        app_ctx.diff_rows = Some(build_diff_rows(&diff_path, tokens_1, tokens_2, &lexer_1, &lexer_2));
+        app_ctx.diff_rows = Some(build_diff_rows(&diff_path, tokens_1, tokens_2, &lexer_1, &lexer_2, &app_ctx.diff_option));
     }
 }
 
