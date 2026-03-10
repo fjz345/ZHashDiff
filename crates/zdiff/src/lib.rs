@@ -558,6 +558,8 @@ fn test_files_advanced() {
         }
     }
 
+    
+
     // Myers tests
     use crate::myers::{backtrack, myers_diff, myers_diff_trace};
     fn distance_from_path(path: &[(i32, i32)]) -> usize {
