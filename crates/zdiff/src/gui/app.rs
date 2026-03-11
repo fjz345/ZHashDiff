@@ -11,7 +11,7 @@ use eframe::{
 };
 use egui_tiles::Tile;
 
-use crate::ui_egui::{diff_pane::{DiffRow, FileDiffPane, FileDiffPaneCtx, FileDiffPaneOptions, build_diff_rows}, panes::{Pane, TreeBehavior}};
+use crate::ui_egui::{diff_pane::{DiffRow, FileDiffPane, FileDiffPaneCtx, FileDiffPaneOptions, build_diff_rows, build_single_file_rows}, panes::{Pane, TreeBehavior}};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AppStateCtx {
@@ -62,7 +62,7 @@ pub struct ZApp {
 
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
 impl ZApp {
-    fn update_file_contents(&mut self, app_ctx: &mut AppStateCtx)
+    fn update_file_contents(&mut self, app_ctx: &mut AppStateCtx) -> bool
     {
         if app_ctx.file_1_contents.is_none()
         {
@@ -71,7 +71,7 @@ impl ZApp {
                 log::info!("Reading file 1: {}", file_1_path.display());
                 match read_file_contents(file_1_path.clone())
                 {
-                    Ok(contents) => {app_ctx.file_1_contents = Some(contents);},
+                    Ok(contents) => {app_ctx.tokens_1 = Some(Lexer::new(&contents).collect()); app_ctx.file_1_contents = Some(contents); return true;},
                     Err(e) => {log::error!("Failed to read file 1: {}", e);},
                 };
             }
@@ -83,11 +83,12 @@ impl ZApp {
                 log::info!("Reading file 2: {}", file_2_path.display());
                 match read_file_contents(file_2_path.clone())
                 {
-                    Ok(contents) => {app_ctx.file_2_contents = Some(contents);},
+                    Ok(contents) => {app_ctx.tokens_2 = Some(Lexer::new(&contents).collect()); app_ctx.file_2_contents = Some(contents); return true;},
                     Err(e) => {log::error!("Failed to read file 2: {}", e);},
                 };
             }
         }
+        false
     }
 
     pub fn request_init(&mut self) {
@@ -182,6 +183,13 @@ impl ZApp {
                             app_ctx.file_2_path = Some(path.clone());
                             app_ctx.file_2_contents = Some(read_file_contents(path).expect("Failed to read file"));
                         }
+                    }
+                    if ui.button("Swap Source/Target").clicked() {
+                        std::mem::swap(&mut app_ctx.file_1_path, &mut app_ctx.file_2_path);
+                        std::mem::swap(&mut app_ctx.file_1_contents, &mut app_ctx.file_2_contents);
+                        std::mem::swap(&mut app_ctx.tokens_1, &mut app_ctx.tokens_2);
+                        app_ctx.diff_rows = None;
+                        app_ctx.num_add_deletes = None;
                     }
                 });
 
@@ -280,25 +288,41 @@ impl ZApp {
     }
 
     fn update_diff_rows(&mut self, app_ctx: &mut AppStateCtx) {
-        app_ctx.tokens_1 = Some(Lexer::new(app_ctx.file_1_contents.as_ref().unwrap()).collect());
-        app_ctx.tokens_2 = Some(Lexer::new(app_ctx.file_2_contents.as_ref().unwrap()).collect());
-        let tokens_1 = app_ctx.tokens_1.as_ref().unwrap();
-        let tokens_2 = app_ctx.tokens_2.as_ref().unwrap();
+        match (&app_ctx.file_1_contents, &app_ctx.file_2_contents)
+        {
+            (None, None) => {panic!("unreachable")},
+            (Some(file_1_contents), None) => {
+                app_ctx.num_add_deletes = Some((0,0));
+                let tokens_1 = app_ctx.tokens_1.as_ref().unwrap();
+                let lexer_1 = Lexer::new(file_1_contents);
+                app_ctx.diff_rows = Some(build_single_file_rows(tokens_1, &lexer_1, &app_ctx.diff_option, true));
+            },
+            (None, Some(file_2_contents)) => {
+                app_ctx.num_add_deletes = Some((0,0));
+                let tokens_2 = app_ctx.tokens_2.as_ref().unwrap();
+                let lexer_2 = Lexer::new(file_2_contents);
+                app_ctx.diff_rows = Some(build_single_file_rows(tokens_2, &lexer_2, &app_ctx.diff_option, false));
+            },
+            (Some(file_1), Some(file_2)) => {
+                let tokens_1 = app_ctx.tokens_1.as_ref().unwrap();
+                let tokens_2 = app_ctx.tokens_2.as_ref().unwrap();
 
-        let lexer_1 = Lexer::new(app_ctx.file_1_contents.as_ref().unwrap());
-        let lexer_2 = Lexer::new(app_ctx.file_2_contents.as_ref().unwrap());
-        let ignore_ws = app_ctx.diff_option.ignore_whitespace;
-        let cmp = |t1: &RawToken, t2: &RawToken| {
-            if ignore_ws && t1.kind.is_whitespace() && t2.kind.is_whitespace() {
-                return true;
-            }
-            t1.kind == t2.kind && lexer_1.token_value(t1) == lexer_2.token_value(t2)
-        };
+                let lexer_1 = Lexer::new(file_1);
+                let lexer_2 = Lexer::new(file_2);
+                let ignore_ws = app_ctx.diff_option.ignore_whitespace;
+                let cmp = |t1: &RawToken, t2: &RawToken| {
+                    if ignore_ws && t1.kind.is_whitespace() && t2.kind.is_whitespace() {
+                        return true;
+                    }
+                    t1.kind == t2.kind && lexer_1.token_value(t1) == lexer_2.token_value(t2)
+                };
 
-        let trace = myers_diff_trace(&tokens_1, &tokens_2, cmp);
-        let diff_path = myers_backtrack(trace, tokens_1.len() as i32, tokens_2.len() as i32);
-        app_ctx.num_add_deletes = Some(myers_count_add_deletes(&diff_path));
-        app_ctx.diff_rows = Some(build_diff_rows(&diff_path, tokens_1, tokens_2, &lexer_1, &lexer_2, &app_ctx.diff_option));
+                let trace = myers_diff_trace(&tokens_1, &tokens_2, cmp);
+                let diff_path = myers_backtrack(trace, tokens_1.len() as i32, tokens_2.len() as i32);
+                app_ctx.num_add_deletes = Some(myers_count_add_deletes(&diff_path));
+                app_ctx.diff_rows = Some(build_diff_rows(&diff_path, tokens_1, tokens_2, &lexer_1, &lexer_2, &app_ctx.diff_option));
+            },
+        }
     }
 }
 
@@ -334,21 +358,33 @@ impl eframe::App for ZApp {
                 if state.file_1_path.is_none()
                 {
                     state.file_1_contents = None;
+                    state.tokens_1 = None;
                 }
                 if state.file_2_path.is_none()
                 {
                     state.file_2_contents = None;
+                    state.tokens_2 = None;
                 }
-                if state.file_1_contents.is_none()
+                if state.file_1_contents.is_none() || state.tokens_1.is_none()
+                {
+                    state.file_1_contents = None;
+                    state.tokens_1 = None;
+                    state.diff_rows = None;
+                    state.num_add_deletes = None;
+                }
+                if state.file_2_contents.is_none() || state.tokens_2.is_none()
+                {
+                    state.file_2_contents = None;
+                    state.tokens_2 = None;
+                    state.diff_rows = None;
+                    state.num_add_deletes = None;
+                }
+                if self.update_file_contents(&mut state)
                 {
                     state.diff_rows = None;
+                    state.num_add_deletes = None;
                 }
-                if state.file_2_contents.is_none()
-                {
-                    state.diff_rows = None;
-                }
-                self.update_file_contents(&mut state);
-                if state.diff_rows.is_none() && state.file_1_contents.is_some() && state.file_2_contents.is_some(){
+                if state.diff_rows.is_none() && (state.file_1_contents.is_some() && state.tokens_1.is_some()) || (state.file_2_contents.is_some() && state.tokens_2.is_some()) {
                     self.update_diff_rows(&mut state);
                 }
                 self.ui(ctx, frame, &mut state);

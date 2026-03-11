@@ -59,16 +59,15 @@ impl FileDiffPane {
                 ui.centered_and_justified(|ui| { ui.label("Load Source & Target files to see diff."); });
                 return egui_tiles::UiResponse::None;
             },
-            (None, Some(_), None) | (Some(_), Some(_), None) => {
-                ui.centered_and_justified(|ui| { ui.label("Load Target file to see diff."); });
+            (None, Some(_), None) => {
                 ui.centered_and_justified(|ui| { ui.label("Target tokens were not set"); });
                 return egui_tiles::UiResponse::None;
             },
-            (None, None, Some(_)) | (Some(_), None, Some(_)) => {
-                ui.centered_and_justified(|ui| { ui.label("Load Source file to see diff."); });
+            (None, None, Some(_)) => {
                 ui.centered_and_justified(|ui| { ui.label("Source tokens were not set"); });
                 return egui_tiles::UiResponse::None;
             },
+            (Some(_), Some(_), None) | (Some(_), None, Some(_)) => {},
             (None, Some(_), Some(_)) => {
                 ui.centered_and_justified(|ui| { ui.label("Waiting for diff results..."); });
                 return egui_tiles::UiResponse::None;
@@ -125,9 +124,9 @@ impl FileDiffPane {
                     .column(Column::exact(12.0)) // "≠"
                     .column(Column::remainder().clip(true))
                     .header(20.0, |mut header| {
-                        header.col(|ui| { ui.strong(ctx.path_1.unwrap().display().to_string()); });
+                        header.col(|ui| { ui.strong(ctx.path_1.cloned().unwrap_or_default().display().to_string()); });
                         header.col(|_| {});
-                        header.col(|ui| { ui.strong(ctx.path_2.unwrap().display().to_string()); });
+                        header.col(|ui| { ui.strong(ctx.path_2.cloned().unwrap_or_default().display().to_string()); });
                     })
                     .body(|body| {
                         let widths = body.widths().to_vec();
@@ -221,6 +220,30 @@ pub enum LineContent {
         bg: egui::Color32,
     },
     Void,
+}
+
+pub fn build_single_file_rows(
+    tokens: &[RawToken],
+    lexer: &Lexer,
+    options: &FileDiffPaneOptions,
+    is_left_side: bool,
+) -> Vec<DiffRow> {
+    let n = tokens.len() as i32;
+    // Create a path that only moves in the direction of the provided file
+    let path: Vec<(i32, i32)> = if is_left_side {
+        (0..=n).map(|i| (i, 0)).collect()
+    } else {
+        (0..=n).map(|i| (0, i)).collect()
+    };
+
+    let empty = Vec::new();
+    let empty_lex = Lexer::new("");
+
+    if is_left_side {
+        build_diff_rows(&path, tokens, &empty, lexer, &empty_lex, options)
+    } else {
+        build_diff_rows(&path, &empty, tokens, &empty_lex, lexer, options)
+    }
 }
 
 pub fn build_diff_rows(

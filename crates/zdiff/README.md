@@ -17,9 +17,6 @@ Library and Gui for diffing file contents
 * go to prev/next diff buttons
 * toggle only diffs
 * add horizontal scroll bar
-* add paths in title
-* add paths instead of "Source" and "Target"
 * add drag and drop for source & target (same as zhashdiff)
 * search functionallity
-* display num adds/deletes
 * hex diff/binary diff
