@@ -10,7 +10,6 @@ Tool I created in order to resolve and delete duplicated files with different fi
 * Detect & remove duplicate files
 
 # Todo
-* Fix performance
 * Show paths in title
 * Add filter for Filter for whitelist/blacklist (folder, files & extension)
 * Add collapse/expand diff

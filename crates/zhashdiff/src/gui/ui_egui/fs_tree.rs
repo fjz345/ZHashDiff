@@ -1182,8 +1182,6 @@ fn render_row_folder_tree_diff_column(
             println!("FIRST");
             if let Some(view) = file_system_1_view.as_mut() {
                 {
-                    println!("diff_staet: [{}]{:?}", first, &entry.diff_state);
-                    println!("first: [{}]{:?}", first, view.file_system.get_node(*first).unwrap());
                     view.toggle_collapse(*first);
                 }
             }
@@ -1193,8 +1191,6 @@ fn render_row_folder_tree_diff_column(
             println!("SECOND");
             if let Some(view) = file_system_2_view.as_mut()
             {
-                println!("diff_staet: [{}]{:?}", second, &entry.diff_state);
-                println!("second: [{}]{:?}", second, view.file_system.get_node(*second).unwrap());
                 view.toggle_collapse(*second);
             }
         }
