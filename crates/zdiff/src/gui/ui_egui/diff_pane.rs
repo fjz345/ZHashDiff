@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use eframe::egui::{self, UiBuilder};
+use eframe::egui::{self, UiBuilder, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
 use zdiff::lexer::{Lexer, RawToken, TokenKind};
 use crate::ui_egui::panes::ZAppPane;
@@ -30,6 +30,9 @@ pub struct FileDiffPaneCtx<'a> {
     pub tokens_1: Option<&'a Vec<RawToken>>,
     pub tokens_2: Option<&'a Vec<RawToken>>,
     pub options: &'a mut FileDiffPaneOptions,
+
+    pub scroll_left: &'a mut f32,
+    pub scroll_right: &'a mut f32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -51,6 +54,17 @@ impl FileDiffPane {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut FileDiffPaneCtx) -> egui_tiles::UiResponse {
+        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.x + i.raw_scroll_delta.x);
+        if scroll_delta != 0.0 {
+            *ctx.scroll_left = (*ctx.scroll_left - scroll_delta).max(0.0);
+            *ctx.scroll_right = (*ctx.scroll_right - scroll_delta).max(0.0);
+        }
+
+        let sl = *ctx.scroll_left;
+        let sr = *ctx.scroll_right;
+        let available_width = ui.available_width();
+        let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+
         // Currently tokens are only computed when diff_rows is calcualted.
         // This means that match only matches on diff_rows
         match (&ctx.diff_rows, &ctx.tokens_1, &ctx.tokens_2)
@@ -74,6 +88,7 @@ impl FileDiffPane {
             },
             (Some(_), Some(_), Some(_)) =>  {},
         }
+
         let rows = ctx.diff_rows.unwrap();
 
         ui.horizontal(|ui| {
@@ -103,67 +118,96 @@ impl FileDiffPane {
         });
 
         ui.add_space(4.0);
-
-        let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
-        let available_width = ui.available_width();
-
         ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
         ui.spacing_mut().item_spacing.y = 0.0;
 
-        egui::Frame::default()
-            .fill(egui::Color32::from_gray(15))
-            .show(ui, |ui| {
-                use egui_extras::{TableBuilder, Column};
+        let footer_height = 30.0;
+        let table_height = (ui.available_height() - footer_height).max(0.0);
 
-                TableBuilder::new(ui)
-                    .id_salt("file_diff_table")
-                    .striped(false) 
-                    .resizable(true)
-                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::initial(available_width * 0.48).at_least(100.0).clip(true))
-                    .column(Column::exact(12.0)) // "≠"
-                    .column(Column::remainder().clip(true))
-                    .header(20.0, |mut header| {
-                        header.col(|ui| { ui.strong(ctx.path_1.cloned().unwrap_or_default().display().to_string()); });
-                        header.col(|_| {});
-                        header.col(|ui| { ui.strong(ctx.path_2.cloned().unwrap_or_default().display().to_string()); });
-                    })
-                    .body(|body| {
-                        let widths = body.widths().to_vec();
-                        
-                        body.rows(row_height, rows.len(), |mut row| {
-                            let diff_row = &rows[row.index()];
-                            
-                            let left_w = widths[0];
-                            let right_w = widths[2];
+        ui.vertical(|ui| {
+            ui.set_min_width(available_width);
+            ui.allocate_ui(egui::vec2(ui.available_width(), table_height), |ui| {
+                egui::Frame::default()
+                    .fill(egui::Color32::from_gray(15))
+                    .show(ui, |ui| {
+                    use egui_extras::{TableBuilder, Column};
 
-                            row.col(|ui| {
-                                Self::render_side(ui, &diff_row.left, left_w);
-                            });
+                    TableBuilder::new(ui)
+                        .id_salt("file_diff_table")
+                        .striped(false)
+                        .resizable(true)
+                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                        .column(Column::initial(available_width * 0.48).at_least(100.0).clip(false))
+                        .column(Column::exact(12.0)) // "≠"
+                        .column(Column::remainder().clip(false))
+                        .header(20.0, |mut header| {
+                            header.col(|ui| { ui.strong(ctx.path_1.cloned().unwrap_or_default().display().to_string()); });
+                            header.col(|_| {});
+                            header.col(|ui| { ui.strong(ctx.path_2.cloned().unwrap_or_default().display().to_string()); });
+                        })
+                        .body(|body| {
+                            let widths = body.widths().to_vec();
+                            body.rows(row_height, rows.len(), |mut row| {
+                                let row_index = row.index();
+                                let diff_row = &rows[row.index()];
+                                
+                                let left_w = widths[0];
+                                let right_w = widths[2];
 
-                            row.col(|ui| {
-                                let text = match (&diff_row.left, &diff_row.right) {
-                                    (LineContent::Void, _) => "+",
-                                    (_, LineContent::Void) => "-",
-                                    (LineContent::Code { .. }, LineContent::Code { bg, .. }) 
-                                        if *bg != egui::Color32::TRANSPARENT => "≠",
-                                    _ => " ",
-                                };
-                                ui.centered_and_justified(|ui| {
-                                    ui.label(egui::RichText::new(text).color(egui::Color32::DARK_GRAY));
+
+                                row.col(|ui| {
+                                    egui::ScrollArea::horizontal()
+                                        .id_salt((format!("l{}", row_index)))
+                                        .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
+                                        .scroll_offset(egui::vec2(sl, 0.0))
+                                        .show(ui, |ui| {
+                                            Self::render_side(ui, &diff_row.left, widths[0]);
+                                        });
                                 });
-                            });
 
-                            row.col(|ui| {
-                                Self::render_side(ui, &diff_row.right, right_w);
+                                row.col(|ui| {
+                                    let text = match (&diff_row.left, &diff_row.right) {
+                                        (LineContent::Void, _) => "+",
+                                        (_, LineContent::Void) => "-",
+                                        (LineContent::Code { .. }, LineContent::Code { bg, .. }) 
+                                            if *bg != egui::Color32::TRANSPARENT => "≠",
+                                        _ => " ",
+                                    };
+                                    ui.centered_and_justified(|ui| {
+                                        ui.label(egui::RichText::new(text).color(egui::Color32::DARK_GRAY));
+                                    });
+                                });
+
+                                row.col(|ui| {
+                                    egui::ScrollArea::horizontal()
+                                        .id_salt(format!("r{}", row_index))
+                                        .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
+                                        .scroll_offset(egui::vec2(sr, 0.0))
+                                        .show(ui, |ui| {
+                                            Self::render_side(ui, &diff_row.right, widths[2]);
+                                        });
+                                });
                             });
                         });
                     });
+                });
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let left_w = available_width * 0.48;
+                    ui.allocate_ui(egui::vec2(left_w, 20.0), |ui| {
+                        ui.add(egui::Slider::new(ctx.scroll_left, 0.0..=2000.0).show_value(false));
+                    });
+                    ui.add_space(12.0);
+                    ui.allocate_ui(egui::vec2(ui.available_width(), 20.0), |ui| {
+                        ui.add(egui::Slider::new(ctx.scroll_right, 0.0..=2000.0).show_value(false));
+                    });
+                });
             });
 
         egui_tiles::UiResponse::None
     }
-
+    
     fn render_side(ui: &mut egui::Ui, content: &LineContent, width: f32) {
         let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
         

@@ -10,12 +10,11 @@ Library and Gui for diffing file contents
 * Derp
 
 ## Todo
-* Allow row building with 1 file opened
 * image file diff
 * user defined comparison per file format
 * fix better toggle different visualization view modes code
 * go to prev/next diff buttons
-* toggle only diffs
+* toggle filter only diffs rows
 * add horizontal scroll bar
 * add drag and drop for source & target (same as zhashdiff)
 * search functionallity

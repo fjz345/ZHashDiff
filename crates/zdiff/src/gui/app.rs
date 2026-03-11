@@ -35,6 +35,8 @@ pub struct AppStateCtx {
     pub tokens_2: Option<Vec<RawToken>>,
 
     pub diff_option: FileDiffPaneOptions,
+    pub scroll_left: f32,
+    pub scroll_right: f32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -226,6 +228,8 @@ impl ZApp {
                         tokens_1: app_ctx.tokens_1.as_ref(),
                         tokens_2: app_ctx.tokens_2.as_ref(),
                         options: &mut app_ctx.diff_option,
+                        scroll_left: &mut app_ctx.scroll_left,
+                        scroll_right: &mut app_ctx.scroll_right,
                     },
                 };
 
