@@ -1176,10 +1176,8 @@ fn render_row_folder_tree_diff_column(
     });
 
     if should_toggle_row {
-        println!("Should toggle row");
         if let Some(first) = &entry.diff_state.first()
         {
-            println!("FIRST");
             if let Some(view) = file_system_1_view.as_mut() {
                 {
                     view.toggle_collapse(*first);
@@ -1188,7 +1186,6 @@ fn render_row_folder_tree_diff_column(
         }
         if let Some(second) = &entry.diff_state.second()
         {
-            println!("SECOND");
             if let Some(view) = file_system_2_view.as_mut()
             {
                 view.toggle_collapse(*second);

@@ -280,6 +280,20 @@ impl ZApp {
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
+                        let built_rows_len = app_ctx.two_folder_diff_visible_rows.as_ref().and_then(|f|Some(f.len())).unwrap_or(0);
+                        let source_path = app_ctx.file_system_1_root_path.clone().unwrap_or_default();
+                        let target_path = app_ctx.file_system_2_root_path.clone().unwrap_or_default();
+
+                        let new_title = format!(
+                            "ZHashDiff [{}] - {}, {}",
+                            built_rows_len, source_path.display(), target_path.display()
+                        );
+
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Title(new_title));
+
+                        break;
+                    }
+                    if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
                         let out_ctx = behavior.create_duplicate_files_ctx();
                         let count_files_and_folders = out_ctx
                             .path_diff_view
