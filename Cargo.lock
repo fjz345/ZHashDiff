@@ -4632,7 +4632,7 @@ dependencies = [
 
 [[package]]
 name = "zdiff"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "color-backtrace",
  "eframe",
@@ -4720,7 +4720,7 @@ dependencies = [
 
 [[package]]
 name = "zhashdiff"
-version = "1.2.4"
+version = "1.3.0"
 dependencies = [
  "blake3",
  "color-backtrace",
