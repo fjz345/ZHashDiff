@@ -111,6 +111,7 @@ impl ZApp {
     fn startup(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let visuals: egui::Visuals = egui::Visuals::dark();
         ctx.set_visuals(visuals);
+        ctx.set_theme(egui::Theme::Dark);
         log::info!("pixels_per_point{:?}", ctx.pixels_per_point());
         log::info!("native_pixels_per_point{:?}", ctx.native_pixels_per_point());
         ctx.set_pixels_per_point(self.scale_factor); // Maybe mult native_pixels_per_point?
