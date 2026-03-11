@@ -140,6 +140,19 @@ impl FileSystemModel {
     fn get_node_mut(&mut self, node_id: FsNodeId) -> Option<&mut FsNode> {
         self.nodes.get_mut(node_id)
     }
+    pub fn get_parent_id(&self, node_id: FsNodeId) -> Option<FsNodeId>
+    {
+        self.get_node(node_id)?.parent
+    }
+    pub fn get_parent(&self, node_id: FsNodeId) -> Option<&FsNode>
+    {
+        let parent_id = self.get_parent_id(node_id)?;
+        self.get_node(parent_id)
+    }
+    fn get_parent_mut(&mut self, node_id: FsNodeId) -> Option<&mut FsNode> {
+        let parent_id = self.get_parent_id(node_id)?;
+        self.get_node_mut(parent_id)
+    }
     pub fn get_root(&self) -> &FsNode {
         &self.nodes[self.root_id]
     }

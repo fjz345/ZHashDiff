@@ -1134,61 +1134,71 @@ fn render_row_folder_tree_diff_column(
         return;
     }
 
-    // In case we decide to show the root at some point
-    let is_collapsed = if is_root {
-        false
-    } else {
-        match (&file_system_1_view, &file_system_2_view, &first_node_id, &second_node_id) {
-            (Some(v1), Some(v2), Some(first_id), Some(second_id)) => v1.collapsed.get(&first_id).copied().unwrap_or(false) || v2.collapsed.get(second_id).copied().unwrap_or(false),
-            (Some(v), _, Some(first_id), _) => v.collapsed.get(first_id).copied().unwrap_or(false),
-            (_, Some(v), _, Some(second_id)) => v.collapsed.get(second_id).copied().unwrap_or(false),
-            _ => false,
-        }
+    let get_collapsed_state = |v: &FileSystemView, id: &FsNodeId| {
+        let collapsed = v.collapsed.get(id).copied().unwrap_or(false);
+        let parent_collapsed = v.file_system.get_parent_id(*id)
+            .and_then(|p_id| v.collapsed.get(&p_id).copied())
+            .unwrap_or(false);
+        (collapsed, parent_collapsed)
     };
 
-    // --- Left Column (Folder 1) ---
-    row.col(|ui| {
-        render_diff_side(ui, file_system_1_view.as_deref(), first_node_id, entry.depth, entry.is_dir, is_collapsed, row_height, ||{
-            on_row_item_clicked(
-                file_system_1_view.as_deref(),
-                file_system_2_view.as_deref(),
-                entry,
-                diff_tool_config,
-            );
-        }, ||{should_toggle_row = true});
-    });
-    // --- Middle Column (Diff Status) ---
-    row.col(|ui| {
-        ui.horizontal(|ui| {
-            ui_custom_diff_state(ui, &entry.diff_state);
-        });
-    });
-    // --- Right Column (Folder 2) ---
-    row.col(|ui| {
-        render_diff_side(ui, file_system_2_view.as_deref(), second_node_id, entry.depth, entry.is_dir, is_collapsed, row_height, ||{
-            on_row_item_clicked(
-                file_system_1_view.as_deref(),
-                file_system_2_view.as_deref(),
-                entry,
-                diff_tool_config,
-            );
-        }, ||{should_toggle_row = true});
-    });
+    let (is_collapsed, is_parent_collapsed) = match (&file_system_1_view, &file_system_2_view, &first_node_id, &second_node_id) {
+            (Some(v1), Some(v2), Some(id1), Some(id2)) => {
+                let (c1, _) = get_collapsed_state(v1, id1);
+                let (c2, _) = get_collapsed_state(v2, id2);
+                (c1 || c2, false)
+            }
+            (Some(v), _, Some(id1), _) => get_collapsed_state(v, id1),
+            (_, Some(v), _, Some(id2)) => get_collapsed_state(v, id2),
+            _ => panic!("unreachable"),
+        };
 
-    if should_toggle_row {
-        if let Some(first) = &entry.diff_state.first()
-        {
-            if let Some(view) = file_system_1_view.as_mut() {
-                {
-                    view.toggle_collapse(*first);
+    if !is_parent_collapsed
+    {
+        // --- Left Column (Folder 1) ---
+        row.col(|ui| {
+            render_diff_side(ui, file_system_1_view.as_deref(), first_node_id, entry.depth, entry.is_dir, is_collapsed, row_height, ||{
+                on_row_item_clicked(
+                    file_system_1_view.as_deref(),
+                    file_system_2_view.as_deref(),
+                    entry,
+                    diff_tool_config,
+                );
+            }, ||{should_toggle_row = true});
+        });
+        // --- Middle Column (Diff Status) ---
+        row.col(|ui| {
+            ui.horizontal(|ui| {
+                ui_custom_diff_state(ui, &entry.diff_state);
+            });
+        });
+        // --- Right Column (Folder 2) ---
+        row.col(|ui| {
+            render_diff_side(ui, file_system_2_view.as_deref(), second_node_id, entry.depth, entry.is_dir, is_collapsed, row_height, ||{
+                on_row_item_clicked(
+                    file_system_1_view.as_deref(),
+                    file_system_2_view.as_deref(),
+                    entry,
+                    diff_tool_config,
+                );
+            }, ||{should_toggle_row = true});
+        });
+
+        if should_toggle_row {
+            if let Some(first) = &entry.diff_state.first()
+            {
+                if let Some(view) = file_system_1_view.as_mut() {
+                    {
+                        view.toggle_collapse(*first);
+                    }
                 }
             }
-        }
-        if let Some(second) = &entry.diff_state.second()
-        {
-            if let Some(view) = file_system_2_view.as_mut()
+            if let Some(second) = &entry.diff_state.second()
             {
-                view.toggle_collapse(*second);
+                if let Some(view) = file_system_2_view.as_mut()
+                {
+                    view.toggle_collapse(*second);
+                }
             }
         }
     }
