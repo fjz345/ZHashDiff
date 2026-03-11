@@ -52,7 +52,7 @@ where
     trace
 }
 
-pub fn backtrack(trace: Vec<Vec<i32>>, source_len: i32, target_len: i32) -> Vec<(i32, i32)> {
+pub fn myers_backtrack(trace: Vec<Vec<i32>>, source_len: i32, target_len: i32) -> Vec<(i32, i32)> {
     let mut path = Vec::new();
     let mut x = source_len;
     let mut y = target_len;
@@ -85,4 +85,21 @@ pub fn backtrack(trace: Vec<Vec<i32>>, source_len: i32, target_len: i32) -> Vec<
 
     path.reverse();
     path
+}
+
+pub fn myers_count_add_deletes(diff_path: &[(i32, i32)]) -> (u32, u32) {
+    let mut adds = 0;
+    let mut deletes = 0;
+
+    for window in diff_path.windows(2) {
+        let dx = window[1].0 - window[0].0;
+        let dy = window[1].1 - window[0].1;
+
+        if dx > 0 && dy == 0 {
+            deletes += 1; // Horizontal = Source consumed = Deletion
+        } else if dy > 0 && dx == 0 {
+            adds += 1;    // Vertical = Target consumed = Addition
+        }
+    }
+    (adds, deletes)
 }

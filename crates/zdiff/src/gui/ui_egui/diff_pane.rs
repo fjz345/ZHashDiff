@@ -127,7 +127,7 @@ impl FileDiffPane {
                     .header(20.0, |mut header| {
                         header.col(|ui| { ui.strong(ctx.path_1.unwrap().display().to_string()); });
                         header.col(|_| {});
-                        header.col(|ui| { ui.strong(ctx.path_1.unwrap().display().to_string()); });
+                        header.col(|ui| { ui.strong(ctx.path_2.unwrap().display().to_string()); });
                     })
                     .body(|body| {
                         let widths = body.widths().to_vec();

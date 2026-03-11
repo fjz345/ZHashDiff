@@ -1,6 +1,6 @@
 use eframe::egui::{self, Layout, PointerButton};
 use serde::{Deserialize, Serialize};
-use zdiff::{lexer::{Lexer, RawToken, TokenKind}, myers::{backtrack, myers_diff_trace}, read_file_contents};
+use zdiff::{lexer::{Lexer, RawToken, TokenKind}, myers::{myers_backtrack, myers_count_add_deletes, myers_diff_trace}, read_file_contents};
 use std::{
     env, path::PathBuf
 };
@@ -27,6 +27,8 @@ pub struct AppStateCtx {
     // Myers
     #[serde(skip)]
     pub diff_rows: Option<Vec<DiffRow>>,
+    #[serde(skip)]
+    pub num_add_deletes: Option<(u32, u32)>,
     #[serde(skip)]
     pub tokens_1: Option<Vec<RawToken>>,
     #[serde(skip)]
@@ -230,8 +232,11 @@ impl ZApp {
                     if let Tile::Pane(Pane::FileDiff(..)) = tile {
                         let source = app_ctx.file_1_path.as_ref().map_or_else(|| "N/A", |p| p.to_str().unwrap_or_default());
                         let target = app_ctx.file_2_path.as_ref().map_or_else(|| "N/A", |p| p.to_str().unwrap_or_default());
+                        let total_adds = app_ctx.num_add_deletes.unwrap_or_default().0;
+                        let total_deletes = app_ctx.num_add_deletes.unwrap_or_default().1;
                         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-                            "zdiff - {0}, {1}",
+                            "zdiff [+{}/-{}] - {}, {}",
+                            total_adds, total_deletes,
                             source,
                             target
                         )));
@@ -291,7 +296,8 @@ impl ZApp {
         };
 
         let trace = myers_diff_trace(&tokens_1, &tokens_2, cmp);
-        let diff_path = backtrack(trace, tokens_1.len() as i32, tokens_2.len() as i32);
+        let diff_path = myers_backtrack(trace, tokens_1.len() as i32, tokens_2.len() as i32);
+        app_ctx.num_add_deletes = Some(myers_count_add_deletes(&diff_path));
         app_ctx.diff_rows = Some(build_diff_rows(&diff_path, tokens_1, tokens_2, &lexer_1, &lexer_2, &app_ctx.diff_option));
     }
 }

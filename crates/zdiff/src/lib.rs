@@ -561,7 +561,7 @@ fn test_files_advanced() {
     
 
     // Myers tests
-    use crate::myers::{backtrack, myers_diff, myers_diff_trace};
+    use crate::myers::{myers_backtrack, myers_diff, myers_diff_trace};
     fn distance_from_path(path: &[(i32, i32)]) -> usize {
         if path.is_empty() { return 0; }
         path.windows(2)
@@ -581,7 +581,7 @@ fn test_files_advanced() {
 
         let dist = myers_diff(&a, &b, cmp);
         let trace = myers_diff_trace(&a, &b, cmp);
-        let path = backtrack(trace, a.len() as i32, b.len() as i32);
+        let path = myers_backtrack(trace, a.len() as i32, b.len() as i32);
 
         assert_eq!(dist, 0);
         assert_eq!(distance_from_path(&path), 0);
@@ -617,7 +617,7 @@ fn test_files_advanced() {
 
         let dist = myers_diff(&a, &b, cmp);
         let trace = myers_diff_trace(&a, &b, cmp);
-        let path = backtrack(trace, a.len() as i32, b.len() as i32);
+        let path = myers_backtrack(trace, a.len() as i32, b.len() as i32);
 
         assert_eq!(dist, 5); 
         assert_eq!(distance_from_path(&path), 5);
@@ -630,7 +630,7 @@ fn test_files_advanced() {
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
         let trace = myers_diff_trace(&a, &b, cmp);
-        let path = backtrack(trace, a.len() as i32, b.len() as i32);
+        let path = myers_backtrack(trace, a.len() as i32, b.len() as i32);
 
         // Distance should be 2 (Delete main, Insert main2)
         assert_eq!(distance_from_path(&path), 2);
@@ -646,7 +646,7 @@ fn test_files_advanced() {
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
         let trace = myers_diff_trace(&a, &b, cmp);
-        let path = backtrack(trace, a.len() as i32, b.len() as i32);
+        let path = myers_backtrack(trace, a.len() as i32, b.len() as i32);
 
         // Verify every step in the path is valid (Right, Down, or Diagonal)
         for w in path.windows(2) {
