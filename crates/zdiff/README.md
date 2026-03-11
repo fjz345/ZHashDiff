@@ -10,6 +10,7 @@ Library and Gui for diffing file contents
 * Derp
 
 ## Todo
+* Allow row building with 1 file opened
 * image file diff
 * user defined comparison per file format
 * fix better toggle different visualization view modes code

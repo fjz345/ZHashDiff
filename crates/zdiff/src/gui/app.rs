@@ -210,6 +210,8 @@ impl ZApp {
                 let diff_options_before  = app_ctx.diff_option.clone();
                 let mut behavior = TreeBehavior {
                     ctx_file_diff: FileDiffPaneCtx {
+                        path_1: app_ctx.file_1_path.as_ref(),
+                        path_2: app_ctx.file_2_path.as_ref(),
                         diff_rows: app_ctx.diff_rows.as_ref(),
                         tokens_1: app_ctx.tokens_1.as_ref(),
                         tokens_2: app_ctx.tokens_2.as_ref(),
@@ -226,10 +228,12 @@ impl ZApp {
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::FileDiff(..)) = tile {
+                        let source = app_ctx.file_1_path.as_ref().map_or_else(|| "N/A", |p| p.to_str().unwrap_or_default());
+                        let target = app_ctx.file_2_path.as_ref().map_or_else(|| "N/A", |p| p.to_str().unwrap_or_default());
                         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
                             "zdiff - {0}, {1}",
-                            app_ctx.file_1_path.as_ref().map_or_else(|| "N/A", |p| p.file_name().unwrap_or_default().to_str().unwrap_or_default()),
-                            app_ctx.file_2_path.as_ref().map_or_else(|| "N/A", |p| p.file_name().unwrap_or_default().to_str().unwrap_or_default()),
+                            source,
+                            target
                         )));
                         break;
                     }

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use eframe::egui::{self, UiBuilder};
 use serde::{Deserialize, Serialize};
 use zdiff::lexer::{Lexer, RawToken, TokenKind};
@@ -22,6 +24,8 @@ impl Default for FileDiffPaneOptions {
 }
 
 pub struct FileDiffPaneCtx<'a> {
+    pub path_1: Option<&'a PathBuf>,
+    pub path_2: Option<&'a PathBuf>,
     pub diff_rows: Option<&'a Vec<DiffRow>>,
     pub tokens_1: Option<&'a Vec<RawToken>>,
     pub tokens_2: Option<&'a Vec<RawToken>>,
@@ -121,9 +125,9 @@ impl FileDiffPane {
                     .column(Column::exact(12.0)) // "≠"
                     .column(Column::remainder().clip(true))
                     .header(20.0, |mut header| {
-                        header.col(|ui| { ui.strong("Source"); });
+                        header.col(|ui| { ui.strong(ctx.path_1.unwrap().display().to_string()); });
                         header.col(|_| {});
-                        header.col(|ui| { ui.strong("Target"); });
+                        header.col(|ui| { ui.strong(ctx.path_1.unwrap().display().to_string()); });
                     })
                     .body(|body| {
                         let widths = body.widths().to_vec();
