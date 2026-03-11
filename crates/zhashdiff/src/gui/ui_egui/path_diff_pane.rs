@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use zhashdiff::{external_diff_tool::DiffToolConfig, fs::FileSystemModel};
 
 use crate::ui_egui::{
-    fs_tree::{FileSystemView, draw_ui_two_folder_tree_with_diff},
+    fs_tree::{DiffState, FileSystemView, draw_ui_two_folder_tree_with_diff},
     panes::{PathDiffView, ZAppPane},
 };
 
@@ -44,41 +44,48 @@ impl PathDiffPane {
 
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut PathDiffPaneCtx) -> egui_tiles::UiResponse {
         ui.horizontal(|ui| {
-            let text_expand_all = "Expand All";
-            let text_collapse_all = "Collapse All";
-            match (&mut ctx.path_diff_view.file_system_1_view, &mut ctx.path_diff_view.file_system_2_view) 
-            {
-                (None, None) => {
-                    let _ = ui.button(text_collapse_all);
-                },
-                (None, Some(fs_view)) | (Some(fs_view), None)  => {
-                    let nodes_considered_for_collapse = &fs_view.file_system.get_root().children().unwrap().clone();
-                    let is_anything_collapsed = fs_view.is_anything_collapsed_slice(nodes_considered_for_collapse);
-                    let button_text = if is_anything_collapsed {
-                        text_expand_all
-                    } else {
-                        text_collapse_all
-                    };
+            let views = [
+                ctx.path_diff_view.file_system_1_view.as_mut(),
+                ctx.path_diff_view.file_system_2_view.as_mut(),
+            ];
 
-                    if ui.button(button_text).clicked() {
-                        fs_view.recursive_collapse_slice(nodes_considered_for_collapse, !is_anything_collapsed);
-                    }
-                },
-                (Some(fs_1_view), Some(fs_2_view)) => {
-                    let nodes_considered_for_collapse_1 = &fs_1_view.file_system.get_root().children().unwrap().clone();
-                    let nodes_considered_for_collapse_2 = &fs_2_view.file_system.get_root().children().unwrap().clone();
-                    let is_anything_collapsed = fs_1_view.is_anything_collapsed_slice(nodes_considered_for_collapse_1) || fs_2_view.is_anything_collapsed_slice(nodes_considered_for_collapse_2);
-                    let button_text = if is_anything_collapsed {
-                        text_expand_all
-                    } else {
-                        text_collapse_all
-                    };
+            let is_anything_collapsed = views.iter().flatten().any(|v| {
+                v.file_system.get_root().children()
+                    .map_or(false, |children| v.is_anything_collapsed_slice(children))
+            });
 
-                    if ui.button(button_text).clicked() {
-                        fs_1_view.recursive_collapse_slice(nodes_considered_for_collapse_1, !is_anything_collapsed);
-                        fs_2_view.recursive_collapse_slice(nodes_considered_for_collapse_2, !is_anything_collapsed);
+            let button_text = if is_anything_collapsed { "Expand All" } else { "Collapse All" };
+
+            if ui.button(button_text).clicked() {
+                for v in views.into_iter().flatten() {
+                    if let Some(children) = v.file_system.get_root().children() {
+                        v.recursive_collapse_slice(&children.clone(), !is_anything_collapsed);
                     }
-                },
+                }
+            }
+            
+            if ui.button("Expand Diffs Only").clicked() {
+                let views = [
+                    ctx.path_diff_view.file_system_1_view.as_mut(),
+                    ctx.path_diff_view.file_system_2_view.as_mut(),
+                ];
+                for v in views.into_iter().flatten() {
+                    if let Some(children) = v.file_system.get_root().children() {
+                        v.recursive_collapse_slice(&children.clone(), false);
+                    }
+                }
+                if let Some(rows) = ctx.path_diff_view.visible_rows.as_ref() {
+                    for row in rows {
+                        if let DiffState::Same(id1, id2) = row.diff_state {
+                            if let Some(v1) = ctx.path_diff_view.file_system_1_view.as_mut() {
+                                v1.collapsed.insert(id1, true);
+                            }
+                            if let Some(v2) = ctx.path_diff_view.file_system_2_view.as_mut() {
+                                v2.collapsed.insert(id2, true);
+                            }
+                        }
+                    }
+                }
             }
         });
 

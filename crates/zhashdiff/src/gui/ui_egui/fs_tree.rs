@@ -25,9 +25,9 @@ pub struct FileSystemView {
 
 #[derive(Debug)]
 pub struct VisibleRowTwoFolderDiff {
-    is_dir: bool,
-    depth: FsNodeDepth,
-    diff_state: DiffState,
+    pub is_dir: bool,
+    pub depth: FsNodeDepth,
+    pub diff_state: DiffState,
 }
 
 #[derive(Debug)]
