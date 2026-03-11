@@ -447,32 +447,31 @@ impl eframe::App for ZApp {
                         .map_or(true, |v| v.file_system.get_root().as_path().as_ref() != path);
                     if needs_reload {
                         state.file_system_model_1_view = Some(FileSystemView::new(Arc::new(FileSystemModel::new(path))));
+                        state.two_folder_diff_visible_rows = None;
                     }
                 }
                 else{
                     state.file_system_model_1_view = None;
+                    state.two_folder_diff_visible_rows = None;
                 }
                 if let Some(path) = &state.file_system_2_root_path {
                     let needs_reload = state.file_system_model_2_view.as_ref()
                         .map_or(true, |v| v.file_system.get_root().as_path().as_ref() != path);
                     if needs_reload {
                         state.file_system_model_2_view = Some(FileSystemView::new(Arc::new(FileSystemModel::new(path))));
+                        state.two_folder_diff_visible_rows = None;
                     }
                 }
                 else{
                     state.file_system_model_2_view = None;
-                }
-                if state.file_system_model_1_view.is_none() || state.file_system_model_2_view.is_none()
-                {
                     state.two_folder_diff_visible_rows = None;
                 }
-
-                if state.two_folder_diff_visible_rows.is_none()
+                if state.two_folder_diff_visible_rows.is_none() && (state.file_system_model_1_view.is_some() || state.file_system_model_2_view.is_some())
                 {
                     state.two_folder_diff_visible_rows = FileSystemView::build_two_folder_diff_rows(
-                    state.file_system_model_1_view.as_ref(),
-                    state.file_system_model_2_view.as_ref(),
-                    &PathComparissonMethod::CrC).ok();
+                        state.file_system_model_1_view.as_ref(),
+                        state.file_system_model_2_view.as_ref(),
+                        &PathComparissonMethod::CrC).ok();
                 }
                 
                 self.ui(ctx, frame, &mut state);

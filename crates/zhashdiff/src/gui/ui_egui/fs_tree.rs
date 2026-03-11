@@ -155,32 +155,10 @@ impl FileSystemView {
         let initial_capacity = num_files_and_folders_1.max(num_files_and_folders_2);
         let mut out_rows = Vec::with_capacity(initial_capacity);
 
-        let mut skip_below_depth: Option<FsNodeDepth> = None;
         for (rel_path, (left, right)) in &entries_map {
             let depth = left.map(|l| l.2).or(right.map(|r| r.2)).unwrap_or(0);
 
-            if let Some(limit) = skip_below_depth {
-                if depth > limit { continue; } 
-                else { skip_below_depth = None; }
-            }
-
             let is_dir = left.map(|l| l.1.is_dir()).or(right.map(|r| r.1.is_dir())).unwrap_or(false);
-
-            if is_dir {
-                let c1 = left.and_then(|(id, _, _)| file_system_1.map(|v| v.collapsed.contains_key(&id)));
-                let c2 = right.and_then(|(id, _, _)| file_system_2.map(|v| v.collapsed.contains_key(&id)));
-
-                // Important! - only count as collapsed if both sides are collapsed
-                let is_collapsed = match (c1, c2) {
-                    (Some(v1), Some(v2)) => v1 && v2,
-                    (Some(v), None) | (None, Some(v)) => v,
-                    _ => false,
-                };
-
-                if is_collapsed {
-                    skip_below_depth = Some(depth);
-                }
-            }
 
             let diff_state = match (left, right) {
                 (Some((l_id, l_node, _)), Some((r_id, r_node, _))) => {
@@ -1142,63 +1120,79 @@ fn render_row_folder_tree_diff_column(
         (collapsed, parent_collapsed)
     };
 
-    let (is_collapsed, is_parent_collapsed) = match (&file_system_1_view, &file_system_2_view, &first_node_id, &second_node_id) {
-            (Some(v1), Some(v2), Some(id1), Some(id2)) => {
-                let (c1, _) = get_collapsed_state(v1, id1);
-                let (c2, _) = get_collapsed_state(v2, id2);
-                (c1 || c2, false)
-            }
-            (Some(v), _, Some(id1), _) => get_collapsed_state(v, id1),
-            (_, Some(v), _, Some(id2)) => get_collapsed_state(v, id2),
-            _ => panic!("unreachable"),
-        };
+    // Destructure into specific options for each view's state
+    let (state1, state2) = match (&file_system_1_view, &file_system_2_view, &first_node_id, &second_node_id) {
+        (Some(v1), Some(v2), Some(id1), Some(id2)) => {
+            (Some(get_collapsed_state(v1, id1)), Some(get_collapsed_state(v2, id2)))
+        }
+        (Some(v), _, Some(id1), _) => {
+            (Some(get_collapsed_state(v, id1)), None)
+        }
+        (_, Some(v), _, Some(id2)) => {
+            (None, Some(get_collapsed_state(v, id2)))
+        }
+        _ => panic!("unreachable"),
+    };
 
-    if !is_parent_collapsed
+    let is_collapsed_1 = state1.and_then(|f|Some(f.0)).unwrap_or(false);
+    let is_parent_collapsed_1 = state1.and_then(|f|Some(f.1)).unwrap_or(false);
+    let is_collapsed_2 = state2.and_then(|f|Some(f.0)).unwrap_or(false);
+    let is_parent_collapsed_2 = state2.and_then(|f|Some(f.1)).unwrap_or(false);
+    // If both parets are collapsed or invalid, hide the whole row (skip index)
+    let hide_row = (is_parent_collapsed_1 || state1.is_none()) && (is_parent_collapsed_2 || state2.is_none());
+    // --- Left Column (Folder 1) ---
+    if !hide_row
     {
-        // --- Left Column (Folder 1) ---
-        row.col(|ui| {
-            render_diff_side(ui, file_system_1_view.as_deref(), first_node_id, entry.depth, entry.is_dir, is_collapsed, row_height, ||{
-                on_row_item_clicked(
-                    file_system_1_view.as_deref(),
-                    file_system_2_view.as_deref(),
-                    entry,
-                    diff_tool_config,
-                );
-            }, ||{should_toggle_row = true});
-        });
-        // --- Middle Column (Diff Status) ---
-        row.col(|ui| {
-            ui.horizontal(|ui| {
-                ui_custom_diff_state(ui, &entry.diff_state);
+        if !is_parent_collapsed_1
+        {
+            row.col(|ui| {
+                render_diff_side(ui, file_system_1_view.as_deref(), first_node_id, entry.depth, entry.is_dir, is_collapsed_1, row_height, ||{
+                    on_row_item_clicked(
+                        file_system_1_view.as_deref(),
+                        file_system_2_view.as_deref(),
+                        entry,
+                        diff_tool_config,
+                    );
+                }, ||{should_toggle_row = true});
             });
-        });
+        }
+        // --- Middle Column (Diff Status) ---
+        if (!is_parent_collapsed_1 && !is_parent_collapsed_2)
+        {
+            row.col(|ui| {
+                ui.horizontal(|ui| {
+                    ui_custom_diff_state(ui, &entry.diff_state);
+                });
+            });
+        }
         // --- Right Column (Folder 2) ---
-        row.col(|ui| {
-            render_diff_side(ui, file_system_2_view.as_deref(), second_node_id, entry.depth, entry.is_dir, is_collapsed, row_height, ||{
-                on_row_item_clicked(
-                    file_system_1_view.as_deref(),
-                    file_system_2_view.as_deref(),
-                    entry,
-                    diff_tool_config,
-                );
-            }, ||{should_toggle_row = true});
-        });
+        if !is_parent_collapsed_2
+        {
+            row.col(|ui| {
+                render_diff_side(ui, file_system_2_view.as_deref(), second_node_id, entry.depth, entry.is_dir, is_collapsed_2, row_height, ||{
+                    on_row_item_clicked(
+                        file_system_1_view.as_deref(),
+                        file_system_2_view.as_deref(),
+                        entry,
+                        diff_tool_config,
+                    );
+                }, ||{should_toggle_row = true});
+            });
+        }
+    }
 
-        if should_toggle_row {
-            if let Some(first) = &entry.diff_state.first()
-            {
-                if let Some(view) = file_system_1_view.as_mut() {
-                    {
-                        view.toggle_collapse(*first);
-                    }
-                }
+    if should_toggle_row {
+        if let Some(first) = &entry.diff_state.first()
+        {
+            if let Some(view) = file_system_1_view.as_mut() {
+                view.toggle_collapse(*first);
             }
-            if let Some(second) = &entry.diff_state.second()
+        }
+        if let Some(second) = &entry.diff_state.second()
+        {
+            if let Some(view) = file_system_2_view.as_mut()
             {
-                if let Some(view) = file_system_2_view.as_mut()
-                {
-                    view.toggle_collapse(*second);
-                }
+                view.toggle_collapse(*second);
             }
         }
     }
