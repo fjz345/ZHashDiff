@@ -92,6 +92,7 @@ impl PathDiffPane {
                     ui,
                     &mut ctx.path_diff_view.file_system_1_view,
                     &mut ctx.path_diff_view.file_system_2_view,
+                    &mut ctx.path_diff_view.visible_rows,
                     &mut self.open_dir_window_1,
                     &mut self.open_dir_window_2,
                     &ctx.diff_tool_config,

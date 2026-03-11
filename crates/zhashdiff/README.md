@@ -9,6 +9,13 @@ Tool I created in order to resolve and delete duplicated files with different fi
 * Tree folder diff view
 * Detect & remove duplicate files
 
-# Duplicate file diff:
+# Todo
+* Fix performance
+* Show paths in title
+* Add filter for Filter for whitelist/blacklist (folder, files & extension)
+* Add collapse/expand diff
+* Some PCs egui becomes white after first launch
+
+## Duplicate file diff:
 * conflicts found window, highlight current selection
 * Allow restoring of resolved files (maybe mark file names as red?)

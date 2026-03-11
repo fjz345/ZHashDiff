@@ -701,6 +701,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     ui: &mut egui::Ui,
     file_system_1_view: &mut Option<FileSystemView>,
     file_system_2_view: &mut Option<FileSystemView>,
+    visible_rows: &mut Option<Vec<VisibleRowTwoFolderDiff>>,
     open_dir_window_1: &mut bool,
     open_dir_window_2: &mut bool,
     diff_tool_config: &DiffToolConfig,
@@ -729,11 +730,8 @@ pub fn draw_ui_two_folder_tree_with_diff(
             })
             .response;
     }
-    let visible_rows = FileSystemView::build_two_folder_diff_rows(
-        file_system_1_view.as_ref(),
-        file_system_2_view.as_ref(),
-        &PathComparissonMethod::CrC,
-    ).expect("Failed");
+
+    let visible_rows = visible_rows.as_ref().unwrap();
 
     let row_count = visible_rows.len();
     let available_height = ui.available_height();

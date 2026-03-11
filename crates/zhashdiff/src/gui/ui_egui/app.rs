@@ -6,14 +6,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 use zhashdiff::{
-    external_diff_tool::{DiffToolConfig, DiffToolDefaultArgs},
-    fs::{FileSystemModel},
-    hash::HashService,
+    comparison::PathComparissonMethod, external_diff_tool::{DiffToolConfig, DiffToolDefaultArgs}, fs::FileSystemModel, hash::HashService
 };
 
 use crate::ui_egui::{
     duplicate_files_pane::DuplicateFilesPane,
-    fs_tree::FileSystemView,
+    fs_tree::{FileSystemView, VisibleRowTwoFolderDiff},
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::PathDiffPane,
     popup::show_custom_popup,
@@ -34,6 +32,8 @@ pub struct AppStateCtx {
     pub file_system_model_1_view: Option<FileSystemView>,
     #[serde(skip)]
     pub file_system_model_2_view: Option<FileSystemView>,
+    #[serde(skip)]
+    two_folder_diff_visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -261,6 +261,7 @@ impl ZApp {
                     file_system_2_view: &mut app_ctx.file_system_model_2_view,
                     file_system_1_root_path: &mut app_ctx.file_system_1_root_path,
                     file_system_2_root_path: &mut app_ctx.file_system_2_root_path,
+                    visible_rows: &mut app_ctx.two_folder_diff_visible_rows,
                 };
                 let mut behavior = TreeBehavior {
                     log_buffer: self.log_buffer.clone(),
@@ -447,7 +448,19 @@ impl eframe::App for ZApp {
                 else{
                     state.file_system_model_2_view = None;
                 }
+                if state.file_system_model_1_view.is_none() || state.file_system_model_2_view.is_none()
+                {
+                    state.two_folder_diff_visible_rows = None;
+                }
 
+                if state.two_folder_diff_visible_rows.is_none()
+                {
+                    state.two_folder_diff_visible_rows = FileSystemView::build_two_folder_diff_rows(
+                    state.file_system_model_1_view.as_ref(),
+                    state.file_system_model_2_view.as_ref(),
+                    &PathComparissonMethod::CrC).ok();
+                }
+                
                 self.ui(ctx, frame, &mut state);
                 
                 self.process_ctx_inputs(ctx, frame);

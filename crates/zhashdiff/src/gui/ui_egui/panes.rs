@@ -12,7 +12,7 @@ use crate::{
     logger::ui_log_window,
     ui_egui::{
         duplicate_files_pane::{DuplicateFilesPane, DuplicateFilesPaneCtx},
-        fs_tree::FileSystemView,
+        fs_tree::{FileSystemView, VisibleRowTwoFolderDiff},
         path_diff_pane::{PathDiffPane, PathDiffPaneCtx},
     },
 };
@@ -22,6 +22,7 @@ pub struct PathDiffView<'a> {
     pub file_system_2_root_path: &'a mut Option<PathBuf>,
     pub file_system_1_view: &'a mut Option<FileSystemView>,
     pub file_system_2_view: &'a mut Option<FileSystemView>,
+    pub visible_rows: &'a mut Option<Vec<VisibleRowTwoFolderDiff>>,
 }
 
 pub struct TreeBehavior<'a, 'b> {

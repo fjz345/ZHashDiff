@@ -12,8 +12,13 @@ Library and Gui for diffing file contents
 ## Todo
 * image file diff
 * user defined comparison per file format
-* buttons to toggle different visualization view modes
-    - ignore whitespace
-    - highlight rows
-    - ghost rows
-    - keyword highlight
+* fix better toggle different visualization view modes code
+* go to prev/next diff buttons
+* toggle only diffs
+* add horizontal scroll bar
+* add paths in title
+* add paths instead of "Source" and "Target"
+* add drag and drop for source & target (same as zhashdiff)
+* search functionallity
+* display num adds/deletes
+* hex diff/binary diff

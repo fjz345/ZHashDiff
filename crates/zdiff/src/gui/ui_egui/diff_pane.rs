@@ -435,7 +435,7 @@ fn test_build_diff_rows_ignore_whitespace() {
         keyword_highlight: true,
         highlight_rows: true,
         ghost_rows: true,
-        ignore_whitespace: true, // ENABLED
+        ignore_whitespace: true,
     };
 
     let rows = build_diff_rows(&path, &t1, &t2, &lex1, &lex2, &options);
