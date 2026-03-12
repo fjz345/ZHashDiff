@@ -447,8 +447,14 @@ impl eframe::App for ZApp {
                     let needs_reload = state.file_system_model_1_view.as_ref()
                         .map_or(true, |v| v.file_system.get_root().as_path().as_ref() != path);
                     if needs_reload {
-                        state.file_system_model_1_view = Some(FileSystemView::new(Arc::new(FileSystemModel::new(path))));
-                        state.two_folder_diff_visible_rows = None;
+                        match FileSystemModel::new(path)
+                        {
+                            Ok(new_model) => {
+                                state.file_system_model_1_view = Some(FileSystemView::new(Arc::new(new_model)));
+                                state.two_folder_diff_visible_rows = None;
+                            },
+                            Err(e) => {log::error!("{e}"); state.file_system_1_root_path = None; },
+                        }
                     }
                 }
                 else{
@@ -459,8 +465,14 @@ impl eframe::App for ZApp {
                     let needs_reload = state.file_system_model_2_view.as_ref()
                         .map_or(true, |v| v.file_system.get_root().as_path().as_ref() != path);
                     if needs_reload {
-                        state.file_system_model_2_view = Some(FileSystemView::new(Arc::new(FileSystemModel::new(path))));
-                        state.two_folder_diff_visible_rows = None;
+                        match FileSystemModel::new(path)
+                        {
+                            Ok(new_model) => {
+                                state.file_system_model_2_view = Some(FileSystemView::new(Arc::new(new_model)));
+                                state.two_folder_diff_visible_rows = None;
+                            },
+                            Err(e) => {log::error!("{e}"); state.file_system_2_root_path = None; },
+                        }
                     }
                 }
                 else{

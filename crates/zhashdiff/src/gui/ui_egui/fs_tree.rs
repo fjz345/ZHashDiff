@@ -458,7 +458,7 @@ mod tests {
                 }
             }
 
-            let model = FileSystemModel::new(root_path);
+            let model = FileSystemModel::new(root_path).expect("failed to create FileSystemModel");
             let mut view = FileSystemView {
                 file_system: Arc::new(model),
                 collapsed: HashMap::new(),
@@ -651,7 +651,7 @@ mod tests {
     }
 
     fn create_view(root: &Path, collapsed_paths: &[&str]) -> FileSystemView {
-        let model = FileSystemModel::new(root);
+        let model = FileSystemModel::new(root).expect("Failed to create FileSystemModel");
         let mut collapsed = HashMap::new();
         for path in collapsed_paths {
             let id = find_id_by_rel_path(&model, root, path);
@@ -872,12 +872,20 @@ fn handle_drops(
             for dropped_file in &i.raw.dropped_files {
                 if let Some(path) = &dropped_file.path {
                     if rect1.contains(drop_pos) {
-                        *fs1_view =
-                            Some(FileSystemView::new(Arc::new(FileSystemModel::new(&path))));
+                        match FileSystemModel::new(&path)
+                        {
+                            Ok(new_model) => *fs1_view =
+                            Some(FileSystemView::new(Arc::new(new_model))),
+                            Err(e) => log::error!("{e}"),
+                        }
                         return true;
                     } else if rect2.contains(drop_pos) {
-                        *fs2_view =
-                            Some(FileSystemView::new(Arc::new(FileSystemModel::new(&path))));
+                        match FileSystemModel::new(&path)
+                        {
+                            Ok(new_model) => *fs2_view =
+                            Some(FileSystemView::new(Arc::new(new_model))),
+                            Err(e) => log::error!("{e}"),
+                        }
                         return true;
                     }
                     break;

@@ -145,8 +145,14 @@ impl DuplicateFilesPane {
             self.open_dir_window = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
                 // ctx.path_diff_view.file_system_1.get_root()_dir_cache.clear();
-                *ctx.path_diff_view.file_system_1_view =
-                    Some(FileSystemView::new(Arc::new(FileSystemModel::new(path))));
+                match FileSystemModel::new(path)
+                {
+                    Ok(new_model) => {
+                        *ctx.path_diff_view.file_system_1_view =
+                        Some(FileSystemView::new(Arc::new(new_model)));
+                    },
+                    Err(e) => log::error!("{e}"),
+                }
             }
         }
 

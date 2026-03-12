@@ -130,8 +130,8 @@ pub struct FileSystemModel {
 }
 
 impl FileSystemModel {
-    pub fn new(root_path: impl AsRef<Path>) -> Self {
-        Self::build_model(root_path).expect("failed to build model")
+    pub fn new(root_path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::build_model(root_path)
     }
 
     pub fn get_node(&self, node_id: FsNodeId) -> Option<&FsNode> {
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn builds_empty_directory() {
         let dir = tempdir().unwrap();
-        let model = FileSystemModel::new(dir.path());
+        let model = FileSystemModel::new(dir.path()).expect("Failed to create FileSystemModel");
 
         let root = model.get_node(0).unwrap();
 
@@ -329,7 +329,7 @@ mod tests {
         create_file(&dir.path().join("a.txt"));
         create_file(&dir.path().join("b.txt"));
 
-        let model = FileSystemModel::new(dir.path());
+        let model = FileSystemModel::new(dir.path()).expect("Failed to create FileSystemModel");;
         let root = model.get_node(0).unwrap();
 
         let children_ids = match &root.kind {
@@ -405,7 +405,7 @@ mod tests {
             current = next;
         }
 
-        let model = FileSystemModel::new(root);
+        let model = FileSystemModel::new(root).expect("Failed to create FileSystemModel");;
 
         (temp, model)
     }
@@ -436,7 +436,7 @@ mod tests {
         fs::create_dir(&sub).unwrap();
         create_file(&sub.join("nested.txt"));
 
-        let model = FileSystemModel::new(dir.path());
+        let model = FileSystemModel::new(dir.path()).expect("Failed to create FileSystemModel");;
 
         let root = model.get_node(0).unwrap();
 
