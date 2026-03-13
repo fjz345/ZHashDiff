@@ -4634,6 +4634,7 @@ dependencies = [
 name = "zdiff"
 version = "0.3.0"
 dependencies = [
+ "blake3",
  "color-backtrace",
  "eframe",
  "egui_extras",

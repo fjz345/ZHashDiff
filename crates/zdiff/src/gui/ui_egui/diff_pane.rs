@@ -2,35 +2,15 @@ use std::path::PathBuf;
 
 use eframe::egui::{self, UiBuilder, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
-use zdiff::lexer::{Lexer, RawToken, TokenKind};
-use crate::ui_egui::panes::ZAppPane;
-
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct FileDiffPaneOptions {
-    pub ignore_whitespace: bool,
-    pub highlight_rows: bool,
-    pub ghost_rows: bool,
-    pub keyword_highlight: bool,
-}
-impl Default for FileDiffPaneOptions {
-    fn default() -> Self {
-        Self {
-            ignore_whitespace: false,
-            highlight_rows: true,
-            ghost_rows: true,
-            keyword_highlight: true,
-        }
-    }
-}
+use zdiff::{diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows }, lexer::{Lexer, RawToken}};
+use crate::{app::DiffCtx, ui_egui::panes::ZAppPane};
 
 pub struct FileDiffPaneCtx<'a> {
     pub path_1: Option<&'a PathBuf>,
     pub path_2: Option<&'a PathBuf>,
-    pub diff_rows: Option<&'a Vec<DiffRow>>,
-    pub tokens_1: Option<&'a Vec<RawToken>>,
-    pub tokens_2: Option<&'a Vec<RawToken>>,
-    pub options: &'a mut FileDiffPaneOptions,
 
+    pub diff_ctx: Option<&'a DiffCtx>,
+    pub diff_options: &'a mut DiffBuilderOptions,
     pub scroll_left: &'a mut f32,
     pub scroll_right: &'a mut f32,
 }
@@ -67,7 +47,10 @@ impl FileDiffPane {
 
         // Currently tokens are only computed when diff_rows is calcualted.
         // This means that match only matches on diff_rows
-        match (&ctx.diff_rows, &ctx.tokens_1, &ctx.tokens_2)
+        let diff_rows = ctx.diff_ctx.as_ref().and_then(|f|Some(&f.diff_rows));
+        let dummy_1: Option<bool> = Some(false);
+        let dummy_2: Option<bool> = Some(false);
+        match (&diff_rows, dummy_1, dummy_2)
         {
             (Some(_), None, None) | (None, None, None) => {
                 ui.centered_and_justified(|ui| { ui.label("Load Source & Target files to see diff."); });
@@ -89,31 +72,31 @@ impl FileDiffPane {
             (Some(_), Some(_), Some(_)) =>  {},
         }
 
-        let rows = ctx.diff_rows.unwrap();
+        let rows = diff_rows.unwrap();
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             let button_size = egui::vec2(24.0, 24.0);
 
             let ws_btn = egui::Button::new(egui::RichText::new("W").strong())
-                .selected(ctx.options.ignore_whitespace);
+                .selected(ctx.diff_options.ignore_whitespace);
             if ui.add_sized(button_size, ws_btn).on_hover_text("Ignore Whitespace").clicked() {
-                ctx.options.ignore_whitespace = !ctx.options.ignore_whitespace;
+                ctx.diff_options.ignore_whitespace = !ctx.diff_options.ignore_whitespace;
             }
             let hl_btn = egui::Button::new(egui::RichText::new("H").strong())
-                .selected(ctx.options.highlight_rows);
+                .selected(ctx.diff_options.highlight_rows);
             if ui.add_sized(button_size, hl_btn).on_hover_text("Highlight Rows").clicked() {
-                ctx.options.highlight_rows = !ctx.options.highlight_rows;
+                ctx.diff_options.highlight_rows = !ctx.diff_options.highlight_rows;
             }
             let gst_btn = egui::Button::new("👻") // Emoji works because of egui's emoji font
-                .selected(ctx.options.ghost_rows);
+                .selected(ctx.diff_options.ghost_rows);
             if ui.add_sized(button_size, gst_btn).on_hover_text("Ghost Rows").clicked() {
-                ctx.options.ghost_rows = !ctx.options.ghost_rows;
+                ctx.diff_options.ghost_rows = !ctx.diff_options.ghost_rows;
             }
             let kw_btn = egui::Button::new(egui::RichText::new("K").strong())
-                .selected(ctx.options.keyword_highlight);
+                .selected(ctx.diff_options.keyword_highlight);
             if ui.add_sized(button_size, kw_btn).on_hover_text("Keyword Highlight").clicked() {
-                ctx.options.keyword_highlight = !ctx.options.keyword_highlight;
+                ctx.diff_options.keyword_highlight = !ctx.diff_options.keyword_highlight;
             }
         });
 
@@ -250,139 +233,6 @@ impl FileDiffPane {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct DiffRow {
-    pub left: LineContent,
-    pub right: LineContent,
-}
-
-#[derive(Debug, Clone)]
-pub enum LineContent {
-    Code {
-        tokens: Vec<(String, egui::Color32)>,
-        line_num: i32,
-        bg: egui::Color32,
-    },
-    Void,
-}
-
-pub fn build_single_file_rows(
-    tokens: &[RawToken],
-    lexer: &Lexer,
-    options: &FileDiffPaneOptions,
-    is_left_side: bool,
-) -> Vec<DiffRow> {
-    let n = tokens.len() as i32;
-    // Create a path that only moves in the direction of the provided file
-    let path: Vec<(i32, i32)> = if is_left_side {
-        (0..=n).map(|i| (i, 0)).collect()
-    } else {
-        (0..=n).map(|i| (0, i)).collect()
-    };
-
-    let empty = Vec::new();
-    let empty_lex = Lexer::new("");
-
-    if is_left_side {
-        build_diff_rows(&path, tokens, &empty, lexer, &empty_lex, options)
-    } else {
-        build_diff_rows(&path, &empty, tokens, &empty_lex, lexer, options)
-    }
-}
-
-pub fn build_diff_rows(
-    path: &[(i32, i32)],
-    t1: &[RawToken],
-    t2: &[RawToken],
-    lex1: &Lexer,
-    lex2: &Lexer,
-    options: &FileDiffPaneOptions,
-) -> Vec<DiffRow> {
-    let mut rows = Vec::new();
-    let (mut left_buf, mut right_buf) = (Vec::new(), Vec::new());
-    let (mut l_num, mut r_num) = (1, 1);
-    let (mut has_del, mut has_ins) = (false, false);
-    let (mut l_started, mut r_started) = (false, false);
-
-    let ghost_color = egui::Color32::from_rgba_unmultiplied(150, 150, 150, 80);
-    let kw_color = egui::Color32::from_rgb(86, 156, 214);
-
-    for window in path.windows(2) {
-        let (x1, y1) = (window[0].0 as usize, window[0].1 as usize);
-        let (x2, y2) = (window[1].0 as usize, window[1].1 as usize);
-
-        if x2 > x1 && y2 > y1 { // MATCH
-            let (tok1, val1) = (&t1[x1], lex1.token_value(&t1[x1]));
-            let (tok2, val2) = (&t2[y1], lex2.token_value(&t2[y1]));
-            
-            let color1 = if options.keyword_highlight && tok1.kind.is_keyword() { kw_color } else { egui::Color32::GRAY };
-            let color2 = if options.keyword_highlight && tok2.kind.is_keyword() { kw_color } else { egui::Color32::GRAY };
-
-            left_buf.push((val1.to_string(), color1));
-            right_buf.push((val2.to_string(), color2));
-
-            if tok1.kind != TokenKind::Whitespace && tok1.kind != TokenKind::Newline { l_started = true; }
-            if tok2.kind != TokenKind::Whitespace && tok2.kind != TokenKind::Newline { r_started = true; }
-
-            if tok1.kind == TokenKind::Newline {
-                rows.push(flush_row(&mut left_buf, &mut right_buf, l_num, r_num, has_del && options.highlight_rows, has_ins && options.highlight_rows));
-                l_num += 1; r_num += 1;
-                has_del = false; has_ins = false; l_started = false; r_started = false;
-            }
-        } else { // DIFF
-            let is_del = x2 > x1;
-            let (tok, lex) = if is_del { (&t1[x1], lex1) } else { (&t2[y1], lex2) };
-            let val = lex.token_value(tok);
-            let is_ws = tok.kind == TokenKind::Whitespace || tok.kind == TokenKind::Newline;
-
-            if !options.ignore_whitespace || !is_ws {
-                if is_del { has_del = true; } else { has_ins = true; }
-            }
-
-            let color = if is_del { egui::Color32::from_rgb(255, 100, 100) } else { egui::Color32::from_rgb(100, 255, 100) };
-
-            if is_del {
-                left_buf.push((val.to_string(), color));
-                if tok.kind == TokenKind::Newline || (tok.kind == TokenKind::Whitespace && !r_started) || options.ghost_rows {
-                    let g_color = if is_ws && !r_started { egui::Color32::TRANSPARENT } else { ghost_color };
-                    right_buf.push((val.to_string(), g_color));
-                }
-                if !is_ws { l_started = true; }
-            } else {
-                right_buf.push((val.to_string(), color));
-                if tok.kind == TokenKind::Newline || (tok.kind == TokenKind::Whitespace && !l_started) || options.ghost_rows {
-                    let g_color = if is_ws && !l_started { egui::Color32::TRANSPARENT } else { ghost_color };
-                    left_buf.push((val.to_string(), g_color));
-                }
-                if !is_ws { r_started = true; }
-            }
-
-            if tok.kind == TokenKind::Newline {
-                let (ln, rn) = if is_del { (l_num, 0) } else { (0, r_num) };
-                
-                rows.push(flush_row(&mut left_buf, &mut right_buf, ln, rn, has_del && options.highlight_rows, has_ins && options.highlight_rows));
-                
-                if is_del { l_num += 1; } else { r_num += 1; }
-                
-                has_del = false; has_ins = false; l_started = false; r_started = false;
-            }
-        }
-    }
-    rows
-}
-
-fn flush_row(l: &mut Vec<(String, egui::Color32)>, r: &mut Vec<(String, egui::Color32)>, ln: i32, rn: i32, is_del: bool, is_ins: bool) -> DiffRow {
-    let make_line = |buf: &mut Vec<(String, egui::Color32)>, num, bg| {
-        if buf.is_empty() { LineContent::Void } 
-        else { LineContent::Code { tokens: buf.drain(..).collect(), line_num: num, bg } }
-    };
-
-    DiffRow {
-        left: make_line(l, ln, if is_del { egui::Color32::from_rgba_unmultiplied(255, 0, 0, 20) } else { egui::Color32::TRANSPARENT }),
-        right: make_line(r, rn, if is_ins { egui::Color32::from_rgba_unmultiplied(0, 255, 0, 20) } else { egui::Color32::TRANSPARENT }),
-    }
-}
-
 #[test]
 fn test_build_diff_rows_header_edit() {
     let s1 = "\t#define hello_there\n\t// Comment\n";
@@ -401,7 +251,7 @@ fn test_build_diff_rows_header_edit() {
         (3, 3), (4, 4), (5, 5), (6, 6),
     ];
 
-    let options = FileDiffPaneOptions {
+    let options = DiffBuilderOptions {
         keyword_highlight: true,
         highlight_rows: true,
         ghost_rows: false,
@@ -448,7 +298,7 @@ fn test_build_diff_rows_ghost_enabled() {
         (3, 1), (4, 2), // Match "match", "\n"
     ];
 
-    let options = FileDiffPaneOptions {
+    let options = DiffBuilderOptions {
         keyword_highlight: true,
         highlight_rows: true,
         ghost_rows: true,
@@ -502,7 +352,7 @@ fn test_build_diff_rows_ignore_whitespace() {
         (2, 5), // Match "\n"
     ];
 
-    let options = FileDiffPaneOptions {
+    let options = DiffBuilderOptions {
         keyword_highlight: true,
         highlight_rows: true,
         ghost_rows: true,
