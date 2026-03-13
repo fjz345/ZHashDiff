@@ -71,6 +71,29 @@ impl FileSystemView {
         nodes.iter().any(|&id| self.is_anything_collapsed(id))
     }
 
+    pub fn is_collapsed(&self, node_id: FsNodeId) -> bool
+    {
+        self.collapsed.get(&node_id).copied().unwrap_or(false)
+    }
+
+    pub fn is_parent_chain_collapsed(&self, node_id: FsNodeId) -> bool
+    {
+        if let Some(parent_id) = self.file_system.get_parent_id(node_id)
+        {
+            let is_parent_collapsed = self.collapsed.get(&parent_id).copied().unwrap_or(false);
+            if is_parent_collapsed
+            {
+                return true;
+            }
+            else if let Some(parent_parent_id) = self.file_system.get_parent_id(parent_id)
+            {
+                return self.is_parent_chain_collapsed(parent_parent_id);
+            }
+        }
+        
+        false
+    }
+
     pub fn recursive_collapse(&mut self, node_id: FsNodeId, collapse: bool) {
         let ids: Vec<FsNodeId> = self.iter_nodes(node_id)
             .filter(|(_, node, _)| node.is_dir())
@@ -1121,10 +1144,9 @@ fn render_row_folder_tree_diff_column(
     }
 
     let get_collapsed_state = |v: &FileSystemView, id: &FsNodeId| {
-        let collapsed = v.collapsed.get(id).copied().unwrap_or(false);
-        let parent_collapsed = v.file_system.get_parent_id(*id)
-            .and_then(|p_id| v.collapsed.get(&p_id).copied())
-            .unwrap_or(false);
+        let is_root = v.file_system.get_root_node_id() == *id;
+        let collapsed = if is_root {false}else{v.is_collapsed(*id)};
+        let parent_collapsed = if is_root {false}else{v.is_parent_chain_collapsed(*id)};
         (collapsed, parent_collapsed)
     };
 
@@ -1149,7 +1171,7 @@ fn render_row_folder_tree_diff_column(
     // If both parets are collapsed or invalid, hide the whole row (skip index)
     let hide_row = (is_parent_collapsed_1 || state1.is_none()) && (is_parent_collapsed_2 || state2.is_none());
     // --- Left Column (Folder 1) ---
-    if !hide_row
+    // if !hide_row Need to set total_rows if we hide
     {
         if !is_parent_collapsed_1
         {
