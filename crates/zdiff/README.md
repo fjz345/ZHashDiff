@@ -10,6 +10,7 @@ Library and Gui for diffing file contents
 * Derp
 
 ## Todo
+* Myers linear diff algo
 * Fix building diff rows bugs
 * image file diff
 * user defined comparison per file format

@@ -70,11 +70,10 @@ impl<T: RawTokenTrait> Default for AppStateCtx<T> {
 
 impl<T: RawTokenTrait> AppStateCtx<T> {
     fn update_diff_rows(
-        diff_ctx: &mut Option<DiffCtx>,
         file_1: &Option<CachedFile<T>>,
         file_2: &Option<CachedFile<T>>,
         options: &DiffBuilderOptions,
-    ) {
+    ) -> DiffCtx {
         match (&file_1, &file_2) {
             (Some(c1), Some(c2)) => {
                 let t1 = &c1.tokens;
@@ -82,13 +81,8 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let lex1 = Lexer::<T>::new(&c1.contents);
                 let lex2 = Lexer::<T>::new(&c2.contents);
 
-                let ignore_ws = diff_ctx
-                    .as_ref()
-                    .and_then(|f| Some(f.diff_option.clone()))
-                    .unwrap_or_default()
-                    .ignore_whitespace;
                 let cmp = |a: &T, b: &T| {
-                    if ignore_ws
+                    if options.ignore_whitespace
                         && a.as_ref().kind.is_whitespace()
                         && b.as_ref().kind.is_whitespace()
                     {
@@ -103,13 +97,13 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
-                *diff_ctx = Some(DiffCtx {
+                DiffCtx {
                     file_1_hash: c1_hash,
                     file_2_hash: c2_hash,
                     diff_option: options.clone(),
                     diff_rows: build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options),
                     num_add_deletes: myers_count_add_deletes(&path),
-                });
+                }
             }
             (Some(c1), None) => {
                 let c2 = c1;
@@ -118,13 +112,8 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let lex1 = Lexer::new(&c1.contents);
                 let lex2 = Lexer::new(&c2.contents);
 
-                let ignore_ws = diff_ctx
-                    .as_ref()
-                    .and_then(|f| Some(f.diff_option.clone()))
-                    .unwrap_or_default()
-                    .ignore_whitespace;
                 let cmp = |a: &T, b: &T| {
-                    if ignore_ws
+                    if options.ignore_whitespace
                         && a.as_ref().kind.is_whitespace()
                         && b.as_ref().kind.is_whitespace()
                     {
@@ -139,13 +128,13 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
-                *diff_ctx = Some(DiffCtx {
+                DiffCtx {
                     file_1_hash: c1_hash,
                     file_2_hash: c2_hash,
                     diff_option: options.clone(),
                     diff_rows: build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options),
                     num_add_deletes: myers_count_add_deletes(&path),
-                });
+                }
             }
             (None, Some(c2)) => {
                 let c1 = c2;
@@ -154,13 +143,8 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let lex1 = Lexer::new(&c1.contents);
                 let lex2 = Lexer::new(&c2.contents);
 
-                let ignore_ws = diff_ctx
-                    .as_ref()
-                    .and_then(|f| Some(f.diff_option.clone()))
-                    .unwrap_or_default()
-                    .ignore_whitespace;
                 let cmp = |a: &T, b: &T| {
-                    if ignore_ws
+                    if options.ignore_whitespace
                         && a.as_ref().kind.is_whitespace()
                         && b.as_ref().kind.is_whitespace()
                     {
@@ -175,15 +159,17 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
-                *diff_ctx = Some(DiffCtx {
+                DiffCtx {
                     file_1_hash: c1_hash,
                     file_2_hash: c2_hash,
                     diff_option: options.clone(),
                     diff_rows: build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options),
                     num_add_deletes: myers_count_add_deletes(&path),
-                });
+                }
             }
-            (None, None) => {}
+            (None, None) => {
+                panic!("Only call this function with one of two files valid")
+            }
         }
     }
 }
@@ -536,17 +522,23 @@ impl<T: RawTokenTrait> eframe::App for ZApp<T> {
                         .as_ref()
                         .and_then(|f| Some(f.hash.clone()))
                         .unwrap_or_default();
-                    !(diff_ctx.file_1_hash == file_1_hash && diff_ctx.file_2_hash == file_2_hash)
+                    let hash_equal =
+                        diff_ctx.file_1_hash == file_1_hash && diff_ctx.file_2_hash == file_2_hash;
+                    let options_equal = diff_ctx.diff_option == state.diff_options;
+                    !hash_equal || !options_equal
                 } else {
                     true
                 };
+
                 if diff_ctx_invalidated {
-                    AppStateCtx::update_diff_rows(
-                        &mut state.diff_ctx,
-                        &state.file_1,
-                        &state.file_2,
-                        &state.diff_options,
-                    );
+                    state.diff_ctx = None;
+                    if state.file_1.is_some() || state.file_2.is_some() {
+                        state.diff_ctx = Some(AppStateCtx::update_diff_rows(
+                            &state.file_1,
+                            &state.file_2,
+                            &state.diff_options,
+                        ));
+                    }
                 }
 
                 self.ui(ctx, frame, &mut state);
