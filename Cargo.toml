@@ -1,7 +1,10 @@
 [workspace]
-members = [
+members = [ "crates/zcommon",
     "crates/zdiff",
+    "crates/zdiff-gui",
     "crates/zhashdiff",
+    "crates/zhashdiff-gui",
+    "crates/zcommon",
 ]
 resolver = "2"
 

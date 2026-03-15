@@ -4,16 +4,28 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use eframe::egui;
-use egui::Color32;
-use serde::{Deserialize, Serialize};
-
 use crate::{
     diff_ir::{DiffIR, DiffOp, DiffResult},
     hash::hash_file,
     lexer::{Lexer, RawToken, RawTokenTrait, TokenKind},
     read_file_contents,
 };
+
+#[derive(Copy, Clone, Debug)]
+pub struct Color32(pub [u8; 4]);
+
+impl Color32 {
+    pub const TRANSPARENT: Self = Self([0, 0, 0, 0]);
+    pub const WHITE: Self = Self([255, 255, 255, 255]);
+    pub const BLACK: Self = Self([0, 0, 0, 255]);
+    pub const GRAY: Self = Self([128, 128, 128, 255]);
+}
+
+impl From<[u8; 4]> for Color32 {
+    fn from(arr: [u8; 4]) -> Self {
+        Self(arr)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct DiffRow {
@@ -24,14 +36,15 @@ pub struct DiffRow {
 #[derive(Debug, Clone)]
 pub enum LineContent {
     Code {
-        tokens: Vec<(DiffResult, egui::Color32)>,
+        tokens: Vec<(DiffResult, Color32)>,
         line_num: i32,
-        bg: egui::Color32,
+        bg: Color32,
     },
     Void,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DiffBuilderOptions {
     pub ignore_whitespace: bool,
     pub highlight_rows: bool,
@@ -61,12 +74,12 @@ struct DiffTheme {
 impl Default for DiffTheme {
     fn default() -> Self {
         Self {
-            ghost: Color32::from_rgba_unmultiplied(150, 150, 150, 80),
-            kw: Color32::from_rgb(86, 156, 214),
-            del: Color32::from_rgb(255, 100, 100),
-            ins: Color32::from_rgb(100, 255, 100),
-            del_bg: Color32::from_rgba_unmultiplied(255, 0, 0, 20),
-            ins_bg: Color32::from_rgba_unmultiplied(0, 255, 0, 20),
+            ghost: [150, 150, 150, 80].into(),
+            kw: [86, 156, 214, 255].into(),
+            del: [255, 100, 100, 255].into(),
+            ins: [100, 255, 100, 255].into(),
+            del_bg: [255, 0, 0, 20].into(),
+            ins_bg: [0, 255, 0, 20].into(),
         }
     }
 }
@@ -265,7 +278,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             let mut started = false;
             for (val, _, is_ws) in &self.right.buf {
                 let color = if *is_ws && !started {
-                    Color32::TRANSPARENT
+                    Color32::BLACK
                 } else {
                     self.theme.ghost
                 };

@@ -1,12 +1,11 @@
 use std::{marker::PhantomData, ops::Range};
 
-use serde::{Deserialize, Serialize};
-
 pub trait RawTokenTrait: Clone + AsRef<RawToken> + From<RawToken> + Send + Sync + 'static {}
 impl<T> RawTokenTrait for T where T: Clone + AsRef<RawToken> + From<RawToken> + Send + Sync + 'static
 {}
 
-#[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Copy, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TokenKind {
     Unknown,
     Identifier,
@@ -33,7 +32,8 @@ impl TokenKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RawToken {
     pub kind: TokenKind,
     pub span: Range<usize>,

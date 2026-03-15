@@ -10,14 +10,14 @@ use zhashdiff::conflict::execute_resolution;
 use zhashdiff::fs::FileSystemModel;
 use zhashdiff::hash::HashService;
 
-use crate::ui_egui::common::CheckboxSelectState;
-use crate::ui_egui::common::hash_to_color;
-use crate::ui_egui::common::ui_custom_checkbox;
 use crate::ui_egui::fs_tree::FileSystemView;
 use crate::ui_egui::fs_tree::draw_ui_folder_tree_with_checkbox;
 use crate::ui_egui::panes::PathDiffView;
 use crate::ui_egui::panes::ZAppPane;
 use crate::ui_egui::popup;
+use zcommon::ui_egui::common::CheckboxSelectState;
+use zcommon::ui_egui::common::hash_to_color;
+use zcommon::ui_egui::common::ui_custom_checkbox;
 
 const MAX_CONCURRENT_HASHES: usize = 16;
 #[derive(Serialize, Deserialize)]
@@ -71,8 +71,10 @@ impl DuplicateFilesPane {
                 }
 
                 if let Some(fs_view) = &mut ctx.path_diff_view.file_system_1_view {
-                    let nodes_considered_for_collapse = &fs_view.file_system.get_root().children().unwrap().clone();
-                    let is_anything_collapsed = fs_view.is_anything_collapsed_slice(nodes_considered_for_collapse);
+                    let nodes_considered_for_collapse =
+                        &fs_view.file_system.get_root().children().unwrap().clone();
+                    let is_anything_collapsed =
+                        fs_view.is_anything_collapsed_slice(nodes_considered_for_collapse);
                     let button_text = if is_anything_collapsed {
                         "Collapse All"
                     } else {
@@ -80,7 +82,10 @@ impl DuplicateFilesPane {
                     };
 
                     if ui.button(button_text).clicked() {
-                        fs_view.recursive_collapse_slice(nodes_considered_for_collapse, !is_anything_collapsed);
+                        fs_view.recursive_collapse_slice(
+                            nodes_considered_for_collapse,
+                            !is_anything_collapsed,
+                        );
                     }
                 }
 
@@ -145,12 +150,11 @@ impl DuplicateFilesPane {
             self.open_dir_window = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
                 // ctx.path_diff_view.file_system_1.get_root()_dir_cache.clear();
-                match FileSystemModel::new(path)
-                {
+                match FileSystemModel::new(path) {
                     Ok(new_model) => {
                         *ctx.path_diff_view.file_system_1_view =
-                        Some(FileSystemView::new(Arc::new(new_model)));
-                    },
+                            Some(FileSystemView::new(Arc::new(new_model)));
+                    }
                     Err(e) => log::error!("{e}"),
                 }
             }

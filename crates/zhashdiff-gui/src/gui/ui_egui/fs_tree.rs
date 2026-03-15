@@ -15,7 +15,7 @@ use zhashdiff::{
     hash::HashService,
 };
 
-use crate::ui_egui::common::{
+use zcommon::ui_egui::common::{
     CheckboxSelectState, draw_persistent_hint_text_edit, hash_to_color, ui_custom_checkbox,
 };
 
@@ -1295,7 +1295,7 @@ fn render_row_folder_tree_diff_column(
             });
         }
         // --- Middle Column (Diff Status) ---
-        if (!is_parent_collapsed_1 && !is_parent_collapsed_2) {
+        if !is_parent_collapsed_1 && !is_parent_collapsed_2 {
             row.col(|ui| {
                 ui.horizontal(|ui| {
                     ui_custom_diff_state(ui, &entry.diff_state);

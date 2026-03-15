@@ -213,7 +213,12 @@ impl FileDiffPane {
                                             (
                                                 LineContent::Code { .. },
                                                 LineContent::Code { bg, .. },
-                                            ) if *bg != egui::Color32::TRANSPARENT => "≠",
+                                            ) if egui::Color32::from_rgba_unmultiplied(
+                                                bg.0[0], bg.0[1], bg.0[2], bg.0[3],
+                                            ) != egui::Color32::TRANSPARENT =>
+                                            {
+                                                "≠"
+                                            }
                                             _ => " ",
                                         };
                                         ui.centered_and_justified(|ui| {
@@ -279,7 +284,11 @@ impl FileDiffPane {
                 line_num,
                 bg,
             } => {
-                ui.painter().rect_filled(rect, 0.0, *bg);
+                ui.painter().rect_filled(
+                    rect,
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(bg.0[0], bg.0[1], bg.0[2], bg.0[3]),
+                );
 
                 ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                     ui.horizontal_centered(|ui| {
@@ -332,7 +341,11 @@ impl FileDiffPane {
                             if str == "\n" || str == "\r\n" {
                                 continue;
                             }
-                            ui.label(egui::RichText::new(str).color(*color));
+                            ui.label(egui::RichText::new(str).color(
+                                egui::Color32::from_rgba_unmultiplied(
+                                    color.0[0], color.0[1], color.0[2], color.0[3],
+                                ),
+                            ));
                         }
                     });
                 });
@@ -516,7 +529,13 @@ fn test_build_diff_rows_ghost_enabled() {
     if let LineContent::Code { tokens, .. } = &rows[0].right {
         let ghost_color = egui::Color32::from_rgba_unmultiplied(150, 150, 150, 80);
         assert_eq!(
-            tokens[0].1, ghost_color,
+            egui::Color32::from_rgba_unmultiplied(
+                tokens[0].1.0[0],
+                tokens[0].1.0[1],
+                tokens[0].1.0[2],
+                tokens[0].1.0[3],
+            ),
+            ghost_color,
             "Right side token should have ghost color"
         );
     }

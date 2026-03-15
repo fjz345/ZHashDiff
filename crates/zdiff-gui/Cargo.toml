@@ -1,0 +1,40 @@
+[package]
+name = "zdiff-gui"
+version = "0.3.1"
+edition = "2024"
+
+[[bin]]
+name = "zdiff-gui"
+path = "src/gui/main.rs"
+required-features = ["gui"]
+
+[features]
+default = ["serde", "gui"]
+serde = ["zdiff/serde", "dep:serde", "dep:serde_json"]
+gui = ["zcommon/gui", "dep:eframe", "dep:egui_tiles"]
+pretty-backtrace = ["dep:color-backtrace"]
+accesskit = []
+
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.33.3", features = ["wayland", "x11"], optional = true }
+
+[dependencies]
+zcommon = { path = "../zcommon" }
+zdiff = { path = "../zdiff" }
+eframe = { version = "0.33.3", default-features = false, features = [
+    "default_fonts",
+    "accesskit",
+    "glow",
+    "serde",
+    "persistence"
+] , optional = true }
+egui_tiles =  {version = "0.14.1", features = ["serde"], optional = true}
+egui_extras = { version = "0.33.3", features = ["image"] }
+serde = { version = "1.0.48", features = ["derive"], optional = true}
+serde_json = { version = "1.0.48", optional = true }
+log = "0.4.27"
+rfd = "0.17.1"
+color-backtrace = { version = "0.7.2", optional = true }
+blake3 = { version = "1.8.2", features = ["rayon", "mmap"] }
+env_logger = "0.11.9"
+pollster = "0.4.0"

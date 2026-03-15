@@ -1,0 +1,25 @@
+[package]
+name = "zcommon"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "zcommon"
+
+[features]
+default = []
+gui = ["dep:eframe", "dep:egui_tiles", "dep:egui_extras"]
+serde = []
+
+[dependencies]
+eframe = { version = "0.33.3", default-features = false, features = [
+    "default_fonts",
+    "accesskit",
+    "glow",
+    "serde",
+    "persistence"
+] , optional = true }
+egui_tiles =  {version = "0.14.1", features = ["serde"], optional = true}
+egui_extras = { version = "0.33.3", features = ["image"], optional = true }
+
+log = "0.4.27"

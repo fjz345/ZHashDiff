@@ -1,5 +1,4 @@
 pub mod app;
-pub mod common;
 pub mod duplicate_files_pane;
 pub mod fs_tree;
 pub mod panes;

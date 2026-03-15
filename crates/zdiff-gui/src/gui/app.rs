@@ -42,42 +42,46 @@ pub struct DiffCtx {
     pub num_add_deletes: (u32, u32),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(bound(serialize = "", deserialize = "T: RawTokenTrait"))]
+#[derive(Debug)]
+#[cfg_attr(
+    feature = "serde",
+    serde(bound(serialize = "", deserialize = "T: RawTokenTrait"))
+)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AppStateCtx<T: RawTokenTrait> {
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     rx_file_path_1: Option<mpsc::Receiver<std::path::PathBuf>>,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     rx_file_path_2: Option<mpsc::Receiver<std::path::PathBuf>>,
 
     file_path_1: Option<PathBuf>,
     file_path_2: Option<PathBuf>,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     file_1: Option<Arc<CachedFile<T>>>,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     file_2: Option<Arc<CachedFile<T>>>,
 
     pub diff_options: DiffBuilderOptions,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub diff_ctx: Option<DiffCtx>,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub diff_ctx_invalidated: bool,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub diff_ctx_in_progress: bool,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     rx: Option<Receiver<DiffCtx>>,
 
     pub scroll_left: f32,
     pub scroll_right: f32,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub scroll_to_row: Option<usize>,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub goto_open: bool,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub goto_input: String,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub find_open: bool,
-    #[serde(skip)]
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub find_input: String,
 }
 
