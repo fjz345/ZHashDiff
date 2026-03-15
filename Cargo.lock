@@ -4753,7 +4753,7 @@ dependencies = [
 
 [[package]]
 name = "zdiff"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "blake3",
  "color-backtrace",

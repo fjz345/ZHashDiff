@@ -10,9 +10,9 @@ Library and Gui for diffing file contents
 * Derp
 
 ## Todo
-* Myers linear diff algo
 * Fix building diff rows bugs
 * image file diff
+* Myers linear diff algo
 * user defined comparison per file format
 * fix better toggle different visualization view modes code
 * go to prev/next diff buttons
@@ -21,3 +21,4 @@ Library and Gui for diffing file contents
 * add drag and drop for source & target (same as zhashdiff)
 * search functionallity
 * hex diff/binary diff
+* fix update_diff_ctx thread races
