@@ -6,10 +6,10 @@ use std::{
 
 use crate::{
     diff_ir::{DiffIR, DiffOp, DiffResult},
-    hash::hash_file,
-    lexer::{Lexer, RawToken, RawTokenTrait, TokenKind},
+    lexer::{Lexer, RawTokenTrait, TokenKind},
     read_file_contents,
 };
+use zcommon::hash::hash_file;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Color32(pub [u8; 4]);

@@ -6,19 +6,16 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-// allow for custom args if using non-supported external diff tool
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DiffToolDefaultArgs {
     pub default_args: Vec<String>,
 }
 
 impl DiffToolDefaultArgs {
-    /// Convert to a single string (newline separated)
     pub fn to_string(&self) -> String {
         self.default_args.join("\n")
     }
 
-    /// Parse from a newline-separated string
     pub fn from_string(input: &str) -> Self {
         let default_args = input
             .lines()
@@ -46,34 +43,7 @@ impl Default for DiffToolConfig {
     }
 }
 
-// #[derive(Debug, Clone)]
-// enum KnownDiffTools {
-//     Tortoise,
-//     Unknown,
-// }
-
-// impl KnownDiffTools {
-//     fn match_config(config: &DiffToolConfig) -> Self {
-//         const TORTOISE_KNOWN_NAMES: [&str; 2] = ["tortoiseproc.exe", "tortoisemerge.exe"];
-
-//         let exe_name = config
-//             .exe_path
-//             .file_name()
-//             .and_then(|n| n.to_str())
-//             .map(|s| s.to_ascii_lowercase());
-
-//         if let Some(name) = exe_name {
-//             if TORTOISE_KNOWN_NAMES.contains(&name.as_str()) {
-//                 return KnownDiffTools::Tortoise;
-//             }
-//         }
-
-//         KnownDiffTools::Unknown
-//     }
-// }
-
 impl DiffToolConfig {
-    /// Returns a default config for TortoiseSVN if installed at standard location
     pub fn default_zdiff() -> Self {
         Self {
             exe_path: PathBuf::from(r"zdiff-gui.exe"),

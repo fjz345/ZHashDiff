@@ -387,7 +387,7 @@ fn test_build_diff_rows_header_edit() {
         ignore_whitespace: false,
     };
 
-    let diff_ir = generate_ir(&t1, &t2, &path);
+    let diff_ir = generate_ir(&path);
     let rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
 
     println!("\n--- BUILT DIFF ROWS VISUALIZATION ---");
@@ -477,7 +477,7 @@ fn test_build_diff_rows_ghost_enabled() {
         ignore_whitespace: false,
     };
 
-    let diff_ir = generate_ir(&t1, &t2, &path);
+    let diff_ir = generate_ir(&path);
     let rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
 
     println!("\n--- GHOST ROWS VISUALIZATION ---");
@@ -571,7 +571,7 @@ fn test_build_diff_rows_ignore_whitespace() {
         ignore_whitespace: true,
     };
 
-    let diff_ir = generate_ir(&t1, &t2, &path);
+    let diff_ir = generate_ir(&path);
     let rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
 
     println!("\n--- WHITESPACE IGNORE VISUALIZATION ---");

@@ -5,10 +5,10 @@
 use std::env;
 
 use eframe::egui::{self};
+use zcommon::logger::LogCollector;
 
-use crate::{logger::LogCollector, ui_egui::app::ZApp};
+use crate::ui_egui::app::ZApp;
 
-mod logger;
 mod ui_egui;
 
 fn main() -> eframe::Result {

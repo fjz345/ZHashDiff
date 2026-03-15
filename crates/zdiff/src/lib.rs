@@ -1,14 +1,13 @@
-use std::{path::Path};
+use std::path::Path;
 
+pub mod diff_builder;
+pub mod diff_ir;
 pub mod lexer;
 pub mod myers;
-pub mod diff_ir;
-pub mod diff_builder;
-pub mod hash;
 
 pub fn read_file_contents<P: AsRef<Path>>(path: P) -> std::io::Result<String> {
     use std::fs::File;
-    use std::io::{Read};
+    use std::io::Read;
 
     let mut file = File::open(&path)?;
     let mut contents = String::new();
@@ -37,9 +36,18 @@ mod tests {
             ("Rust Decl", r#"fn main()"#),
             ("Python Decl", r#"def main(argc, argv):"#),
             // Definitions
-            ("C Def", "void main(int argc, char *argv[])\n{\n    std::out << \"Hello, world!\" << std::endl;\n}"),
-            ("Rust Def", "fn main()\n{\n    println!(\"Hello, world!\");\n}\n"),
-            ("Python Def", "def main(argc, argv):\n    print(\"Hello, world!\")"),
+            (
+                "C Def",
+                "void main(int argc, char *argv[])\n{\n    std::out << \"Hello, world!\" << std::endl;\n}",
+            ),
+            (
+                "Rust Def",
+                "fn main()\n{\n    println!(\"Hello, world!\");\n}\n",
+            ),
+            (
+                "Python Def",
+                "def main(argc, argv):\n    print(\"Hello, world!\")",
+            ),
         ];
 
         for (name, src) in cases {
@@ -48,9 +56,10 @@ mod tests {
 
             assert!(
                 !tokens.iter().any(|t| matches!(t.kind, TokenKind::Unknown)),
-                "[{}] Lexer found unknown tokens: {:?}", 
-                name, 
-                tokens.iter()
+                "[{}] Lexer found unknown tokens: {:?}",
+                name,
+                tokens
+                    .iter()
                     .filter(|t| matches!(t.kind, TokenKind::Unknown))
                     .map(|t| lexer.token_value(t))
                     .collect::<Vec<_>>()
@@ -58,12 +67,9 @@ mod tests {
 
             let reconstructed = lexer.reconstruct_source(&tokens);
             assert_eq!(
-                reconstructed, 
-                src, 
-                "[{}] Reconstruction mismatch!\nExpected: {:?}\nGot:      {:?}", 
-                name, 
-                src, 
-                reconstructed
+                reconstructed, src,
+                "[{}] Reconstruction mismatch!\nExpected: {:?}\nGot:      {:?}",
+                name, src, reconstructed
             );
         }
     }
@@ -116,11 +122,16 @@ mod tests {
         for (i, (kind, value)) in expected.into_iter().enumerate() {
             assert_eq!(
                 tokens[i].kind, kind,
-                "Token[{}] kind mismatch. Expected {:?}, got {:?}", i, kind, tokens[i].kind
+                "Token[{}] kind mismatch. Expected {:?}, got {:?}",
+                i, kind, tokens[i].kind
             );
             assert_eq!(
-                lexer.token_value(&tokens[i]), value,
-                "Token[{}] value mismatch. Expected {:?}, got {:?}", i, value, lexer.token_value(&tokens[i])
+                lexer.token_value(&tokens[i]),
+                value,
+                "Token[{}] value mismatch. Expected {:?}, got {:?}",
+                i,
+                value,
+                lexer.token_value(&tokens[i])
             );
         }
     }
@@ -131,11 +142,18 @@ mod tests {
         let mut lexer = Lexer::<RawToken>::new(input);
         let tokens = lexer.parse();
 
-        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::String)), 
-            "Lexer failed to identify any String tokens in input: {}", input);
-        
+        assert!(
+            tokens.iter().any(|t| matches!(t.kind, TokenKind::String)),
+            "Lexer failed to identify any String tokens in input: {}",
+            input
+        );
+
         let reconstructed = lexer.reconstruct_source(&tokens);
-        assert_eq!(reconstructed, input, "String reconstruction failed. Original: {}, Got: {}", input, reconstructed);
+        assert_eq!(
+            reconstructed, input,
+            "String reconstruction failed. Original: {}, Got: {}",
+            input, reconstructed
+        );
     }
 
     #[test]
@@ -144,11 +162,36 @@ mod tests {
         let mut lexer = Lexer::<RawToken>::new(input);
         let tokens = lexer.parse();
 
-        assert_eq!(tokens[0].kind, TokenKind::Number, "Expected '123' to be Number, got {:?}", tokens[0].kind);
-        assert_eq!(tokens[1].kind, TokenKind::Symbol, "Expected '.' to be Symbol, got {:?}", tokens[1].kind);
-        assert_eq!(tokens[2].kind, TokenKind::Number, "Expected '456' to be Number, got {:?}", tokens[2].kind);
-        assert_eq!(tokens[3].kind, TokenKind::Whitespace, "Expected ' ' to be Whitespace, got {:?}", tokens[3].kind);
-        assert_eq!(tokens[4].kind, TokenKind::Number, "Expected '789' to be Number, got {:?}", tokens[4].kind);
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::Number,
+            "Expected '123' to be Number, got {:?}",
+            tokens[0].kind
+        );
+        assert_eq!(
+            tokens[1].kind,
+            TokenKind::Symbol,
+            "Expected '.' to be Symbol, got {:?}",
+            tokens[1].kind
+        );
+        assert_eq!(
+            tokens[2].kind,
+            TokenKind::Number,
+            "Expected '456' to be Number, got {:?}",
+            tokens[2].kind
+        );
+        assert_eq!(
+            tokens[3].kind,
+            TokenKind::Whitespace,
+            "Expected ' ' to be Whitespace, got {:?}",
+            tokens[3].kind
+        );
+        assert_eq!(
+            tokens[4].kind,
+            TokenKind::Number,
+            "Expected '789' to be Number, got {:?}",
+            tokens[4].kind
+        );
     }
 
     #[test]
@@ -158,12 +201,19 @@ mod tests {
         let tokens = lexer.parse();
 
         for token in &tokens {
-            assert!(!matches!(token.kind, TokenKind::Unknown), 
-                "Unknown token found: {:?} ('{}')", 
-                token, &input[token.span.clone()]);
+            assert!(
+                !matches!(token.kind, TokenKind::Unknown),
+                "Unknown token found: {:?} ('{}')",
+                token,
+                &input[token.span.clone()]
+            );
         }
-        
-        assert_eq!(lexer.reconstruct_source(&tokens), input, "Unicode/Whitespace reconstruction failed.");
+
+        assert_eq!(
+            lexer.reconstruct_source(&tokens),
+            input,
+            "Unicode/Whitespace reconstruction failed."
+        );
     }
 
     #[test]
@@ -171,19 +221,30 @@ mod tests {
         let input = "fn main() { let x = 5; } // check";
         let mut lexer1 = Lexer::<RawToken>::new(input);
         let tokens1 = lexer1.parse();
-        
+
         let reconstructed = lexer1.reconstruct_source(&tokens1);
         let mut lexer2 = Lexer::<RawToken>::new(&reconstructed);
         let tokens2 = lexer2.parse();
 
-        assert_eq!(tokens1.len(), tokens2.len(), 
-            "Idempotency failed: different token counts. Original: {}, New: {}", tokens1.len(), tokens2.len());
-            
+        assert_eq!(
+            tokens1.len(),
+            tokens2.len(),
+            "Idempotency failed: different token counts. Original: {}, New: {}",
+            tokens1.len(),
+            tokens2.len()
+        );
+
         for (i, (t1, t2)) in tokens1.iter().zip(tokens2.iter()).enumerate() {
-            assert_eq!(t1.kind, t2.kind, 
-                "Token kind mismatch at index {}.\nToken 1: {:?}\nToken 2: {:?}", i, t1, t2);
-            assert_eq!(t1.span, t2.span, 
-                "Token spawn mismatch at index {}.\nToken 1: {:?}\nToken 2: {:?}", i, t1, t2);
+            assert_eq!(
+                t1.kind, t2.kind,
+                "Token kind mismatch at index {}.\nToken 1: {:?}\nToken 2: {:?}",
+                i, t1, t2
+            );
+            assert_eq!(
+                t1.span, t2.span,
+                "Token spawn mismatch at index {}.\nToken 1: {:?}\nToken 2: {:?}",
+                i, t1, t2
+            );
         }
     }
 
@@ -270,9 +331,10 @@ mod tests {
 
             assert!(
                 !tokens.iter().any(|t| matches!(t.kind, TokenKind::Unknown)),
-                "[{}] Lexer failed to categorize some characters: {:?}", 
+                "[{}] Lexer failed to categorize some characters: {:?}",
                 filename,
-                tokens.iter()
+                tokens
+                    .iter()
                     .filter(|t| matches!(t.kind, TokenKind::Unknown))
                     .map(|t| lexer.token_value(t))
                     .collect::<Vec<_>>()
@@ -280,30 +342,37 @@ mod tests {
 
             let reconstructed = lexer.reconstruct_source(&tokens);
             assert_eq!(
-                reconstructed, 
-                content, 
-                "[{}] Reconstruction failed. Content was modified during lexing.", 
+                reconstructed, content,
+                "[{}] Reconstruction failed. Content was modified during lexing.",
                 filename
             );
 
             match filename {
                 "main.cpp" => {
-                    assert!(tokens.iter().any(|t| lexer.token_value(t) == "#include <iostream>"));
-                },
+                    assert!(
+                        tokens
+                            .iter()
+                            .any(|t| lexer.token_value(t) == "#include <iostream>")
+                    );
+                }
                 "main.rs" => {
-                    assert!(tokens.iter().any(|t| lexer.token_value(t) == "/* Macros use the ! symbol */"));
-                },
+                    assert!(
+                        tokens
+                            .iter()
+                            .any(|t| lexer.token_value(t) == "/* Macros use the ! symbol */")
+                    );
+                }
                 "main.py" => {
                     assert!(tokens.iter().any(|t| lexer.token_value(t) == "__name__"));
-                },
+                }
                 _ => unreachable!(),
             }
         }
     }
 
     #[test]
-fn test_files_advanced() {
-    let advanced_cpp = r#"
+    fn test_files_advanced() {
+        let advanced_cpp = r#"
     #include <vector>
     #include <memory>
     #include <algorithm>
@@ -395,7 +464,7 @@ fn test_files_advanced() {
     }
     "#;
 
-    let advanced_python = r#"
+        let advanced_python = r#"
     import numpy as np
     import pandas as pd
     from datetime import datetime
@@ -449,41 +518,47 @@ fn test_files_advanced() {
             let mut lexer = Lexer::<RawToken>::new(source);
             let tokens = lexer.parse();
 
-            let unknown_tokens: Vec<_> = tokens.iter()
+            let unknown_tokens: Vec<_> = tokens
+                .iter()
                 .filter(|t| t.kind == TokenKind::Unknown)
                 .map(|t| lexer.token_value(t))
                 .collect();
 
             assert!(
                 unknown_tokens.is_empty(),
-                "[{}] Lexer failed on these characters: {:?}", 
-                name, unknown_tokens
+                "[{}] Lexer failed on these characters: {:?}",
+                name,
+                unknown_tokens
             );
 
             let reconstructed = lexer.reconstruct_source(&tokens);
             assert_eq!(
                 reconstructed, source,
-                "[{}] RECONSTRUCTION FAILURE. Loss of data detected.", name
+                "[{}] RECONSTRUCTION FAILURE. Loss of data detected.",
+                name
             );
 
             match name {
                 "Advanced C++" => {
-                    assert!(tokens.iter().any(|t| lexer.token_value(t) == "ResourceManager"));
+                    assert!(
+                        tokens
+                            .iter()
+                            .any(|t| lexer.token_value(t) == "ResourceManager")
+                    );
                     assert!(tokens.iter().any(|t| lexer.token_value(t) == ">>")); // Shift or nested template
-                },
+                }
                 "Advanced Rust" => {
                     assert!(tokens.iter().any(|t| lexer.token_value(t) == "Processor"));
                     assert!(tokens.iter().any(|t| lexer.token_value(t) == "Box"));
-                },
+                }
                 "Advanced Python" => {
                     assert!(tokens.iter().any(|t| lexer.token_value(t) == "lambda"));
                     assert!(tokens.iter().any(|t| lexer.token_value(t) == "status"));
-                },
+                }
                 _ => {}
             }
         }
     }
-
 
     #[test]
     fn test_files_simple_header() {
@@ -492,7 +567,7 @@ fn test_files_advanced() {
     bool        ConfigNavSwapGamepadButtons;    // = false
 \tbool        ConfigNavMoveSetMousePos;       // = false
 ";
-        
+
         let expected = [
             ("\t", TokenKind::Tab),
             ("#define hello_there", TokenKind::Preprocessor),
@@ -521,19 +596,29 @@ fn test_files_advanced() {
         let mut lexer = Lexer::<RawToken>::new(source);
         let tokens = lexer.parse();
 
-        let unknown: Vec<_> = tokens.iter()
+        let unknown: Vec<_> = tokens
+            .iter()
             .filter(|t| t.kind == TokenKind::Unknown)
             .map(|t| lexer.token_value(t))
             .collect();
-        assert!(unknown.is_empty(), "Lexer produced Unknown tokens: {:?}", unknown);
+        assert!(
+            unknown.is_empty(),
+            "Lexer produced Unknown tokens: {:?}",
+            unknown
+        );
 
-        if tokens.len() != expected.len() || !tokens.iter().enumerate().all(|(i, t)| {
-            let actual_val = lexer.token_value(t);
-            i < expected.len() && (actual_val, t.kind) == expected[i]
-        }) {
+        if tokens.len() != expected.len()
+            || !tokens.iter().enumerate().all(|(i, t)| {
+                let actual_val = lexer.token_value(t);
+                i < expected.len() && (actual_val, t.kind) == expected[i]
+            })
+        {
             let mut report = String::new();
             report.push_str("\nTOKEN MATCH FAILURE\n");
-            report.push_str(&format!("{:<3} | {:<20} | {:<15} | {:<20} | {:<15}\n", "IDX", "ACTUAL VAL", "ACTUAL KIND", "EXPECTED VAL", "EXPECTED KIND"));
+            report.push_str(&format!(
+                "{:<3} | {:<20} | {:<15} | {:<20} | {:<15}\n",
+                "IDX", "ACTUAL VAL", "ACTUAL KIND", "EXPECTED VAL", "EXPECTED KIND"
+            ));
             report.push_str(&"-".repeat(80));
             report.push('\n');
 
@@ -542,30 +627,45 @@ fn test_files_advanced() {
                 let actual = tokens.get(i);
                 let exp = expected.get(i);
 
-                let a_val = actual.map(|t| format!("{:?}", lexer.token_value(t))).unwrap_or_else(|| "MISSING".to_string());
-                let a_kind = actual.map(|t| format!("{:?}", t.kind)).unwrap_or_else(|| "".to_string());
-                
-                let e_val = exp.map(|(v, _)| format!("{:?}", v)).unwrap_or_else(|| "EXTRA".to_string());
-                let e_kind = exp.map(|(_, k)| format!("{:?}", k)).unwrap_or_else(|| "".to_string());
+                let a_val = actual
+                    .map(|t| format!("{:?}", lexer.token_value(t)))
+                    .unwrap_or_else(|| "MISSING".to_string());
+                let a_kind = actual
+                    .map(|t| format!("{:?}", t.kind))
+                    .unwrap_or_else(|| "".to_string());
 
-                let marker = if actual.is_some() && exp.is_some() && (lexer.token_value(actual.unwrap()), actual.unwrap().kind) == (exp.unwrap().0, exp.unwrap().1) {
+                let e_val = exp
+                    .map(|(v, _)| format!("{:?}", v))
+                    .unwrap_or_else(|| "EXTRA".to_string());
+                let e_kind = exp
+                    .map(|(_, k)| format!("{:?}", k))
+                    .unwrap_or_else(|| "".to_string());
+
+                let marker = if actual.is_some()
+                    && exp.is_some()
+                    && (lexer.token_value(actual.unwrap()), actual.unwrap().kind)
+                        == (exp.unwrap().0, exp.unwrap().1)
+                {
                     " "
                 } else {
                     "!"
                 };
 
-                report.push_str(&format!("{:<3}{} | {:<20} | {:<15} | {:<20} | {:<15}\n", i, marker, a_val, a_kind, e_val, e_kind));
+                report.push_str(&format!(
+                    "{:<3}{} | {:<20} | {:<15} | {:<20} | {:<15}\n",
+                    i, marker, a_val, a_kind, e_val, e_kind
+                ));
             }
             panic!("{}", report);
         }
     }
 
-    
-
     // Myers tests
     use crate::myers::{myers_backtrack, myers_diff, myers_diff_trace};
     fn distance_from_path(path: &[(i32, i32)]) -> usize {
-        if path.is_empty() { return 0; }
+        if path.is_empty() {
+            return 0;
+        }
         path.windows(2)
             .filter(|w| {
                 let (x1, y1) = w[0];
@@ -621,7 +721,7 @@ fn test_files_advanced() {
         let trace = myers_diff_trace(&a, &b, cmp);
         let path = myers_backtrack(trace, a.len() as i32, b.len() as i32);
 
-        assert_eq!(dist, 5); 
+        assert_eq!(dist, 5);
         assert_eq!(distance_from_path(&path), 5);
     }
 
@@ -636,9 +736,9 @@ fn test_files_advanced() {
 
         // Distance should be 2 (Delete main, Insert main2)
         assert_eq!(distance_from_path(&path), 2);
-        
+
         // Path should include (3,3) which is the match for '('
-        assert!(path.contains(&(3, 3))); 
+        assert!(path.contains(&(3, 3)));
     }
 
     #[test]
@@ -656,13 +756,15 @@ fn test_files_advanced() {
             let (x2, y2) = w[1];
             let dx = x2 - x1;
             let dy = y2 - y1;
-            
+
             // Valid moves: (1,0), (0,1), or (1,1)
             assert!(
-                (dx == 1 && dy == 0) || 
-                (dx == 0 && dy == 1) || 
-                (dx == 1 && dy == 1),
-                "Invalid path jump from ({},{}) to ({},{})", x1, y1, x2, y2
+                (dx == 1 && dy == 0) || (dx == 0 && dy == 1) || (dx == 1 && dy == 1),
+                "Invalid path jump from ({},{}) to ({},{})",
+                x1,
+                y1,
+                x2,
+                y2
             );
         }
     }

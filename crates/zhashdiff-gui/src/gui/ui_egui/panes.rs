@@ -6,15 +6,13 @@ use std::{
 
 use eframe::egui::{self};
 use serde::{Deserialize, Serialize};
-use zhashdiff::{external_diff_tool::DiffToolConfig, hash::HashService};
+use zcommon::{hash::HashService, logger::ui_log_window};
+use zhashdiff::external_diff_tool::DiffToolConfig;
 
-use crate::{
-    logger::ui_log_window,
-    ui_egui::{
-        duplicate_files_pane::{DuplicateFilesPane, DuplicateFilesPaneCtx},
-        fs_tree::{FileSystemView, VisibleRowTwoFolderDiff},
-        path_diff_pane::{PathDiffPane, PathDiffPaneCtx},
-    },
+use crate::ui_egui::{
+    duplicate_files_pane::{DuplicateFilesPane, DuplicateFilesPaneCtx},
+    fs_tree::{FileSystemView, VisibleRowTwoFolderDiff},
+    path_diff_pane::{PathDiffPane, PathDiffPaneCtx},
 };
 
 pub struct PathDiffView<'a> {

@@ -21,5 +21,6 @@ eframe = { version = "0.33.3", default-features = false, features = [
 ] , optional = true }
 egui_tiles =  {version = "0.14.1", features = ["serde"], optional = true}
 egui_extras = { version = "0.33.3", features = ["image"], optional = true }
-
+blake3 = { version = "1.8.2", features = ["rayon", "mmap"] }
 log = "0.4.27"
+env_logger = "0.11.9"

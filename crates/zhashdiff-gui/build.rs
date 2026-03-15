@@ -31,6 +31,6 @@ fn main() {
     println!("cargo:rustc-env=ZDIFF_BIN_PATH={}", bin_path.display());
 
     // Watch the sibling crate for changes
-    println!("cargo:rerun-if-changed=../zdiff/src");
-    println!("cargo:rerun-if-changed=../zdiff/Cargo.toml");
+    println!("cargo:rerun-if-changed=../zdiff-gui/src");
+    println!("cargo:rerun-if-changed=../zdiff-gui/Cargo.toml");
 }

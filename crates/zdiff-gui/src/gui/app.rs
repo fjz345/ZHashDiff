@@ -11,10 +11,10 @@ use std::{
     },
     thread::Thread,
 };
+use zcommon::{hash::hash_file, ui_egui::common::show_custom_popup};
 use zdiff::{
     diff_builder::{CachedFile, DiffBuilderOptions, DiffRow, build_diff_rows},
     diff_ir::generate_ir,
-    hash::hash_file,
     lexer::{Lexer, RawToken, RawTokenTrait, TokenKind},
     myers::{myers_backtrack, myers_count_add_deletes, myers_diff_trace},
     read_file_contents,
@@ -135,7 +135,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 
                 let trace = myers_diff_trace(t1, t2, cmp);
                 let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
-                let diff_ir = generate_ir(t1, t2, &path);
+                let diff_ir = generate_ir(&path);
 
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
@@ -167,7 +167,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 
                 let trace = myers_diff_trace(t1, t2, cmp);
                 let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
-                let diff_ir = generate_ir(t1, t2, &path);
+                let diff_ir = generate_ir(&path);
 
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 DiffCtx {
@@ -198,7 +198,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 
                 let trace = myers_diff_trace(t1, t2, cmp);
                 let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
-                let diff_ir = generate_ir(t1, t2, &path);
+                let diff_ir = generate_ir(&path);
 
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
                 DiffCtx {
@@ -478,20 +478,6 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
         });
     }
 
-    pub fn show_custom_popup<F>(ctx: &egui::Context, open: &mut bool, title: &str, add_contents: F)
-    where
-        F: FnOnce(&mut egui::Ui),
-    {
-        egui::Window::new(title)
-            .open(open)
-            .resizable(true)
-            .collapsible(false)
-            .default_size([300.0, 150.0])
-            .show(ctx, |ui| {
-                add_contents(ui);
-            });
-    }
-
     fn ui(
         &mut self,
         ctx: &egui::Context,
@@ -535,7 +521,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
             );
 
             let mut goto_window_open = *goto_open;
-            Self::show_custom_popup(ctx, &mut goto_window_open, "Goto", |ui| {
+            show_custom_popup(ctx, &mut goto_window_open, "Goto", |ui| {
                 goto_input.retain(|c| c.is_ascii_digit());
                 let response = ui.add(
                     egui::TextEdit::singleline(goto_input)

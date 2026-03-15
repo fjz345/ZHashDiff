@@ -5,8 +5,11 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
+use zcommon::{hash::HashService, ui_egui::common::show_custom_popup};
 use zhashdiff::{
-    comparison::PathComparissonMethod, external_diff_tool::{DiffToolConfig, DiffToolDefaultArgs}, fs::FileSystemModel, hash::HashService
+    comparison::PathComparissonMethod,
+    external_diff_tool::{DiffToolConfig, DiffToolDefaultArgs},
+    fs::FileSystemModel,
 };
 
 use crate::ui_egui::{
@@ -14,7 +17,6 @@ use crate::ui_egui::{
     fs_tree::{FileSystemView, VisibleRowTwoFolderDiff},
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::PathDiffPane,
-    popup::show_custom_popup,
 };
 use eframe::{
     CreationContext,
@@ -206,8 +208,7 @@ impl ZApp {
                 |ui| {
                     ui.label("Defaults: ");
                     ui.vertical(|ui| {
-                        ui.horizontal(|ui|
-                        {
+                        ui.horizontal(|ui| {
                             if ui.button("ZDiff").clicked() {
                                 app_ctx.diff_config = DiffToolConfig::default_zdiff()
                             }
@@ -215,7 +216,6 @@ impl ZApp {
                                 app_ctx.diff_config = DiffToolConfig::default_tortoise()
                             }
                         });
-                        
                     });
 
                     let mut text_edit = app_ctx.diff_config.exe_path.to_string_lossy();
@@ -281,13 +281,21 @@ impl ZApp {
 
                 for (_tile_id, tile) in self.tree.tiles.iter() {
                     if let Tile::Pane(Pane::DuplicateFiles(_file_explorer)) = tile {
-                        let built_rows_len = app_ctx.two_folder_diff_visible_rows.as_ref().and_then(|f|Some(f.len())).unwrap_or(0);
-                        let source_path = app_ctx.file_system_1_root_path.clone().unwrap_or_default();
-                        let target_path = app_ctx.file_system_2_root_path.clone().unwrap_or_default();
+                        let built_rows_len = app_ctx
+                            .two_folder_diff_visible_rows
+                            .as_ref()
+                            .and_then(|f| Some(f.len()))
+                            .unwrap_or(0);
+                        let source_path =
+                            app_ctx.file_system_1_root_path.clone().unwrap_or_default();
+                        let target_path =
+                            app_ctx.file_system_2_root_path.clone().unwrap_or_default();
 
                         let new_title = format!(
                             "ZHashDiff [{}] - {}, {}",
-                            built_rows_len, source_path.display(), target_path.display()
+                            built_rows_len,
+                            source_path.display(),
+                            target_path.display()
                         );
 
                         ctx.send_viewport_cmd(egui::ViewportCommand::Title(new_title));
@@ -431,64 +439,73 @@ impl eframe::App for ZApp {
                 if self.open_dir_window_1 {
                     self.open_dir_window_1 = false;
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        state.file_system_1_root_path =
-                            Some(path);
+                        state.file_system_1_root_path = Some(path);
                     }
                 }
                 if self.open_dir_window_2 {
                     self.open_dir_window_2 = false;
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        state.file_system_2_root_path =
-                            Some(path);
+                        state.file_system_2_root_path = Some(path);
                     }
                 }
                 // Invalidate state
                 if let Some(path) = &state.file_system_1_root_path {
-                    let needs_reload = state.file_system_model_1_view.as_ref()
-                        .map_or(true, |v| v.file_system.get_root().as_path().as_ref() != path);
+                    let needs_reload = state.file_system_model_1_view.as_ref().map_or(true, |v| {
+                        v.file_system.get_root().as_path().as_ref() != path
+                    });
                     if needs_reload {
-                        match FileSystemModel::new(path)
-                        {
+                        match FileSystemModel::new(path) {
                             Ok(new_model) => {
-                                state.file_system_model_1_view = Some(FileSystemView::new(Arc::new(new_model)));
+                                state.file_system_model_1_view =
+                                    Some(FileSystemView::new(Arc::new(new_model)));
                                 state.two_folder_diff_visible_rows = None;
-                            },
-                            Err(e) => {log::error!("{e}"); state.file_system_1_root_path = None; },
+                            }
+                            Err(e) => {
+                                log::error!("{e}");
+                                state.file_system_1_root_path = None;
+                            }
                         }
                     }
-                }
-                else{
+                } else {
                     state.file_system_model_1_view = None;
                     state.two_folder_diff_visible_rows = None;
                 }
                 if let Some(path) = &state.file_system_2_root_path {
-                    let needs_reload = state.file_system_model_2_view.as_ref()
-                        .map_or(true, |v| v.file_system.get_root().as_path().as_ref() != path);
+                    let needs_reload = state.file_system_model_2_view.as_ref().map_or(true, |v| {
+                        v.file_system.get_root().as_path().as_ref() != path
+                    });
                     if needs_reload {
-                        match FileSystemModel::new(path)
-                        {
+                        match FileSystemModel::new(path) {
                             Ok(new_model) => {
-                                state.file_system_model_2_view = Some(FileSystemView::new(Arc::new(new_model)));
+                                state.file_system_model_2_view =
+                                    Some(FileSystemView::new(Arc::new(new_model)));
                                 state.two_folder_diff_visible_rows = None;
-                            },
-                            Err(e) => {log::error!("{e}"); state.file_system_2_root_path = None; },
+                            }
+                            Err(e) => {
+                                log::error!("{e}");
+                                state.file_system_2_root_path = None;
+                            }
                         }
                     }
-                }
-                else{
+                } else {
                     state.file_system_model_2_view = None;
                     state.two_folder_diff_visible_rows = None;
                 }
-                if state.two_folder_diff_visible_rows.is_none() && (state.file_system_model_1_view.is_some() || state.file_system_model_2_view.is_some())
+                if state.two_folder_diff_visible_rows.is_none()
+                    && (state.file_system_model_1_view.is_some()
+                        || state.file_system_model_2_view.is_some())
                 {
-                    state.two_folder_diff_visible_rows = FileSystemView::build_two_folder_diff_rows(
-                        state.file_system_model_1_view.as_ref(),
-                        state.file_system_model_2_view.as_ref(),
-                        &PathComparissonMethod::CrC).ok();
+                    state.two_folder_diff_visible_rows =
+                        FileSystemView::build_two_folder_diff_rows(
+                            state.file_system_model_1_view.as_ref(),
+                            state.file_system_model_2_view.as_ref(),
+                            &PathComparissonMethod::CrC,
+                        )
+                        .ok();
                 }
-                
+
                 self.ui(ctx, frame, &mut state);
-                
+
                 self.process_ctx_inputs(ctx, frame);
                 AppState::Idle(state)
             }

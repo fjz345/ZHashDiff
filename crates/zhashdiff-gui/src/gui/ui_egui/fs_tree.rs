@@ -8,11 +8,11 @@ use std::{
 use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
+use zcommon::hash::HashService;
 use zhashdiff::{
     comparison::{PathComparissonMethod, compare_paths},
     external_diff_tool::{DiffToolConfig, open_diff_tool},
     fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, FsNodeKind, TreeIter},
-    hash::HashService,
 };
 
 use zcommon::ui_egui::common::{

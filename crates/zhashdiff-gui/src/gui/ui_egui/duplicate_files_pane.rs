@@ -5,16 +5,17 @@ use std::sync::Arc;
 use eframe::egui;
 use serde::Deserialize;
 use serde::Serialize;
+use zcommon::hash::HashService;
+use zcommon::ui_egui::common::show_custom_popup;
+use zcommon::ui_egui::common::show_custom_popup_with_color;
 use zhashdiff::conflict::ResolveConflictsInput;
 use zhashdiff::conflict::execute_resolution;
 use zhashdiff::fs::FileSystemModel;
-use zhashdiff::hash::HashService;
 
 use crate::ui_egui::fs_tree::FileSystemView;
 use crate::ui_egui::fs_tree::draw_ui_folder_tree_with_checkbox;
 use crate::ui_egui::panes::PathDiffView;
 use crate::ui_egui::panes::ZAppPane;
-use crate::ui_egui::popup;
 use zcommon::ui_egui::common::CheckboxSelectState;
 use zcommon::ui_egui::common::hash_to_color;
 use zcommon::ui_egui::common::ui_custom_checkbox;
@@ -185,7 +186,7 @@ impl DuplicateFilesPane {
             let total_conflicts = conflicts.len();
             let resolved_count = ctx.conflict_map_resolved.len();
 
-            popup::show_custom_popup(ui.ctx(), &mut temp_show_diff_popup, "Conflicts", |ui| {
+            show_custom_popup(ui.ctx(), &mut temp_show_diff_popup, "Conflicts", |ui| {
                 ui.vertical(|ui| {
                     ui.label(format!(
                         "Conflicts: ({}/{})",
@@ -332,7 +333,7 @@ impl DuplicateFilesPane {
 
             if let Some(value) = ctx.conflict_map.get(&selected_hash) {
                 let hash_color = hash_to_color(&selected_hash);
-                popup::show_custom_popup_with_color(
+                show_custom_popup_with_color(
                     ui.ctx(),
                     &mut temp_is_open,
                     &format!("Conflict Detail: {}", &selected_hash[0..8]),

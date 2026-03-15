@@ -1,5 +1,3 @@
-use crate::lexer::{RawToken, RawTokenTrait, TokenKind};
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiffOp {
     Equal,  // From Source 1
@@ -20,11 +18,7 @@ pub struct DiffIR {
 }
 
 // path from myers backtracking, plus original source/target slices, to generate a diff IR
-pub fn generate_ir<'a, T: RawTokenTrait>(
-    source: &'a [T],
-    target: &'a [T],
-    path: &[(i32, i32)],
-) -> DiffIR {
+pub fn generate_ir(path: &[(i32, i32)]) -> DiffIR {
     let mut entries = Vec::new();
     let mut distance = 0;
 
