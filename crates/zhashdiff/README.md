@@ -1,6 +1,7 @@
 # ZHashDiff
 
 Library crate for tree folder diffs
+
 ../zhashdiff-gui/README.md builds on this
 
 # Features

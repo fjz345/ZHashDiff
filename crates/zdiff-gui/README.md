@@ -1,6 +1,5 @@
 # ZHashDiff-GUI
 
-![alt text](img/showcase2.png)
 ![alt text](img/showcase.png)
 
 Library and Gui for diffing file contents
@@ -14,7 +13,6 @@ Library and Gui for diffing file contents
 * go to prev/next diff buttons
 
 * Ctrl+F Search
-* Ctrl+G Goto
 
 * user defined comparison per file format
 * better horizontal scrolling

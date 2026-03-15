@@ -1,6 +1,7 @@
 # ZDiff
 
 Library diffing file contents.
+
 ../zdiff-gui/README.md builds on this
 
 # Featuers
