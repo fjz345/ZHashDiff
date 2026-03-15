@@ -443,7 +443,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
 
             // Invalidate diff if options changed
             if diff_options_before != *diff_options {
-                app_ctx.diff_ctx = None;
+                app_ctx.diff_ctx_invalidated = true;
             }
 
             for (_tile_id, tile) in self.tree.tiles.iter() {

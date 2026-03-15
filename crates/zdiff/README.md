@@ -6,8 +6,8 @@
 Library and Gui for diffing file contents
 
 # Featuers
-* Herp
-* Derp
+* Myers diffing
+* Powerful diffing view
 
 ## Todo
 * Fix building diff rows bugs

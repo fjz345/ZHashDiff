@@ -51,42 +51,6 @@ impl FileDiffPane {
         let available_width = ui.available_width();
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
 
-        // Currently tokens are only computed when diff_rows is calcualted.
-        // This means that match only matches on diff_rows
-        let diff_rows = ctx.diff_ctx.as_ref().and_then(|f| Some(&f.diff_rows));
-        let dummy_1: Option<bool> = Some(false);
-        let dummy_2: Option<bool> = Some(false);
-        match (&diff_rows, dummy_1, dummy_2) {
-            (Some(_), None, None) | (None, None, None) => {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Load Source & Target files to see diff.");
-                });
-                return egui_tiles::UiResponse::None;
-            }
-            (None, Some(_), None) => {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Target tokens were not set");
-                });
-                return egui_tiles::UiResponse::None;
-            }
-            (None, None, Some(_)) => {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Source tokens were not set");
-                });
-                return egui_tiles::UiResponse::None;
-            }
-            (Some(_), Some(_), None) | (Some(_), None, Some(_)) => {}
-            (None, Some(_), Some(_)) => {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Waiting for diff results...");
-                });
-                return egui_tiles::UiResponse::None;
-            }
-            (Some(_), Some(_), Some(_)) => {}
-        }
-
-        let rows = diff_rows.unwrap();
-
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             let button_size = egui::vec2(24.0, 24.0);
@@ -128,6 +92,42 @@ impl FileDiffPane {
                 ctx.diff_options.keyword_highlight = !ctx.diff_options.keyword_highlight;
             }
         });
+
+        // Currently tokens are only computed when diff_rows is calcualted.
+        // This means that match only matches on diff_rows
+        let diff_rows = ctx.diff_ctx.as_ref().and_then(|f| Some(&f.diff_rows));
+        let dummy_1: Option<bool> = Some(false);
+        let dummy_2: Option<bool> = Some(false);
+        match (&diff_rows, dummy_1, dummy_2) {
+            (Some(_), None, None) | (None, None, None) => {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Load Source & Target files to see diff.");
+                });
+                return egui_tiles::UiResponse::None;
+            }
+            (None, Some(_), None) => {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Target tokens were not set");
+                });
+                return egui_tiles::UiResponse::None;
+            }
+            (None, None, Some(_)) => {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Source tokens were not set");
+                });
+                return egui_tiles::UiResponse::None;
+            }
+            (Some(_), Some(_), None) | (Some(_), None, Some(_)) => {}
+            (None, Some(_), Some(_)) => {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Waiting for diff results...");
+                });
+                return egui_tiles::UiResponse::None;
+            }
+            (Some(_), Some(_), Some(_)) => {}
+        }
+
+        let rows = diff_rows.unwrap();
 
         ui.add_space(4.0);
         ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
