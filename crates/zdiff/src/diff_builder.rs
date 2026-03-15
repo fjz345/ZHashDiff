@@ -1,8 +1,19 @@
+use std::{
+    io,
+    ops::Range,
+    path::{Path, PathBuf},
+};
+
 use eframe::egui;
 use egui::Color32;
 use serde::{Deserialize, Serialize};
 
-use crate::lexer::{Lexer, RawToken, TokenKind};
+use crate::{
+    diff_ir::{DiffIR, DiffOp, DiffResult},
+    hash::hash_file,
+    lexer::{Lexer, RawToken, RawTokenTrait, TokenKind},
+    read_file_contents,
+};
 
 #[derive(Debug, Clone)]
 pub struct DiffRow {
@@ -13,7 +24,7 @@ pub struct DiffRow {
 #[derive(Debug, Clone)]
 pub enum LineContent {
     Code {
-        tokens: Vec<(String, egui::Color32)>,
+        tokens: Vec<(DiffResult, egui::Color32)>,
         line_num: i32,
         bg: egui::Color32,
     },
@@ -36,15 +47,6 @@ impl Default for DiffBuilderOptions {
             keyword_highlight: true,
         }
     }
-}
-
-enum DiffOp<'a> {
-    Match { 
-        t1: &'a RawToken, v1: &'a str, 
-        t2: &'a RawToken, v2: &'a str 
-    },
-    Deletion { t: &'a RawToken, v: &'a str },
-    Insertion { t: &'a RawToken, v: &'a str },
 }
 
 struct DiffTheme {
@@ -70,7 +72,7 @@ impl Default for DiffTheme {
 }
 
 struct SideState {
-    buf: Vec<(String, Color32, bool)>, // String, Color, is_whitespace
+    buf: Vec<(DiffResult, Color32, bool)>, // String, Color, is_whitespace
     line_num: i32,
     active_diff: bool,
 }
@@ -84,7 +86,7 @@ impl SideState {
         }
     }
 
-    fn push(&mut self, val: String, color: Color32, is_ws: bool) {
+    fn push(&mut self, val: DiffResult, color: Color32, is_ws: bool) {
         self.buf.push((val, color, is_ws));
     }
 
@@ -96,23 +98,64 @@ impl SideState {
             LineContent::Code {
                 tokens,
                 line_num: self.line_num,
-                bg: if has_diff { bg_color } else { Color32::TRANSPARENT },
+                bg: if has_diff {
+                    bg_color
+                } else {
+                    Color32::TRANSPARENT
+                },
             }
         }
     }
 }
 
-pub struct DiffBuilder<'a> {
-    options: &'a DiffBuilderOptions,
+#[derive(Debug, Default)]
+pub struct CachedFile<T: RawTokenTrait> {
+    pub path: PathBuf,
+    pub hash: String,
+    pub contents: String,
+    pub tokens: Vec<T>,
+}
+
+impl<T: RawTokenTrait> CachedFile<T> {
+    pub fn read_content_span(&self, span: Range<usize>) -> &str {
+        &self.contents[span]
+    }
+}
+
+impl<T: RawTokenTrait> CachedFile<T> {
+    pub fn new(path: impl AsRef<Path>) -> io::Result<Self> {
+        let contents = read_file_contents(&path)?;
+        let hash = hash_file(&path)?;
+        let tokens = Lexer::<T>::new(&contents).map(T::from).collect();
+        let path = path.as_ref().to_path_buf();
+        Ok(Self {
+            path,
+            hash,
+            contents,
+            tokens,
+        })
+    }
+}
+
+pub struct DiffBuilder<'a, 'b, T: RawTokenTrait> {
+    tokens_source: Option<&'a [T]>,
+    tokens_target: Option<&'a [T]>,
+    options: &'b DiffBuilderOptions,
     theme: DiffTheme,
     rows: Vec<DiffRow>,
     left: SideState,
     right: SideState,
 }
 
-impl<'a> DiffBuilder<'a> {
-    pub fn new(options: &'a DiffBuilderOptions) -> Self {
+impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
+    pub fn new(
+        tokens_source: Option<&'a [T]>,
+        tokens_target: Option<&'a [T]>,
+        options: &'b DiffBuilderOptions,
+    ) -> Self {
         Self {
+            tokens_source,
+            tokens_target,
             options,
             theme: DiffTheme::default(),
             rows: Vec::new(),
@@ -121,33 +164,65 @@ impl<'a> DiffBuilder<'a> {
         }
     }
 
-    fn get_color(&self, tok: &RawToken, is_keyword: bool) -> Color32 {
-        if self.options.keyword_highlight && is_keyword { self.theme.kw } else { Color32::GRAY }
+    fn get_color(&self, is_keyword: bool) -> Color32 {
+        if self.options.keyword_highlight && is_keyword {
+            self.theme.kw
+        } else {
+            Color32::GRAY
+        }
     }
 
-    pub fn handle_match(&mut self, t1: &RawToken, v1: &str, t2: &RawToken, v2: &str) {
-        let c1 = self.get_color(t1, t1.kind.is_keyword());
-        let c2 = self.get_color(t2, t2.kind.is_keyword());
+    pub fn handle_match(&mut self, diff_result: DiffResult) {
+        assert!(matches!(diff_result.operation, DiffOp::Equal));
+        let token = &self.tokens_source.expect("Source was None")[diff_result.token_idx as usize];
+        let color = self.get_color(token.as_ref().kind.is_keyword());
 
-        self.left.push(v1.to_string(), c1, t1.kind.is_whitespace());
-        self.right.push(v2.to_string(), c2, t2.kind.is_whitespace());
+        self.left.push(
+            diff_result.clone(),
+            color,
+            token.as_ref().kind.is_whitespace(),
+        );
+        self.right
+            .push(diff_result, color, token.as_ref().kind.is_whitespace());
 
-        if t1.kind == TokenKind::Newline {
+        if token.as_ref().kind == TokenKind::Newline {
             self.emit_row();
         }
     }
 
-    pub fn handle_diff(&mut self, tok: &RawToken, val: &str, is_deletion: bool) {
-        let ws = tok.kind.is_whitespace();
+    pub fn handle_diff(&mut self, diff_result: DiffResult, is_deletion: bool) {
+        assert!(matches!(
+            diff_result.operation,
+            DiffOp::Delete | DiffOp::Insert
+        ));
+        let token = if diff_result.operation == DiffOp::Delete {
+            &self.tokens_source.expect("Source is None")[diff_result.token_idx as usize]
+        } else {
+            &self.tokens_target.expect("Target is none")[diff_result.token_idx as usize]
+        };
+        let ws = token.as_ref().kind.is_whitespace();
         if !self.options.ignore_whitespace || !ws {
-            if is_deletion { self.left.active_diff = true; } else { self.right.active_diff = true; }
+            if is_deletion {
+                self.left.active_diff = true;
+            } else {
+                self.right.active_diff = true;
+            }
         }
 
-        let target = if is_deletion { &mut self.left } else { &mut self.right };
-        let color = if is_deletion { self.theme.del } else { self.theme.ins };
-        target.push(val.to_string(), color, ws);
+        let target = if is_deletion {
+            &mut self.left
+        } else {
+            &mut self.right
+        };
+        let color = if is_deletion {
+            self.theme.del
+        } else {
+            self.theme.ins
+        };
 
-        if tok.kind == TokenKind::Newline {
+        target.push(diff_result.clone(), color, ws);
+
+        if token.as_ref().kind == TokenKind::Newline {
             self.emit_row();
         }
     }
@@ -159,14 +234,25 @@ impl<'a> DiffBuilder<'a> {
         }
 
         let hi = self.options.highlight_rows;
-        let left_row = self.left.flush(self.left.active_diff && hi, self.theme.del_bg);
-        let right_row = self.right.flush(self.right.active_diff && hi, self.theme.ins_bg);
+        let left_row = self
+            .left
+            .flush(self.left.active_diff && hi, self.theme.del_bg);
+        let right_row = self
+            .right
+            .flush(self.right.active_diff && hi, self.theme.ins_bg);
 
         // Increment line numbers for any side that produced a row (real or ghost)
-        if !matches!(left_row, LineContent::Void) { self.left.line_num += 1; }
-        if !matches!(right_row, LineContent::Void) { self.right.line_num += 1; }
+        if !matches!(left_row, LineContent::Void) {
+            self.left.line_num += 1;
+        }
+        if !matches!(right_row, LineContent::Void) {
+            self.right.line_num += 1;
+        }
 
-        self.rows.push(DiffRow { left: left_row, right: right_row });
+        self.rows.push(DiffRow {
+            left: left_row,
+            right: right_row,
+        });
         self.left.active_diff = false;
         self.right.active_diff = false;
     }
@@ -178,15 +264,27 @@ impl<'a> DiffBuilder<'a> {
         if l_empty && !r_empty {
             let mut started = false;
             for (val, _, is_ws) in &self.right.buf {
-                let color = if *is_ws && !started { Color32::TRANSPARENT } else { self.theme.ghost };
-                if !*is_ws { started = true; }
+                let color = if *is_ws && !started {
+                    Color32::TRANSPARENT
+                } else {
+                    self.theme.ghost
+                };
+                if !*is_ws {
+                    started = true;
+                }
                 self.left.buf.push((val.clone(), color, *is_ws));
             }
         } else if r_empty && !l_empty {
             let mut started = false;
             for (val, _, is_ws) in &self.left.buf {
-                let color = if *is_ws && !started { Color32::TRANSPARENT } else { self.theme.ghost };
-                if !*is_ws { started = true; }
+                let color = if *is_ws && !started {
+                    Color32::TRANSPARENT
+                } else {
+                    self.theme.ghost
+                };
+                if !*is_ws {
+                    started = true;
+                }
                 self.right.buf.push((val.clone(), color, *is_ws));
             }
         }
@@ -197,52 +295,19 @@ impl<'a> DiffBuilder<'a> {
     }
 }
 
-pub fn build_diff_rows(
-    path: &[(i32, i32)],
-    t1: &[RawToken],
-    t2: &[RawToken],
-    lex1: &Lexer,
-    lex2: &Lexer,
+pub fn build_diff_rows<'a, T: RawTokenTrait>(
+    diff_ir: DiffIR,
+    tokens_source: Option<&'a [T]>,
+    tokens_target: Option<&'a [T]>,
     options: &DiffBuilderOptions,
 ) -> Vec<DiffRow> {
-    let mut builder = DiffBuilder::new(options);
-
-    for window in path.windows(2) {
-        let (x1, y1) = (window[0].0 as usize, window[0].1 as usize);
-        let (x2, y2) = (window[1].0 as usize, window[1].1 as usize);
-
-        if x2 > x1 && y2 > y1 {
-            builder.handle_match(&t1[x1], lex1.token_value(&t1[x1]), &t2[y1], lex2.token_value(&t2[y1]));
-        } else {
-            let is_del = x2 > x1;
-            let (tok, lex) = if is_del { (&t1[x1], lex1) } else { (&t2[y1], lex2) };
-            builder.handle_diff(tok, lex.token_value(tok), is_del);
+    let mut builder = DiffBuilder::new(tokens_source, tokens_target, options);
+    for diff_result in diff_ir.entries {
+        match &diff_result.operation {
+            DiffOp::Equal => builder.handle_match(diff_result),
+            DiffOp::Delete => builder.handle_diff(diff_result, true),
+            DiffOp::Insert => builder.handle_diff(diff_result, false),
         }
     }
-
     builder.finish()
-}
-
-pub fn build_single_file_rows(
-    tokens: &[RawToken],
-    lexer: &Lexer,
-    options: &DiffBuilderOptions,
-    is_left_side: bool,
-) -> Vec<DiffRow> {
-    let n = tokens.len() as i32;
-    // Create a path that only moves in the direction of the provided file
-    let path: Vec<(i32, i32)> = if is_left_side {
-        (0..=n).map(|i| (i, 0)).collect()
-    } else {
-        (0..=n).map(|i| (0, i)).collect()
-    };
-
-    let empty = Vec::new();
-    let empty_lex = Lexer::new("");
-
-    if is_left_side {
-        build_diff_rows(&path, tokens, &empty, lexer, &empty_lex, options)
-    } else {
-        build_diff_rows(&path, &empty, tokens, &empty_lex, lexer, options)
-    }
 }

@@ -1,13 +1,17 @@
-use std::path::PathBuf;
+use std::{fmt::Debug, path::PathBuf};
 
+use crate::{app::DiffCtx, ui_egui::panes::ZAppPane};
 use eframe::egui::{self, UiBuilder, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
-use zdiff::{diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows }, lexer::{Lexer, RawToken}};
-use crate::{app::DiffCtx, ui_egui::panes::ZAppPane};
+use zdiff::{
+    diff_builder::{CachedFile, DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
+    diff_ir::{DiffResult, generate_ir},
+    lexer::{Lexer, RawToken, RawTokenTrait},
+};
 
-pub struct FileDiffPaneCtx<'a> {
-    pub path_1: Option<&'a PathBuf>,
-    pub path_2: Option<&'a PathBuf>,
+pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
+    pub file_source: Option<&'a CachedFile<T>>,
+    pub file_target: Option<&'a CachedFile<T>>,
 
     pub diff_ctx: Option<&'a DiffCtx>,
     pub diff_options: &'a mut DiffBuilderOptions,
@@ -28,12 +32,14 @@ impl ZAppPane for FileDiffPane {
 
 impl FileDiffPane {
     pub fn new(title: Option<String>) -> Self {
-        Self {
-            title,
-        }
+        Self { title }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut FileDiffPaneCtx) -> egui_tiles::UiResponse {
+    pub fn ui<T: RawTokenTrait>(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &mut FileDiffPaneCtx<T>,
+    ) -> egui_tiles::UiResponse {
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta.x + i.raw_scroll_delta.x);
         if scroll_delta != 0.0 {
             *ctx.scroll_left = (*ctx.scroll_left - scroll_delta).max(0.0);
@@ -47,29 +53,36 @@ impl FileDiffPane {
 
         // Currently tokens are only computed when diff_rows is calcualted.
         // This means that match only matches on diff_rows
-        let diff_rows = ctx.diff_ctx.as_ref().and_then(|f|Some(&f.diff_rows));
+        let diff_rows = ctx.diff_ctx.as_ref().and_then(|f| Some(&f.diff_rows));
         let dummy_1: Option<bool> = Some(false);
         let dummy_2: Option<bool> = Some(false);
-        match (&diff_rows, dummy_1, dummy_2)
-        {
+        match (&diff_rows, dummy_1, dummy_2) {
             (Some(_), None, None) | (None, None, None) => {
-                ui.centered_and_justified(|ui| { ui.label("Load Source & Target files to see diff."); });
+                ui.centered_and_justified(|ui| {
+                    ui.label("Load Source & Target files to see diff.");
+                });
                 return egui_tiles::UiResponse::None;
-            },
+            }
             (None, Some(_), None) => {
-                ui.centered_and_justified(|ui| { ui.label("Target tokens were not set"); });
+                ui.centered_and_justified(|ui| {
+                    ui.label("Target tokens were not set");
+                });
                 return egui_tiles::UiResponse::None;
-            },
+            }
             (None, None, Some(_)) => {
-                ui.centered_and_justified(|ui| { ui.label("Source tokens were not set"); });
+                ui.centered_and_justified(|ui| {
+                    ui.label("Source tokens were not set");
+                });
                 return egui_tiles::UiResponse::None;
-            },
-            (Some(_), Some(_), None) | (Some(_), None, Some(_)) => {},
+            }
+            (Some(_), Some(_), None) | (Some(_), None, Some(_)) => {}
             (None, Some(_), Some(_)) => {
-                ui.centered_and_justified(|ui| { ui.label("Waiting for diff results..."); });
+                ui.centered_and_justified(|ui| {
+                    ui.label("Waiting for diff results...");
+                });
                 return egui_tiles::UiResponse::None;
-            },
-            (Some(_), Some(_), Some(_)) =>  {},
+            }
+            (Some(_), Some(_), Some(_)) => {}
         }
 
         let rows = diff_rows.unwrap();
@@ -80,22 +93,38 @@ impl FileDiffPane {
 
             let ws_btn = egui::Button::new(egui::RichText::new("W").strong())
                 .selected(ctx.diff_options.ignore_whitespace);
-            if ui.add_sized(button_size, ws_btn).on_hover_text("Ignore Whitespace").clicked() {
+            if ui
+                .add_sized(button_size, ws_btn)
+                .on_hover_text("Ignore Whitespace")
+                .clicked()
+            {
                 ctx.diff_options.ignore_whitespace = !ctx.diff_options.ignore_whitespace;
             }
             let hl_btn = egui::Button::new(egui::RichText::new("H").strong())
                 .selected(ctx.diff_options.highlight_rows);
-            if ui.add_sized(button_size, hl_btn).on_hover_text("Highlight Rows").clicked() {
+            if ui
+                .add_sized(button_size, hl_btn)
+                .on_hover_text("Highlight Rows")
+                .clicked()
+            {
                 ctx.diff_options.highlight_rows = !ctx.diff_options.highlight_rows;
             }
             let gst_btn = egui::Button::new("👻") // Emoji works because of egui's emoji font
                 .selected(ctx.diff_options.ghost_rows);
-            if ui.add_sized(button_size, gst_btn).on_hover_text("Ghost Rows").clicked() {
+            if ui
+                .add_sized(button_size, gst_btn)
+                .on_hover_text("Ghost Rows")
+                .clicked()
+            {
                 ctx.diff_options.ghost_rows = !ctx.diff_options.ghost_rows;
             }
             let kw_btn = egui::Button::new(egui::RichText::new("K").strong())
                 .selected(ctx.diff_options.keyword_highlight);
-            if ui.add_sized(button_size, kw_btn).on_hover_text("Keyword Highlight").clicked() {
+            if ui
+                .add_sized(button_size, kw_btn)
+                .on_hover_text("Keyword Highlight")
+                .clicked()
+            {
                 ctx.diff_options.keyword_highlight = !ctx.diff_options.keyword_highlight;
             }
         });
@@ -113,91 +142,140 @@ impl FileDiffPane {
                 egui::Frame::default()
                     .fill(egui::Color32::from_gray(15))
                     .show(ui, |ui| {
-                    use egui_extras::{TableBuilder, Column};
+                        use egui_extras::{Column, TableBuilder};
 
-                    TableBuilder::new(ui)
-                        .id_salt("file_diff_table")
-                        .striped(false)
-                        .resizable(true)
-                        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                        .column(Column::initial(available_width * 0.48).at_least(100.0).clip(false))
-                        .column(Column::exact(12.0)) // "≠"
-                        .column(Column::remainder().clip(false))
-                        .header(20.0, |mut header| {
-                            header.col(|ui| { ui.strong(ctx.path_1.cloned().unwrap_or_default().display().to_string()); });
-                            header.col(|_| {});
-                            header.col(|ui| { ui.strong(ctx.path_2.cloned().unwrap_or_default().display().to_string()); });
-                        })
-                        .body(|body| {
-                            let widths = body.widths().to_vec();
-                            body.rows(row_height, rows.len(), |mut row| {
-                                let row_index = row.index();
-                                let diff_row = &rows[row.index()];
-                                
-                                let left_w = widths[0];
-                                let right_w = widths[2];
-
-
-                                row.col(|ui| {
-                                    egui::ScrollArea::horizontal()
-                                        .id_salt((format!("l{}", row_index)))
-                                        .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
-                                        .scroll_offset(egui::vec2(sl, 0.0))
-                                        .show(ui, |ui| {
-                                            Self::render_side(ui, &diff_row.left, widths[0]);
-                                        });
+                        TableBuilder::new(ui)
+                            .id_salt("file_diff_table")
+                            .striped(false)
+                            .resizable(true)
+                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                            .column(
+                                Column::initial(available_width * 0.48)
+                                    .at_least(100.0)
+                                    .clip(false),
+                            )
+                            .column(Column::exact(12.0)) // "≠"
+                            .column(Column::remainder().clip(false))
+                            .header(20.0, |mut header| {
+                                header.col(|ui| {
+                                    ui.strong(
+                                        ctx.file_source
+                                            .and_then(|f| Some(f.path.display().to_string()))
+                                            .unwrap_or_default(),
+                                    );
                                 });
+                                header.col(|_| {});
+                                header.col(|ui| {
+                                    ui.strong(
+                                        ctx.file_target
+                                            .and_then(|f| Some(f.path.display().to_string()))
+                                            .unwrap_or_default(),
+                                    );
+                                });
+                            })
+                            .body(|body| {
+                                let widths = body.widths().to_vec();
+                                body.rows(row_height, rows.len(), |mut row| {
+                                    let row_index = row.index();
+                                    let diff_row = &rows[row.index()];
 
-                                row.col(|ui| {
-                                    let text = match (&diff_row.left, &diff_row.right) {
-                                        (LineContent::Void, _) => "+",
-                                        (_, LineContent::Void) => "-",
-                                        (LineContent::Code { .. }, LineContent::Code { bg, .. }) 
-                                            if *bg != egui::Color32::TRANSPARENT => "≠",
-                                        _ => " ",
-                                    };
-                                    ui.centered_and_justified(|ui| {
-                                        ui.label(egui::RichText::new(text).color(egui::Color32::DARK_GRAY));
+                                    let left_w = widths[0];
+                                    let right_w = widths[2];
+
+                                    row.col(|ui| {
+                                        egui::ScrollArea::horizontal()
+                                            .id_salt((format!("l{}", row_index)))
+                                            .scroll_bar_visibility(
+                                                ScrollBarVisibility::AlwaysHidden,
+                                            )
+                                            .scroll_offset(egui::vec2(sl, 0.0))
+                                            .show(ui, |ui| {
+                                                Self::render_side(
+                                                    ui,
+                                                    ctx.file_source,
+                                                    ctx.file_target,
+                                                    &ctx.diff_ctx.unwrap(),
+                                                    &diff_row.left,
+                                                    widths[0],
+                                                );
+                                            });
+                                    });
+
+                                    row.col(|ui| {
+                                        let text = match (&diff_row.left, &diff_row.right) {
+                                            (LineContent::Void, _) => "+",
+                                            (_, LineContent::Void) => "-",
+                                            (
+                                                LineContent::Code { .. },
+                                                LineContent::Code { bg, .. },
+                                            ) if *bg != egui::Color32::TRANSPARENT => "≠",
+                                            _ => " ",
+                                        };
+                                        ui.centered_and_justified(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(text)
+                                                    .color(egui::Color32::DARK_GRAY),
+                                            );
+                                        });
+                                    });
+
+                                    row.col(|ui| {
+                                        egui::ScrollArea::horizontal()
+                                            .id_salt(format!("r{}", row_index))
+                                            .scroll_bar_visibility(
+                                                ScrollBarVisibility::AlwaysHidden,
+                                            )
+                                            .scroll_offset(egui::vec2(sr, 0.0))
+                                            .show(ui, |ui| {
+                                                Self::render_side(
+                                                    ui,
+                                                    ctx.file_source,
+                                                    ctx.file_target,
+                                                    ctx.diff_ctx.unwrap(),
+                                                    &diff_row.right,
+                                                    widths[2],
+                                                );
+                                            });
                                     });
                                 });
-
-                                row.col(|ui| {
-                                    egui::ScrollArea::horizontal()
-                                        .id_salt(format!("r{}", row_index))
-                                        .scroll_bar_visibility(ScrollBarVisibility::AlwaysHidden)
-                                        .scroll_offset(egui::vec2(sr, 0.0))
-                                        .show(ui, |ui| {
-                                            Self::render_side(ui, &diff_row.right, widths[2]);
-                                        });
-                                });
                             });
-                        });
                     });
-                });
+            });
 
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    let left_w = available_width * 0.48;
-                    ui.allocate_ui(egui::vec2(left_w, 20.0), |ui| {
-                        ui.add(egui::Slider::new(ctx.scroll_left, 0.0..=2000.0).show_value(false));
-                    });
-                    ui.add_space(12.0);
-                    ui.allocate_ui(egui::vec2(ui.available_width(), 20.0), |ui| {
-                        ui.add(egui::Slider::new(ctx.scroll_right, 0.0..=2000.0).show_value(false));
-                    });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let left_w = available_width * 0.48;
+                ui.allocate_ui(egui::vec2(left_w, 20.0), |ui| {
+                    ui.add(egui::Slider::new(ctx.scroll_left, 0.0..=2000.0).show_value(false));
+                });
+                ui.add_space(12.0);
+                ui.allocate_ui(egui::vec2(ui.available_width(), 20.0), |ui| {
+                    ui.add(egui::Slider::new(ctx.scroll_right, 0.0..=2000.0).show_value(false));
                 });
             });
+        });
 
         egui_tiles::UiResponse::None
     }
-    
-    fn render_side(ui: &mut egui::Ui, content: &LineContent, width: f32) {
+
+    fn render_side<T: RawTokenTrait>(
+        ui: &mut egui::Ui,
+        file_source: Option<&CachedFile<T>>,
+        file_target: Option<&CachedFile<T>>,
+        diff_ctx: &DiffCtx,
+        content: &LineContent,
+        width: f32,
+    ) {
         let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
-        
+
         let (rect, _) = ui.allocate_at_least(egui::vec2(width, row_h), egui::Sense::hover());
 
         match content {
-            LineContent::Code { tokens, line_num, bg } => {
+            LineContent::Code {
+                tokens,
+                line_num,
+                bg,
+            } => {
                 ui.painter().rect_filled(rect, 0.0, *bg);
 
                 ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
@@ -206,28 +284,55 @@ impl FileDiffPane {
 
                         // Line number gutter (fixed width)
                         let gutter_width = 35.0;
-                        let line_num_str = if *line_num > 0 { line_num.to_string() } else { String::new() };
-                        
+                        let line_num_str = if *line_num > 0 {
+                            line_num.to_string()
+                        } else {
+                            String::new()
+                        };
+
                         ui.add_sized(
-                            [gutter_width, row_h], 
+                            [gutter_width, row_h],
                             egui::Label::new(
                                 egui::RichText::new(line_num_str)
                                     .color(egui::Color32::DARK_GRAY)
-                                    .size(10.0)
-                            )
+                                    .size(10.0),
+                            ),
                         );
 
                         ui.add_space(4.0);
-                        
-                        for (text, color) in tokens {
-                            if text == "\n" || text == "\r\n" { continue; }
-                            ui.label(egui::RichText::new(text).color(*color));
+
+                        let read_string = |diff_result: &DiffResult| -> &str {
+                            let str = match diff_result.operation {
+                                zdiff::diff_ir::DiffOp::Equal | zdiff::diff_ir::DiffOp::Delete => {
+                                    let token = &file_source.expect("Source was None").tokens
+                                        [diff_result.token_idx as usize];
+                                    file_source
+                                        .unwrap()
+                                        .read_content_span(token.as_ref().span.clone())
+                                }
+                                zdiff::diff_ir::DiffOp::Insert => {
+                                    let token = &file_target.expect("Source was None").tokens
+                                        [diff_result.token_idx as usize];
+                                    file_target
+                                        .unwrap()
+                                        .read_content_span(token.as_ref().span.clone())
+                                }
+                            };
+                            return str;
+                        };
+                        for (diff_result, color) in tokens {
+                            let str = read_string(diff_result);
+                            if str == "\n" || str == "\r\n" {
+                                continue;
+                            }
+                            ui.label(egui::RichText::new(str).color(*color));
                         }
                     });
                 });
             }
             LineContent::Void => {
-                ui.painter().rect_filled(rect, 0.0, egui::Color32::from_gray(15));
+                ui.painter()
+                    .rect_filled(rect, 0.0, egui::Color32::from_gray(15));
             }
         }
     }
@@ -238,17 +343,21 @@ fn test_build_diff_rows_header_edit() {
     let s1 = "\t#define hello_there\n\t// Comment\n";
     let s2 = "\t#define world_here\n\t// Comment\n";
 
-    let mut lex1 = Lexer::new(s1);
-    let mut lex2 = Lexer::new(s2);
+    let mut lex1 = Lexer::<RawToken>::new(s1);
+    let mut lex2 = Lexer::<RawToken>::new(s2);
     let t1 = lex1.parse();
     let t2 = lex2.parse();
 
     // path: (x, y)
     let path = vec![
-        (0, 0), (1, 1), // \t match
-        (2, 1),         // Del hello_there
-        (2, 2),         // Ins world_here
-        (3, 3), (4, 4), (5, 5), (6, 6),
+        (0, 0),
+        (1, 1), // \t match
+        (2, 1), // Del hello_there
+        (2, 2), // Ins world_here
+        (3, 3),
+        (4, 4),
+        (5, 5),
+        (6, 6),
     ];
 
     let options = DiffBuilderOptions {
@@ -258,34 +367,74 @@ fn test_build_diff_rows_header_edit() {
         ignore_whitespace: false,
     };
 
-    let rows = build_diff_rows(&path, &t1, &t2, &lex1, &lex2, &options);
+    let diff_ir = generate_ir(&t1, &t2, &path);
+    let rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
 
     println!("\n--- BUILT DIFF ROWS VISUALIZATION ---");
-    println!("{:<3} | {:<5} | {:<30} | {:<5} | {:<30}", "IDX", "L#", "LEFT", "R#", "RIGHT");
+    println!(
+        "{:<3} | {:<5} | {:<30} | {:<5} | {:<30}",
+        "IDX", "L#", "LEFT", "R#", "RIGHT"
+    );
+
+    let read_string = |diff_result: &DiffResult| -> &str {
+        let str = match diff_result.operation {
+            zdiff::diff_ir::DiffOp::Equal | zdiff::diff_ir::DiffOp::Delete => {
+                let token = &t1[diff_result.token_idx as usize];
+                lex1.read_content_span(token.as_ref().span.clone())
+            }
+            zdiff::diff_ir::DiffOp::Insert => {
+                let token = &t1[diff_result.token_idx as usize];
+                lex2.read_content_span(token.as_ref().span.clone())
+            }
+        };
+        return str;
+    };
+
     for (i, row) in rows.iter().enumerate() {
         let l_disp = match &row.left {
-            LineContent::Code { tokens, .. } => format!("{:?}", tokens.iter().map(|(s,_)| s.clone()).collect::<String>()),
+            LineContent::Code { tokens, .. } => {
+                let collected_tokens: Vec<_> = tokens.iter().map(|(s, _)| s.clone()).collect(); // Collect into a Vec first
+                format!("{:?}", collected_tokens)
+            }
             _ => "VOID".into(),
         };
+
         let r_disp = match &row.right {
-            LineContent::Code { tokens, .. } => format!("{:?}", tokens.iter().map(|(s,_)| s.clone()).collect::<String>()),
+            LineContent::Code { tokens, .. } => {
+                let collected_tokens: Vec<_> = tokens.iter().map(|(s, _)| s.clone()).collect();
+                format!("{:?}", collected_tokens)
+            }
             _ => "VOID".into(),
         };
-        println!("{:<3} | {:<5} | {:<30} | {:<5} | {:<30}", i, i+1, l_disp, i+1, r_disp);
+
+        println!(
+            "{:<3} | {:<5} | {:<30} | {:<5} | {:<30}",
+            i,
+            i + 1,
+            l_disp,
+            i + 1,
+            r_disp
+        );
     }
 
-    assert_row_content(0, &rows[0], 1, 1, "\t#define hello_there\n", "\t#define world_here\n");
+    assert_row_content(
+        0,
+        &rows[0],
+        1,
+        1,
+        "\t#define hello_there\n",
+        "\t#define world_here\n",
+    );
     assert_row_content(1, &rows[1], 2, 2, "\t// Comment\n", "\t// Comment\n");
 }
-
 
 #[test]
 fn test_build_diff_rows_ghost_enabled() {
     let s1 = "deleted_line\nmatch\n";
     let s2 = "match\n";
 
-    let mut lex1 = Lexer::new(s1);
-    let mut lex2 = Lexer::new(s2);
+    let mut lex1 = Lexer::<RawToken>::new(s1);
+    let mut lex2 = Lexer::<RawToken>::new(s2);
     let t1 = lex1.parse();
     let t2 = lex2.parse();
 
@@ -293,9 +442,11 @@ fn test_build_diff_rows_ghost_enabled() {
     // 0,0 -> 2,0 : Delete "deleted_line" and "\n" from left
     // 2,0 -> 4,2 : Match "match" and "\n"
     let path = vec![
-        (0, 0), 
-        (1, 0), (2, 0), // Delete "deleted_line", "\n"
-        (3, 1), (4, 2), // Match "match", "\n"
+        (0, 0),
+        (1, 0),
+        (2, 0), // Delete "deleted_line", "\n"
+        (3, 1),
+        (4, 2), // Match "match", "\n"
     ];
 
     let options = DiffBuilderOptions {
@@ -305,27 +456,50 @@ fn test_build_diff_rows_ghost_enabled() {
         ignore_whitespace: false,
     };
 
-    let rows = build_diff_rows(&path, &t1, &t2, &lex1, &lex2, &options);
+    let diff_ir = generate_ir(&t1, &t2, &path);
+    let rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
 
     println!("\n--- GHOST ROWS VISUALIZATION ---");
-    println!("{:<3} | {:<5} | {:<30} | {:<5} | {:<30}", "IDX", "L#", "LEFT (REAL/GHOST)", "R#", "RIGHT (GHOST/REAL)");
+    println!(
+        "{:<3} | {:<5} | {:<30} | {:<5} | {:<30}",
+        "IDX", "L#", "LEFT (REAL/GHOST)", "R#", "RIGHT (GHOST/REAL)"
+    );
     for (i, row) in rows.iter().enumerate() {
         let (l_text, l_num) = match &row.left {
-            LineContent::Code { tokens, line_num, .. } => (tokens.iter().map(|(s,_)| s.clone()).collect::<String>(), *line_num),
-            _ => ("VOID".into(), -1),
+            LineContent::Code {
+                tokens, line_num, ..
+            } => (
+                // Collect into a Vec to satisfy Debug {:?} formatting
+                tokens.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>(),
+                *line_num,
+            ),
+            _ => (vec![], -1), // Match type with a Vec
         };
+
         let (r_text, r_num) = match &row.right {
-            LineContent::Code { tokens, line_num, .. } => (tokens.iter().map(|(s,_)| s.clone()).collect::<String>(), *line_num),
-            _ => ("VOID".into(), -1),
+            LineContent::Code {
+                tokens, line_num, ..
+            } => (
+                tokens.iter().map(|(s, _)| s.clone()).collect::<Vec<_>>(),
+                *line_num,
+            ),
+            _ => (vec![], -1),
         };
-        println!("{:<3} | {:<5} | {:<30?} | {:<5} | {:<30?}", i, l_num, l_text, r_num, r_text);
+
+        println!(
+            "{:<3} | {:<5} | {:<30?} | {:<5} | {:<30?}",
+            i, l_num, l_text, r_num, r_text
+        );
     }
 
     assert_row_content(0, &rows[0], 1, 1, "deleted_line\n", "deleted_line\n");
-    
+
     if let LineContent::Code { tokens, .. } = &rows[0].right {
         let ghost_color = egui::Color32::from_rgba_unmultiplied(150, 150, 150, 80);
-        assert_eq!(tokens[0].1, ghost_color, "Right side token should have ghost color");
+        assert_eq!(
+            tokens[0].1, ghost_color,
+            "Right side token should have ghost color"
+        );
     }
 
     assert_row_content(1, &rows[1], 2, 2, "match\n", "match\n");
@@ -336,14 +510,14 @@ fn test_build_diff_rows_ignore_whitespace() {
     let s1 = "ImGuiChildFlags_Border\n";
     let s2 = "ImGuiChildFlags_Borders,  // Renamed in 1.91.1\n";
 
-    let mut lex1 = Lexer::new(s1);
-    let mut lex2 = Lexer::new(s2);
+    let mut lex1 = Lexer::<RawToken>::new(s1);
+    let mut lex2 = Lexer::<RawToken>::new(s2);
     let t1 = lex1.parse();
     let t2 = lex2.parse();
 
     // path: (x, y)
     let path = vec![
-        (0, 0), 
+        (0, 0),
         (1, 0), // Delete "ImGuiChildFlags_Border"
         (1, 1), // Insert "ImGuiChildFlags_Borders"
         (1, 2), // Insert ","
@@ -359,35 +533,74 @@ fn test_build_diff_rows_ignore_whitespace() {
         ignore_whitespace: true,
     };
 
-    let rows = build_diff_rows(&path, &t1, &t2, &lex1, &lex2, &options);
+    let diff_ir = generate_ir(&t1, &t2, &path);
+    let rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
 
     println!("\n--- WHITESPACE IGNORE VISUALIZATION ---");
     for (i, row) in rows.iter().enumerate() {
         let l_text = match &row.left {
-            LineContent::Code { tokens, .. } => tokens.iter().map(|(s,_)| s.as_str()).collect::<String>(),
+            LineContent::Code { tokens, .. } => {
+                tokens
+                    .iter()
+                    .map(|(s, _)| {
+                        // Replace 'token' with the actual field name in DiffResult
+                        // that contains your RawToken/string data
+                        format!("{:?}", s)
+                    })
+                    .collect::<String>()
+            }
             _ => "VOID".into(),
         };
+
         let r_text = match &row.right {
-            LineContent::Code { tokens, .. } => tokens.iter().map(|(s,_)| s.as_str()).collect::<String>(),
+            LineContent::Code { tokens, .. } => {
+                tokens
+                    .iter()
+                    .map(|(s, _)| {
+                        // Replace 'token' with the actual field name in DiffResult
+                        // that contains your RawToken/string data
+                        format!("{:?}", s)
+                    })
+                    .collect::<String>()
+            }
             _ => "VOID".into(),
         };
-        println!("IDX {} | L: {:?} | R: {:?}", i, l_text, r_text);
+
+        // ... repeat for r_text ...
     }
 
-    assert_eq!(rows.len(), 1, "Should have collapsed the diff into a single row");
-    
+    assert_eq!(
+        rows.len(),
+        1,
+        "Should have collapsed the diff into a single row"
+    );
+
     assert_row_content(
-        0, &rows[0], 
-        1, 1, 
-        "ImGuiChildFlags_Border\n", 
-        "ImGuiChildFlags_Borders,  // Renamed in 1.91.1\n"
+        0,
+        &rows[0],
+        1,
+        1,
+        "ImGuiChildFlags_Border\n",
+        "ImGuiChildFlags_Borders,  // Renamed in 1.91.1\n",
     );
 }
 
-fn assert_row_content(idx: usize, row: &DiffRow, l_line: i32, r_line: i32, l_text: &str, r_text: &str) {
+fn assert_row_content(
+    idx: usize,
+    row: &DiffRow,
+    l_line: i32,
+    r_line: i32,
+    l_text: &str,
+    r_text: &str,
+) {
     let get_data = |content: &LineContent| match content {
-        LineContent::Code { tokens, line_num, .. } => {
-            let text = tokens.iter().map(|(s, _)| s.as_str()).collect::<String>();
+        LineContent::Code {
+            tokens, line_num, ..
+        } => {
+            let text = tokens
+                .iter()
+                .map(|(s, _)| format!("{:?}", s))
+                .collect::<String>();
             (text, *line_num)
         }
         LineContent::Void => ("VOID".to_string(), -1),
@@ -405,7 +618,7 @@ fn assert_row_content(idx: usize, row: &DiffRow, l_line: i32, r_line: i32, l_tex
         ));
         report.push_str(&"-".repeat(105));
         report.push('\n');
-        
+
         report.push_str(&format!(
             "{:<5} | {:<5} | {:<40?} | {:<5} | {:<40?}\n",
             "EXP", l_line, l_text, r_line, r_text

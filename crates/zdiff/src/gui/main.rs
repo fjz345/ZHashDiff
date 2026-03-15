@@ -1,6 +1,7 @@
 use std::env;
 
 use eframe::egui;
+use zdiff::lexer::RawToken;
 
 use crate::app::ZApp;
 
@@ -32,7 +33,9 @@ fn main() -> eframe::Result {
                 // Try to load saved state from storage
                 if let Some(storage) = cc.storage {
                     if let Some(json) = storage.get_string(eframe::APP_KEY) {
-                        if let Ok(mut app) = serde_json::from_str::<ZApp>(&json) {
+                        use zdiff::lexer::RawToken;
+
+                        if let Ok(mut app) = serde_json::from_str::<ZApp<RawToken>>(&json) {
                             log::info!("Found previous app storage");
                             app.request_init();
                             return Ok(Box::new(app));
@@ -41,9 +44,9 @@ fn main() -> eframe::Result {
                 }
             }
 
-            let mut app = ZApp::new(cc);
+            let mut app = ZApp::<RawToken>::new(cc);
             app.request_init();
-            Ok(Box::<ZApp>::new(app))
+            Ok(Box::<ZApp<RawToken>>::new(app))
         }),
     )
 }

@@ -1,3 +1,5 @@
+use crate::lexer::{RawToken, RawTokenTrait, TokenKind};
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiffOp {
     Equal,  // From Source 1
@@ -6,23 +8,23 @@ pub enum DiffOp {
 }
 
 #[derive(Debug, Clone)]
-pub struct DiffResult<'a, T> {
+pub struct DiffResult {
     pub operation: DiffOp,
-    pub token: &'a T,
+    pub token_idx: u32,
 }
 
 #[derive(Debug, Clone)]
-pub struct DiffIR<'a, T> {
-    pub entries: Vec<DiffResult<'a, T>>,
+pub struct DiffIR {
+    pub entries: Vec<DiffResult>,
     pub distance: i32,
 }
 
 // path from myers backtracking, plus original source/target slices, to generate a diff IR
-pub fn generate_ir<'a, T>(
+pub fn generate_ir<'a, T: RawTokenTrait>(
     source: &'a [T],
     target: &'a [T],
     path: &[(i32, i32)],
-) -> DiffIR<'a, T> {
+) -> DiffIR {
     let mut entries = Vec::new();
     let mut distance = 0;
 
@@ -33,19 +35,19 @@ pub fn generate_ir<'a, T>(
         if x2 > x1 && y2 > y1 {
             entries.push(DiffResult {
                 operation: DiffOp::Equal,
-                token: &source[x1 as usize],
+                token_idx: x1 as u32,
             });
         } else if x2 > x1 {
             distance += 1;
             entries.push(DiffResult {
                 operation: DiffOp::Delete,
-                token: &source[x1 as usize],
+                token_idx: x1 as u32,
             });
         } else if y2 > y1 {
             distance += 1;
             entries.push(DiffResult {
                 operation: DiffOp::Insert,
-                token: &target[y1 as usize],
+                token_idx: y1 as u32,
             });
         }
     }

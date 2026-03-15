@@ -43,7 +43,7 @@ mod tests {
         ];
 
         for (name, src) in cases {
-            let mut lexer = Lexer::new(src);
+            let mut lexer = Lexer::<RawToken>::new(src);
             let tokens = lexer.parse();
 
             assert!(
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn test_greedy_operators_exhaustive() {
         let input = "x / / y // comment\nx /* block */ y";
-        let mut lexer = Lexer::new(input);
+        let mut lexer = Lexer::<RawToken>::new(input);
         let tokens = lexer.parse();
 
         // Verification Table:
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn test_complex_strings() {
         let input = r#"" " "" "with symbols !@#" "unclosed"#;
-        let mut lexer = Lexer::new(input);
+        let mut lexer = Lexer::<RawToken>::new(input);
         let tokens = lexer.parse();
 
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::String)), 
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn test_numeric_boundaries() {
         let input = "123.456 789";
-        let mut lexer = Lexer::new(input);
+        let mut lexer = Lexer::<RawToken>::new(input);
         let tokens = lexer.parse();
 
         assert_eq!(tokens[0].kind, TokenKind::Number, "Expected '123' to be Number, got {:?}", tokens[0].kind);
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn test_unicode_and_whitespace() {
         let input = "let 🦀 = \"value\";\t\n ";
-        let mut lexer = Lexer::new(input);
+        let mut lexer = Lexer::<RawToken>::new(input);
         let tokens = lexer.parse();
 
         for token in &tokens {
@@ -169,11 +169,11 @@ mod tests {
     #[test]
     fn test_lex_idempotency() {
         let input = "fn main() { let x = 5; } // check";
-        let mut lexer1 = Lexer::new(input);
+        let mut lexer1 = Lexer::<RawToken>::new(input);
         let tokens1 = lexer1.parse();
         
         let reconstructed = lexer1.reconstruct_source(&tokens1);
-        let mut lexer2 = Lexer::new(&reconstructed);
+        let mut lexer2 = Lexer::<RawToken>::new(&reconstructed);
         let tokens2 = lexer2.parse();
 
         assert_eq!(tokens1.len(), tokens2.len(), 
@@ -193,7 +193,7 @@ mod tests {
         let win_input = "a\r\nb";
 
         // Test Unix Lexing
-        let lex_unix = Lexer::new(unix_input);
+        let lex_unix = Lexer::<RawToken>::new(unix_input);
         let tokens_unix: Vec<RawToken> = lex_unix.collect();
 
         // Expect: [Identifier("a"), Newline("\n"), Identifier("b")]
@@ -203,7 +203,7 @@ mod tests {
         assert_eq!(&unix_input[tokens_unix[1].span.clone()], "\n");
 
         // Test Windows Lexing
-        let lex_win = Lexer::new(win_input);
+        let lex_win = Lexer::<RawToken>::new(win_input);
         let tokens_win: Vec<RawToken> = lex_win.collect();
 
         // Expect: [Identifier("a"), Newline("\r\n"), Identifier("b")]
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn test_lexer_mixed_whitespace_and_newlines() {
         let input = " \n \r\n ";
-        let tokens: Vec<RawToken> = Lexer::new(input).collect();
+        let tokens: Vec<RawToken> = Lexer::<RawToken>::new(input).collect();
 
         dbg!(&tokens);
 
@@ -265,7 +265,7 @@ mod tests {
         ];
 
         for (filename, content) in files {
-            let mut lexer = Lexer::new(content);
+            let mut lexer = Lexer::<RawToken>::new(content);
             let tokens = lexer.parse();
 
             assert!(
@@ -446,7 +446,7 @@ fn test_files_advanced() {
         ];
 
         for (name, source) in workload {
-            let mut lexer = Lexer::new(source);
+            let mut lexer = Lexer::<RawToken>::new(source);
             let tokens = lexer.parse();
 
             let unknown_tokens: Vec<_> = tokens.iter()
@@ -518,7 +518,7 @@ fn test_files_advanced() {
             ("\n", TokenKind::Newline),
         ];
 
-        let mut lexer = Lexer::new(source);
+        let mut lexer = Lexer::<RawToken>::new(source);
         let tokens = lexer.parse();
 
         let unknown: Vec<_> = tokens.iter()
