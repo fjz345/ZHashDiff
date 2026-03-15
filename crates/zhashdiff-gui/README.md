@@ -3,6 +3,8 @@
 ![alt text](img/showcase2.png)
 ![alt text](img/showcase.png)
 
+GUI for zhashdiff crate
+
 # Features
 * Tree folder diff view
 * Detect & remove duplicate files

@@ -2,7 +2,7 @@
 
 ![alt text](img/showcase.png)
 
-Library and Gui for diffing file contents
+GUI for zdiff crate
 
 # Featuers
 * Myers diffing
