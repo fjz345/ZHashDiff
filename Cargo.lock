@@ -4762,6 +4762,7 @@ dependencies = [
  "egui_tiles",
  "env_logger 0.11.9",
  "log",
+ "pollster",
  "rfd",
  "serde",
  "serde_json",

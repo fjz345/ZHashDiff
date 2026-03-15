@@ -7,7 +7,7 @@ use std::{
     result,
     sync::{
         Arc, Mutex,
-        mpsc::{Receiver, channel},
+        mpsc::{self, Receiver, channel},
     },
     thread::Thread,
 };
@@ -45,6 +45,11 @@ pub struct DiffCtx {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "", deserialize = "T: RawTokenTrait"))]
 pub struct AppStateCtx<T: RawTokenTrait> {
+    #[serde(skip)]
+    rx_file_path_1: Option<mpsc::Receiver<std::path::PathBuf>>,
+    #[serde(skip)]
+    rx_file_path_2: Option<mpsc::Receiver<std::path::PathBuf>>,
+
     file_path_1: Option<PathBuf>,
     file_path_2: Option<PathBuf>,
     #[serde(skip)]
@@ -95,6 +100,8 @@ impl<T: RawTokenTrait> Default for AppStateCtx<T> {
             find_open: Default::default(),
             goto_input: Default::default(),
             find_input: Default::default(),
+            rx_file_path_1: todo!(),
+            rx_file_path_2: todo!(),
         }
     }
 }
@@ -384,6 +391,8 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
     fn show_menu(
         &self,
         ui: &mut egui::Ui,
+        rx_file_path_1: &mut Option<mpsc::Receiver<PathBuf>>,
+        rx_file_path_2: &mut Option<mpsc::Receiver<PathBuf>>,
         file_path_1: &mut Option<PathBuf>,
         file_path_2: &mut Option<PathBuf>,
         file_1: &mut Option<Arc<CachedFile<T>>>,
@@ -393,14 +402,37 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
         find_open: &mut bool,
         goto_open: &mut bool,
     ) {
+        let check_file_rx = |rx_opt: &mut Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
+                             target: &mut Option<std::path::PathBuf>| {
+            if let Some(rx) = rx_opt {
+                match rx.try_recv() {
+                    Ok(path) => *target = Some(path),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => *rx_opt = None,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                }
+            }
+        };
+        check_file_rx(rx_file_path_1, file_path_1);
+        check_file_rx(rx_file_path_2, file_path_2);
+
         ui.horizontal(|ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 ui.menu_button("File", |ui| {
                     if ui.button("Open Source").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_file() {
-                            *file_path_1 = Some(path.clone());
-                        }
+                        let (tx, rx) = mpsc::channel();
+                        *rx_file_path_1 = Some(rx);
+                        std::thread::spawn(move || {
+                            if let Some(path) =
+                                pollster::block_on(rfd::AsyncFileDialog::new().pick_file())
+                            {
+                                println!("File picker: {:?}", path.path());
+                                match tx.send(path.path().to_path_buf()) {
+                                    Ok(_) => {}
+                                    Err(e) => log::error!("{e}"),
+                                }
+                            }
+                        });
                     }
                     if ui.button("Open Target").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_file() {
@@ -424,6 +456,8 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                     if ui.button("Clear File Paths").clicked() {
                         *file_path_1 = None;
                         *file_path_2 = None;
+                        *diff_ctx = None;
+                        *diff_ctx_invalidated = true;
                     }
                     if ui.button("Clear Cached Files").clicked() {
                         *file_1 = None;
@@ -478,10 +512,14 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 find_open,
                 goto_input,
                 find_input,
+                rx_file_path_1,
+                rx_file_path_2,
             } = app_ctx;
             let diff_options_before = diff_options.clone();
             self.show_menu(
                 ui,
+                rx_file_path_1,
+                rx_file_path_2,
                 file_path_1,
                 file_path_2,
                 file_1,
@@ -710,7 +748,15 @@ impl<T: RawTokenTrait> eframe::App for ZApp<T> {
                         let opts = state.diff_options.clone();
 
                         std::thread::spawn(move || {
-                            log::info!("Spawned thread for DiffCtx");
+                            log::info!(
+                                "Spawned thread for DiffCtx\nSource: {}, Target: {}",
+                                f1.as_ref()
+                                    .and_then(|f| Some(f.path.display().to_string()))
+                                    .unwrap_or_default(),
+                                f2.as_ref()
+                                    .and_then(|f| Some(f.path.display().to_string()))
+                                    .unwrap_or_default()
+                            );
                             let result = AppStateCtx::update_diff_rows(f1, f2, &opts);
                             log::info!("Compute for DiffCtx complete!");
                             let _ = tx.send(result);
