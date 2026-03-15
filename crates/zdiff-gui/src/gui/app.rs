@@ -74,7 +74,7 @@ pub struct AppStateCtx<T: RawTokenTrait> {
     pub scroll_left: f32,
     pub scroll_right: f32,
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub scroll_to_row: Option<usize>,
+    pub scroll_to_goto_row: Option<usize>,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub goto_open: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -83,6 +83,8 @@ pub struct AppStateCtx<T: RawTokenTrait> {
     pub find_open: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub find_input: String,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub scroll_to_find_row: Option<usize>,
 }
 
 impl<T: RawTokenTrait> Default for AppStateCtx<T> {
@@ -99,13 +101,14 @@ impl<T: RawTokenTrait> Default for AppStateCtx<T> {
             scroll_left: Default::default(),
             scroll_right: Default::default(),
             diff_ctx_invalidated: Default::default(),
-            scroll_to_row: Default::default(),
+            scroll_to_goto_row: Default::default(),
             goto_open: Default::default(),
             find_open: Default::default(),
             goto_input: Default::default(),
             find_input: Default::default(),
-            rx_file_path_1: todo!(),
-            rx_file_path_2: todo!(),
+            rx_file_path_1: Default::default(),
+            rx_file_path_2: Default::default(),
+            scroll_to_find_row: Default::default(),
         }
     }
 }
@@ -497,7 +500,8 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 rx,
                 diff_ctx_in_progress,
                 diff_ctx_invalidated,
-                scroll_to_row,
+                scroll_to_goto_row,
+                scroll_to_find_row,
                 goto_open,
                 find_open,
                 goto_input,
@@ -531,15 +535,35 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 response.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     if let Ok(line_number) = goto_input.parse::<usize>() {
-                        log::info!("Navigating to line: {}", line_number);
+                        log::info!("Goto to line: {}", line_number);
                         *goto_open = false;
-                        *scroll_to_row = goto_input.parse::<usize>().ok();
+                        *scroll_to_goto_row = goto_input.parse::<usize>().ok();
                         goto_input.clear();
                     }
                 }
             });
             if !goto_window_open {
                 *goto_open = goto_window_open;
+            }
+            let mut find_window_open = *find_open;
+            show_custom_popup(ctx, &mut find_window_open, "Find", |ui| {
+                let response = ui.add(
+                    egui::TextEdit::singleline(find_input)
+                        .desired_width(40.0)
+                        .hint_text("Line..."),
+                );
+                response.request_focus();
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    log::info!("Finding line: {}", find_input);
+                    log::info!("Navigating to line: {}", find_input);
+                    *find_open = false;
+                    *scroll_to_find_row = None;
+                    log::warn!("NYI - Find");
+                    find_input.clear();
+                }
+            });
+            if !find_window_open {
+                *find_open = find_window_open;
             }
 
             let diff_ctx_ref = diff_ctx.as_ref();
@@ -554,7 +578,8 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                     diff_options: diff_options,
                     file_source: file_1.clone(),
                     file_target: file_2.clone(),
-                    scroll_to_row: scroll_to_row,
+                    scroll_to_goto_row,
+                    scroll_to_find_row,
                 },
             };
 
@@ -633,6 +658,13 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                         .expect("State was not valid while processing inputs")
                         .ctx_mut()
                         .goto_open = true;
+                }
+                if r.modifiers.ctrl && r.key_down(egui::Key::F) {
+                    self.state
+                        .as_mut()
+                        .expect("State was not valid while processing inputs")
+                        .ctx_mut()
+                        .find_open = true;
                 }
             });
         }
