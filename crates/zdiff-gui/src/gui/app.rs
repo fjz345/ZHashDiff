@@ -13,8 +13,8 @@ use std::{
 };
 use zcommon::{hash::hash_file, ui_egui::common::show_custom_popup};
 use zdiff::{
-    diff_builder::{CachedFile, DiffBuilderOptions, DiffRow, build_diff_rows},
-    diff_ir::generate_ir,
+    diff_builder::{CachedFile, DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
+    diff_ir::{DiffOp, generate_ir},
     lexer::{Lexer, RawToken, RawTokenTrait, TokenKind},
     myers::{myers_backtrack, myers_count_add_deletes, myers_diff_trace},
     read_file_contents,
@@ -37,6 +37,7 @@ pub struct DiffCtx {
     pub file_2_hash: String,
     pub one_sided_diff_is_left: Option<bool>,
     pub diff_option: DiffBuilderOptions,
+    pub precomputed_diffs: Vec<usize>, // list indicies of diff_rows of DiffOp != Equal from diff_rows
     // Myers
     pub diff_rows: Vec<DiffRow>,
     pub num_add_deletes: (u32, u32),
@@ -85,6 +86,9 @@ pub struct AppStateCtx<T: RawTokenTrait> {
     pub find_input: String,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub scroll_to_find_row: Option<usize>,
+
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub diff_ctx_conflict_cursor: usize,
 }
 
 impl<T: RawTokenTrait> Default for AppStateCtx<T> {
@@ -109,11 +113,34 @@ impl<T: RawTokenTrait> Default for AppStateCtx<T> {
             rx_file_path_1: Default::default(),
             rx_file_path_2: Default::default(),
             scroll_to_find_row: Default::default(),
+            diff_ctx_conflict_cursor: Default::default(),
         }
     }
 }
 
 impl<T: RawTokenTrait> AppStateCtx<T> {
+    fn precompute_diffs(diff_rows: &[DiffRow]) -> Vec<usize> {
+        let precomputed_diffs: Vec<usize> = diff_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, row)| {
+                let has_change = |content: &LineContent| match content {
+                    LineContent::Code { tokens, .. } => {
+                        tokens.iter().any(|(res, _)| res.operation != DiffOp::Equal)
+                    }
+                    LineContent::Void => false,
+                };
+
+                if has_change(&row.left) || has_change(&row.right) {
+                    Some(idx)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        precomputed_diffs
+    }
+
     fn update_diff_rows(
         file_1: Option<Arc<CachedFile<T>>>,
         file_2: Option<Arc<CachedFile<T>>>,
@@ -142,13 +169,17 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
+
+                let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
+                let precomputed_diffs = Self::precompute_diffs(&diff_rows);
                 DiffCtx {
                     file_1_hash: c1_hash,
                     file_2_hash: c2_hash,
                     diff_option: options.clone(),
-                    diff_rows: build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options),
+                    diff_rows,
                     num_add_deletes: myers_count_add_deletes(&path),
                     one_sided_diff_is_left: None,
+                    precomputed_diffs,
                 }
             }
             (Some(c1), None) => {
@@ -173,13 +204,16 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let diff_ir = generate_ir(&path);
 
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
+                let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
+                let precomputed_diffs = Self::precompute_diffs(&diff_rows);
                 DiffCtx {
                     file_1_hash: c1_hash.clone(),
                     file_2_hash: c1_hash,
                     diff_option: options.clone(),
-                    diff_rows: build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options),
+                    diff_rows,
                     num_add_deletes: myers_count_add_deletes(&path),
                     one_sided_diff_is_left: Some(true),
+                    precomputed_diffs,
                 }
             }
             (None, Some(c2)) => {
@@ -204,13 +238,16 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let diff_ir = generate_ir(&path);
 
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
+                let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
+                let precomputed_diffs = Self::precompute_diffs(&diff_rows);
                 DiffCtx {
                     file_1_hash: c2_hash.clone(),
                     file_2_hash: c2_hash,
                     diff_option: options.clone(),
-                    diff_rows: build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options),
+                    diff_rows,
                     num_add_deletes: myers_count_add_deletes(&path),
                     one_sided_diff_is_left: Some(false),
+                    precomputed_diffs,
                 }
             }
             (None, None) => {
@@ -508,6 +545,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 find_input,
                 rx_file_path_1,
                 rx_file_path_2,
+                diff_ctx_conflict_cursor,
             } = app_ctx;
             let diff_options_before = diff_options.clone();
             self.show_menu(
@@ -530,7 +568,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 let response = ui.add(
                     egui::TextEdit::singleline(goto_input)
                         .desired_width(40.0)
-                        .hint_text("Line..."),
+                        .hint_text("#"),
                 );
                 response.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -550,7 +588,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 let response = ui.add(
                     egui::TextEdit::singleline(find_input)
                         .desired_width(40.0)
-                        .hint_text("Line..."),
+                        .hint_text(""),
                 );
                 response.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -570,6 +608,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
 
             ui.separator();
 
+            let mut scroll_to_row = scroll_to_goto_row.clone().or(scroll_to_find_row.clone());
             let mut behavior = TreeBehavior {
                 ctx_file_diff: FileDiffPaneCtx {
                     diff_ctx: diff_ctx_ref,
@@ -578,8 +617,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                     diff_options: diff_options,
                     file_source: file_1.clone(),
                     file_target: file_2.clone(),
-                    scroll_to_goto_row,
-                    scroll_to_find_row,
+                    scroll_to_row: &mut scroll_to_row,
                 },
             };
 
@@ -590,6 +628,11 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
             // Invalidate diff if options changed
             if diff_options_before != *diff_options {
                 app_ctx.diff_ctx_invalidated = true;
+            }
+            // Invalidate goto
+            if scroll_to_row.is_none() {
+                *scroll_to_goto_row = None;
+                *scroll_to_find_row = None;
             }
 
             for (_tile_id, tile) in self.tree.tiles.iter() {
@@ -665,6 +708,25 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                         .expect("State was not valid while processing inputs")
                         .ctx_mut()
                         .find_open = true;
+                }
+                let ctx = self
+                    .state
+                    .as_mut()
+                    .expect("State was not valid while processing inputs")
+                    .ctx_mut();
+                let max_idx = ctx
+                    .diff_ctx
+                    .as_ref()
+                    .and_then(|f| Some(f.precomputed_diffs.len()))
+                    .unwrap_or_default()
+                    .saturating_sub(1);
+                if r.modifiers.ctrl && r.key_pressed(egui::Key::Num1) {
+                    ctx.diff_ctx_conflict_cursor = ctx.diff_ctx_conflict_cursor.saturating_sub(1);
+                    log::info!("Conflict-- @{}", ctx.diff_ctx_conflict_cursor);
+                }
+                if r.modifiers.ctrl && r.key_pressed(egui::Key::Num2) {
+                    ctx.diff_ctx_conflict_cursor = (ctx.diff_ctx_conflict_cursor + 1).min(max_idx);
+                    log::info!("Conflict++ @{}", ctx.diff_ctx_conflict_cursor);
                 }
             });
         }
@@ -798,6 +860,11 @@ impl<T: RawTokenTrait> eframe::App for ZApp<T> {
                             Err(e) => log::error!("Channel error: {e}"),
                         }
                     }
+                }
+
+                if let Some(diff_ctx) = state.diff_ctx.as_ref() {
+                    let conflict_idx = diff_ctx.precomputed_diffs[state.diff_ctx_conflict_cursor];
+                    state.scroll_to_goto_row = Some(conflict_idx);
                 }
 
                 self.ui(ctx, frame, &mut state);
