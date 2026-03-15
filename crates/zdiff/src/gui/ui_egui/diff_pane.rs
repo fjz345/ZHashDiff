@@ -17,6 +17,7 @@ pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
     pub diff_options: &'a mut DiffBuilderOptions,
     pub scroll_left: &'a mut f32,
     pub scroll_right: &'a mut f32,
+    pub scroll_to_row: &'a mut Option<usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -144,7 +145,13 @@ impl FileDiffPane {
                     .show(ui, |ui| {
                         use egui_extras::{Column, TableBuilder};
 
-                        TableBuilder::new(ui)
+                        let mut table_builder = TableBuilder::new(ui);
+                        if let Some(scroll_to_row) = ctx.scroll_to_row {
+                            table_builder =
+                                table_builder.scroll_to_row(*scroll_to_row, Some(egui::Align::Min));
+                            *ctx.scroll_to_row = None;
+                        }
+                        table_builder
                             .id_salt("file_diff_table")
                             .striped(false)
                             .resizable(true)

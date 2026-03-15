@@ -64,6 +64,16 @@ pub struct AppStateCtx<T: RawTokenTrait> {
 
     pub scroll_left: f32,
     pub scroll_right: f32,
+    #[serde(skip)]
+    pub scroll_to_row: Option<usize>,
+    #[serde(skip)]
+    pub goto_open: bool,
+    #[serde(skip)]
+    pub goto_input: String,
+    #[serde(skip)]
+    pub find_open: bool,
+    #[serde(skip)]
+    pub find_input: String,
 }
 
 impl<T: RawTokenTrait> Default for AppStateCtx<T> {
@@ -80,6 +90,11 @@ impl<T: RawTokenTrait> Default for AppStateCtx<T> {
             scroll_left: Default::default(),
             scroll_right: Default::default(),
             diff_ctx_invalidated: Default::default(),
+            scroll_to_row: Default::default(),
+            goto_open: Default::default(),
+            find_open: Default::default(),
+            goto_input: Default::default(),
+            find_input: Default::default(),
         }
     }
 }
@@ -349,6 +364,8 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
         file_2: &mut Option<Arc<CachedFile<T>>>,
         diff_ctx: &mut Option<DiffCtx>,
         diff_ctx_invalidated: &mut bool,
+        find_open: &mut bool,
+        goto_open: &mut bool,
     ) {
         ui.horizontal(|ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -364,10 +381,16 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                             *file_path_2 = Some(path.clone());
                         }
                     }
-                    if ui.button("Swap Source/Target").clicked() {
-                        // std::mem::swap(&mut file_1, &mut file_2);
-                        // std::mem::swap(&mut file_path_1, &mut file_path_2);
-                        // std::mem::swap(&mut scroll_left, &mut scroll_right);
+                    // if ui.button("Swap Source/Target").clicked() {
+                    // std::mem::swap(&mut file_1, &mut file_2);
+                    // std::mem::swap(&mut file_path_1, &mut file_path_2);
+                    // std::mem::swap(&mut scroll_left, &mut scroll_right);
+                    // }
+                    if ui.button("Find").clicked() {
+                        *find_open = true;
+                    }
+                    if ui.button("Goto").clicked() {
+                        *goto_open = true;
                     }
                 });
 
@@ -391,6 +414,20 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
         });
     }
 
+    pub fn show_custom_popup<F>(ctx: &egui::Context, open: &mut bool, title: &str, add_contents: F)
+    where
+        F: FnOnce(&mut egui::Ui),
+    {
+        egui::Window::new(title)
+            .open(open)
+            .resizable(true)
+            .collapsible(false)
+            .default_size([300.0, 150.0])
+            .show(ctx, |ui| {
+                add_contents(ui);
+            });
+    }
+
     fn ui(
         &mut self,
         ctx: &egui::Context,
@@ -410,6 +447,11 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 rx,
                 diff_ctx_in_progress,
                 diff_ctx_invalidated,
+                scroll_to_row,
+                goto_open,
+                find_open,
+                goto_input,
+                find_input,
             } = app_ctx;
             let diff_options_before = diff_options.clone();
             self.show_menu(
@@ -420,7 +462,31 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 file_2,
                 diff_ctx,
                 diff_ctx_invalidated,
+                find_open,
+                goto_open,
             );
+
+            let mut goto_window_open = *goto_open;
+            Self::show_custom_popup(ctx, &mut goto_window_open, "Goto", |ui| {
+                goto_input.retain(|c| c.is_ascii_digit());
+
+                let response = ui.add(
+                    egui::TextEdit::singleline(goto_input)
+                        .desired_width(40.0)
+                        .hint_text("Line..."),
+                );
+                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    if let Ok(line_number) = goto_input.parse::<usize>() {
+                        log::info!("Navigating to line: {}", line_number);
+                        *goto_open = false;
+                        *scroll_to_row = goto_input.parse::<usize>().ok();
+                        goto_input.clear();
+                    }
+                }
+            });
+            if !goto_window_open {
+                *goto_open = goto_window_open;
+            }
 
             let diff_ctx_ref = diff_ctx.as_ref();
 
@@ -434,6 +500,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                     diff_options: diff_options,
                     file_source: file_1.clone(),
                     file_target: file_2.clone(),
+                    scroll_to_row: scroll_to_row,
                 },
             };
 
