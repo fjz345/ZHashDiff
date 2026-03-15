@@ -1,4 +1,4 @@
-use std::{fmt::Debug, path::PathBuf};
+use std::{fmt::Debug, path::PathBuf, sync::Arc};
 
 use crate::{app::DiffCtx, ui_egui::panes::ZAppPane};
 use eframe::egui::{self, UiBuilder, scroll_area::ScrollBarVisibility};
@@ -10,8 +10,8 @@ use zdiff::{
 };
 
 pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
-    pub file_source: Option<&'a CachedFile<T>>,
-    pub file_target: Option<&'a CachedFile<T>>,
+    pub file_source: Option<Arc<CachedFile<T>>>,
+    pub file_target: Option<Arc<CachedFile<T>>>,
 
     pub diff_ctx: Option<&'a DiffCtx>,
     pub diff_options: &'a mut DiffBuilderOptions,
@@ -160,6 +160,7 @@ impl FileDiffPane {
                                 header.col(|ui| {
                                     ui.strong(
                                         ctx.file_source
+                                            .as_ref()
                                             .and_then(|f| Some(f.path.display().to_string()))
                                             .unwrap_or_default(),
                                     );
@@ -168,6 +169,7 @@ impl FileDiffPane {
                                 header.col(|ui| {
                                     ui.strong(
                                         ctx.file_target
+                                            .as_ref()
                                             .and_then(|f| Some(f.path.display().to_string()))
                                             .unwrap_or_default(),
                                     );
@@ -179,9 +181,6 @@ impl FileDiffPane {
                                     let row_index = row.index();
                                     let diff_row = &rows[row.index()];
 
-                                    let left_w = widths[0];
-                                    let right_w = widths[2];
-
                                     row.col(|ui| {
                                         egui::ScrollArea::horizontal()
                                             .id_salt((format!("l{}", row_index)))
@@ -192,8 +191,8 @@ impl FileDiffPane {
                                             .show(ui, |ui| {
                                                 Self::render_side(
                                                     ui,
-                                                    ctx.file_source,
-                                                    ctx.file_target,
+                                                    ctx.file_source.clone(),
+                                                    ctx.file_target.clone(),
                                                     &diff_row.left,
                                                     widths[0],
                                                 );
@@ -228,8 +227,8 @@ impl FileDiffPane {
                                             .show(ui, |ui| {
                                                 Self::render_side(
                                                     ui,
-                                                    ctx.file_source,
-                                                    ctx.file_target,
+                                                    ctx.file_source.clone(),
+                                                    ctx.file_target.clone(),
                                                     &diff_row.right,
                                                     widths[2],
                                                 );
@@ -258,8 +257,8 @@ impl FileDiffPane {
 
     fn render_side<T: RawTokenTrait>(
         ui: &mut egui::Ui,
-        file_source: Option<&CachedFile<T>>,
-        file_target: Option<&CachedFile<T>>,
+        file_source: Option<Arc<CachedFile<T>>>,
+        file_target: Option<Arc<CachedFile<T>>>,
         content: &LineContent,
         width: f32,
     ) {
@@ -301,16 +300,20 @@ impl FileDiffPane {
                         let read_string = |diff_result: &DiffResult| -> &str {
                             let str = match diff_result.operation {
                                 zdiff::diff_ir::DiffOp::Equal | zdiff::diff_ir::DiffOp::Delete => {
-                                    let token = &file_source.expect("Source was None").tokens
-                                        [diff_result.token_idx as usize];
+                                    let token =
+                                        &file_source.clone().expect("Source was None").tokens
+                                            [diff_result.token_idx as usize];
                                     file_source
+                                        .as_ref()
                                         .unwrap()
                                         .read_content_span(token.as_ref().span.clone())
                                 }
                                 zdiff::diff_ir::DiffOp::Insert => {
-                                    let token = &file_target.expect("Source was None").tokens
-                                        [diff_result.token_idx as usize];
+                                    let token =
+                                        &file_target.clone().expect("Source was None").tokens
+                                            [diff_result.token_idx as usize];
                                     file_target
+                                        .as_ref()
                                         .unwrap()
                                         .read_content_span(token.as_ref().span.clone())
                                 }

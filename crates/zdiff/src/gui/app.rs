@@ -1,9 +1,15 @@
 use eframe::egui::{self, Layout, PointerButton};
 use serde::{Deserialize, Serialize};
 use std::{
-    env, io,
+    default, env, io,
     ops::Range,
     path::{Path, PathBuf},
+    result,
+    sync::{
+        Arc, Mutex,
+        mpsc::{Receiver, channel},
+    },
+    thread::Thread,
 };
 use zdiff::{
     diff_builder::{CachedFile, DiffBuilderOptions, DiffRow, build_diff_rows},
@@ -29,6 +35,7 @@ use crate::ui_egui::{
 pub struct DiffCtx {
     pub file_1_hash: String,
     pub file_2_hash: String,
+    pub one_sided_diff_is_left: Option<bool>,
     pub diff_option: DiffBuilderOptions,
     // Myers
     pub diff_rows: Vec<DiffRow>,
@@ -41,13 +48,17 @@ pub struct AppStateCtx<T: RawTokenTrait> {
     file_path_1: Option<PathBuf>,
     file_path_2: Option<PathBuf>,
     #[serde(skip)]
-    file_1: Option<CachedFile<T>>,
+    file_1: Option<Arc<CachedFile<T>>>,
     #[serde(skip)]
-    file_2: Option<CachedFile<T>>,
+    file_2: Option<Arc<CachedFile<T>>>,
 
+    pub diff_options: DiffBuilderOptions,
     #[serde(skip)]
     pub diff_ctx: Option<DiffCtx>,
-    pub diff_options: DiffBuilderOptions,
+    pub diff_ctx_invalidated: bool,
+    pub diff_ctx_in_progress: bool,
+    #[serde(skip)]
+    rx: Option<Receiver<DiffCtx>>,
 
     pub scroll_left: f32,
     pub scroll_right: f32,
@@ -60,18 +71,21 @@ impl<T: RawTokenTrait> Default for AppStateCtx<T> {
             file_path_2: Default::default(),
             file_1: Default::default(),
             file_2: Default::default(),
-            diff_ctx: Default::default(),
             diff_options: Default::default(),
+            diff_ctx: Default::default(),
+            diff_ctx_in_progress: Default::default(),
+            rx: Default::default(),
             scroll_left: Default::default(),
             scroll_right: Default::default(),
+            diff_ctx_invalidated: Default::default(),
         }
     }
 }
 
 impl<T: RawTokenTrait> AppStateCtx<T> {
     fn update_diff_rows(
-        file_1: &Option<CachedFile<T>>,
-        file_2: &Option<CachedFile<T>>,
+        file_1: Option<Arc<CachedFile<T>>>,
+        file_2: Option<Arc<CachedFile<T>>>,
         options: &DiffBuilderOptions,
     ) -> DiffCtx {
         match (&file_1, &file_2) {
@@ -103,6 +117,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                     diff_option: options.clone(),
                     diff_rows: build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options),
                     num_add_deletes: myers_count_add_deletes(&path),
+                    one_sided_diff_is_left: None,
                 }
             }
             (Some(c1), None) => {
@@ -127,13 +142,13 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let diff_ir = generate_ir(t1, t2, &path);
 
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
-                let c2_hash = hash_file(&c2.path).expect("Hash failed");
                 DiffCtx {
-                    file_1_hash: c1_hash,
-                    file_2_hash: c2_hash,
+                    file_1_hash: c1_hash.clone(),
+                    file_2_hash: c1_hash,
                     diff_option: options.clone(),
                     diff_rows: build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options),
                     num_add_deletes: myers_count_add_deletes(&path),
+                    one_sided_diff_is_left: Some(true),
                 }
             }
             (None, Some(c2)) => {
@@ -157,14 +172,14 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
                 let diff_ir = generate_ir(t1, t2, &path);
 
-                let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
                 DiffCtx {
-                    file_1_hash: c1_hash,
+                    file_1_hash: c2_hash.clone(),
                     file_2_hash: c2_hash,
                     diff_option: options.clone(),
                     diff_rows: build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options),
                     num_add_deletes: myers_count_add_deletes(&path),
+                    one_sided_diff_is_left: Some(false),
                 }
             }
             (None, None) => {
@@ -215,11 +230,9 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
         // Want to allow this later, for now easier if cached file is never stale
         if app_ctx.file_path_1.is_none() {
             app_ctx.file_1.take();
-            changed = true;
         }
         if app_ctx.file_path_2.is_none() {
             app_ctx.file_2.take();
-            changed = true
         }
 
         if let Some(path) = &app_ctx.file_path_1 {
@@ -227,8 +240,10 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 || app_ctx.file_1.as_ref().unwrap().path != *path
                 || app_ctx.file_1.as_ref().unwrap().hash != hash_file(path).expect("failed to hash")
             {
-                app_ctx.file_1 = CachedFile::new(path).ok();
-                changed |= app_ctx.file_1.is_some()
+                if let Ok(r) = CachedFile::new(path) {
+                    app_ctx.file_1 = Some(Arc::new(r));
+                    changed |= app_ctx.file_1.is_some()
+                }
             }
         }
 
@@ -237,8 +252,10 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 || app_ctx.file_2.as_ref().unwrap().path != *path
                 || app_ctx.file_2.as_ref().unwrap().hash != hash_file(path).expect("failed to hash")
             {
-                app_ctx.file_2 = CachedFile::new(path).ok();
-                changed |= app_ctx.file_2.is_some()
+                if let Ok(r) = CachedFile::new(path) {
+                    app_ctx.file_2 = Some(Arc::new(r));
+                    changed |= app_ctx.file_2.is_some()
+                }
             }
         }
 
@@ -258,13 +275,13 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                         let new_file_2 = CachedFile::new(p2);
                         match new_file_1 {
                             Ok(c) => {
-                                ctx.file_1 = Some(c);
+                                ctx.file_1 = Some(Arc::new(c));
                             }
                             Err(e) => log::error!("{e}"),
                         }
                         match new_file_2 {
                             Ok(c) => {
-                                ctx.file_2 = Some(c);
+                                ctx.file_2 = Some(Arc::new(c));
                             }
                             Err(e) => log::error!("{e}"),
                         }
@@ -326,9 +343,10 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
         ui: &mut egui::Ui,
         file_path_1: &mut Option<PathBuf>,
         file_path_2: &mut Option<PathBuf>,
-        file_1: &mut Option<CachedFile<T>>,
-        file_2: &mut Option<CachedFile<T>>,
+        file_1: &mut Option<Arc<CachedFile<T>>>,
+        file_2: &mut Option<Arc<CachedFile<T>>>,
         diff_ctx: &mut Option<DiffCtx>,
+        diff_ctx_invalidated: &mut bool,
     ) {
         ui.horizontal(|ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -360,9 +378,11 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                         *file_1 = None;
                         *file_2 = None;
                         *diff_ctx = None;
+                        *diff_ctx_invalidated = true;
                     }
                     if ui.button("Clear Diff Rows").clicked() {
                         *diff_ctx = None;
+                        *diff_ctx_invalidated = true;
                     }
                 });
             });
@@ -385,9 +405,20 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 diff_options,
                 file_1,
                 file_2,
+                rx,
+                diff_ctx_in_progress,
+                diff_ctx_invalidated,
             } = app_ctx;
             let diff_options_before = diff_options.clone();
-            self.show_menu(ui, file_path_1, file_path_2, file_1, file_2, diff_ctx);
+            self.show_menu(
+                ui,
+                file_path_1,
+                file_path_2,
+                file_1,
+                file_2,
+                diff_ctx,
+                diff_ctx_invalidated,
+            );
 
             let diff_ctx_ref = diff_ctx.as_ref();
 
@@ -399,8 +430,8 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                     scroll_left: scroll_left,
                     scroll_right: scroll_right,
                     diff_options: diff_options,
-                    file_source: file_1.as_ref(),
-                    file_target: file_2.as_ref(),
+                    file_source: file_1.clone(),
+                    file_target: file_2.clone(),
                 },
             };
 
@@ -510,34 +541,89 @@ impl<T: RawTokenTrait> eframe::App for ZApp<T> {
             AppState::Idle(mut state) => {
                 if self.update_source_target(&mut state) {
                     state.diff_ctx.take();
+                    state.diff_ctx_invalidated = true;
+                    log::info!("update_source_target return true, invalidating diff_ctx...");
                 }
-                let diff_ctx_invalidated = if let Some(diff_ctx) = &state.diff_ctx {
-                    let file_1_hash = state
-                        .file_1
-                        .as_ref()
-                        .and_then(|f| Some(f.hash.clone()))
-                        .unwrap_or_default();
-                    let file_2_hash = state
-                        .file_2
-                        .as_ref()
-                        .and_then(|f| Some(f.hash.clone()))
-                        .unwrap_or_default();
-                    let hash_equal =
-                        diff_ctx.file_1_hash == file_1_hash && diff_ctx.file_2_hash == file_2_hash;
+                state.diff_ctx_invalidated |= if let Some(diff_ctx) = &state.diff_ctx {
+                    let hash_equal = match diff_ctx.one_sided_diff_is_left {
+                        Some(is_left) => {
+                            if is_left {
+                                let file_1_hash = state
+                                    .file_1
+                                    .as_ref()
+                                    .and_then(|f| Some(f.hash.clone()))
+                                    .unwrap_or_default();
+                                diff_ctx.file_1_hash == file_1_hash
+                            } else {
+                                let file_2_hash = state
+                                    .file_2
+                                    .as_ref()
+                                    .and_then(|f| Some(f.hash.clone()))
+                                    .unwrap_or_default();
+                                diff_ctx.file_2_hash == file_2_hash
+                            }
+                        }
+                        None => {
+                            let file_1_hash = state
+                                .file_1
+                                .as_ref()
+                                .and_then(|f| Some(f.hash.clone()))
+                                .unwrap_or_default();
+                            let file_2_hash = state
+                                .file_2
+                                .as_ref()
+                                .and_then(|f| Some(f.hash.clone()))
+                                .unwrap_or_default();
+                            diff_ctx.file_1_hash == file_1_hash
+                                && diff_ctx.file_2_hash == file_2_hash
+                        }
+                    };
+
                     let options_equal = diff_ctx.diff_option == state.diff_options;
+
+                    if !hash_equal || !options_equal {
+                        log::info!(
+                            "diff_ctx invalidated!, reason: hash_equal: {}, options_equal: {}",
+                            hash_equal,
+                            options_equal
+                        );
+                    }
                     !hash_equal || !options_equal
                 } else {
-                    true
+                    false
                 };
 
-                if diff_ctx_invalidated {
-                    state.diff_ctx = None;
+                if state.diff_ctx_invalidated && !state.diff_ctx_in_progress {
+                    state.diff_ctx_invalidated = false;
                     if state.file_1.is_some() || state.file_2.is_some() {
-                        state.diff_ctx = Some(AppStateCtx::update_diff_rows(
-                            &state.file_1,
-                            &state.file_2,
-                            &state.diff_options,
-                        ));
+                        state.diff_ctx_in_progress = true;
+                        let (tx, rx) = channel();
+                        state.rx = Some(rx);
+
+                        let f1 = state.file_1.clone();
+                        let f2 = state.file_2.clone();
+                        let opts = state.diff_options.clone();
+
+                        std::thread::spawn(move || {
+                            log::info!("Spawned thread for DiffCtx");
+                            let result = AppStateCtx::update_diff_rows(f1, f2, &opts);
+                            log::info!("Compute for DiffCtx complete!");
+                            let _ = tx.send(result);
+                        });
+                    }
+                }
+
+                if state.diff_ctx_in_progress {
+                    if let Some(rx) = &state.rx {
+                        match rx.try_recv() {
+                            Ok(r) => {
+                                state.diff_ctx_in_progress = false;
+                                state.diff_ctx = Some(r);
+                                ctx.request_repaint();
+                            }
+                            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                            Err(e) => log::error!("Channel error: {e}"),
+                        }
                     }
                 }
 

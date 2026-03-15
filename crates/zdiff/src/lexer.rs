@@ -2,8 +2,9 @@ use std::{marker::PhantomData, ops::Range};
 
 use serde::{Deserialize, Serialize};
 
-pub trait RawTokenTrait: Clone + AsRef<RawToken> + From<RawToken> {}
-impl<T> RawTokenTrait for T where T: Clone + AsRef<RawToken> + From<RawToken> {}
+pub trait RawTokenTrait: Clone + AsRef<RawToken> + From<RawToken> + Send + Sync + 'static {}
+impl<T> RawTokenTrait for T where T: Clone + AsRef<RawToken> + From<RawToken> + Send + Sync + 'static
+{}
 
 #[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub enum TokenKind {

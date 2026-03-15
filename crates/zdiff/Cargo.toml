@@ -26,6 +26,7 @@ rfd = "0.17.1"
 egui_extras = { version = "0.33.3", features = ["image"] }
 color-backtrace = { version = "0.7.2", optional = true }
 blake3 = { version = "1.8.2", features = ["rayon", "mmap"] }
+env_logger = "0.11.9"
 
 [features]
 default = ["serde"]

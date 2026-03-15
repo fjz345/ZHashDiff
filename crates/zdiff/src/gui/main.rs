@@ -14,6 +14,7 @@ fn main() -> eframe::Result {
     {
         color_backtrace::install();
     }
+    env_logger::init();
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
