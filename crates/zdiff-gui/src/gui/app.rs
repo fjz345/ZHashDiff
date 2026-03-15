@@ -89,6 +89,8 @@ pub struct AppStateCtx<T: RawTokenTrait> {
 
     #[cfg_attr(feature = "serde", serde(skip))]
     pub diff_ctx_conflict_cursor: usize,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub diff_ctx_conflict_input: bool,
 }
 
 impl<T: RawTokenTrait> Default for AppStateCtx<T> {
@@ -114,6 +116,7 @@ impl<T: RawTokenTrait> Default for AppStateCtx<T> {
             rx_file_path_2: Default::default(),
             scroll_to_find_row: Default::default(),
             diff_ctx_conflict_cursor: Default::default(),
+            diff_ctx_conflict_input: Default::default(),
         }
     }
 }
@@ -546,6 +549,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 rx_file_path_1,
                 rx_file_path_2,
                 diff_ctx_conflict_cursor,
+                diff_ctx_conflict_input,
             } = app_ctx;
             let diff_options_before = diff_options.clone();
             self.show_menu(
@@ -724,12 +728,14 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                     || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowDown))
                 {
                     ctx.diff_ctx_conflict_cursor = ctx.diff_ctx_conflict_cursor.saturating_sub(1);
+                    ctx.diff_ctx_conflict_input = true;
                     log::info!("Conflict-- @{}", ctx.diff_ctx_conflict_cursor);
                 }
                 if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num2))
                     || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowUp))
                 {
                     ctx.diff_ctx_conflict_cursor = (ctx.diff_ctx_conflict_cursor + 1).min(max_idx);
+                    ctx.diff_ctx_conflict_input = true;
                     log::info!("Conflict++ @{}", ctx.diff_ctx_conflict_cursor);
                 }
             });
@@ -866,12 +872,17 @@ impl<T: RawTokenTrait> eframe::App for ZApp<T> {
                     }
                 }
 
-                if let Some(diff_ctx) = state.diff_ctx.as_ref() {
-                    let conflict_idx = diff_ctx.precomputed_diffs[state.diff_ctx_conflict_cursor];
-                    state.scroll_to_goto_row = Some(conflict_idx);
+                if state.diff_ctx_conflict_input {
+                    if let Some(diff_ctx) = state.diff_ctx.as_ref() {
+                        let conflict_idx =
+                            diff_ctx.precomputed_diffs[state.diff_ctx_conflict_cursor];
+                        state.scroll_to_goto_row = Some(conflict_idx);
+                    }
                 }
 
                 self.ui(ctx, frame, &mut state);
+
+                state.diff_ctx_conflict_input = false;
 
                 AppState::Idle(state)
             }
