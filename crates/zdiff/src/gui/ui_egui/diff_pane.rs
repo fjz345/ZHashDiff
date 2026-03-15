@@ -376,20 +376,6 @@ fn test_build_diff_rows_header_edit() {
         "IDX", "L#", "LEFT", "R#", "RIGHT"
     );
 
-    let read_string = |diff_result: &DiffResult| -> &str {
-        let str = match diff_result.operation {
-            zdiff::diff_ir::DiffOp::Equal | zdiff::diff_ir::DiffOp::Delete => {
-                let token = &t1[diff_result.token_idx as usize];
-                lex1.read_content_span(token.as_ref().span.clone())
-            }
-            zdiff::diff_ir::DiffOp::Insert => {
-                let token = &t1[diff_result.token_idx as usize];
-                lex2.read_content_span(token.as_ref().span.clone())
-            }
-        };
-        return str;
-    };
-
     for (i, row) in rows.iter().enumerate() {
         let l_disp = match &row.left {
             LineContent::Code { tokens, .. } => {
@@ -424,8 +410,23 @@ fn test_build_diff_rows_header_edit() {
         1,
         "\t#define hello_there\n",
         "\t#define world_here\n",
+        &t1,
+        &t2,
+        &s1,
+        &s2,
     );
-    assert_row_content(1, &rows[1], 2, 2, "\t// Comment\n", "\t// Comment\n");
+    assert_row_content(
+        1,
+        &rows[1],
+        2,
+        2,
+        "\t// Comment\n",
+        "\t// Comment\n",
+        &t1,
+        &t2,
+        &s1,
+        &s2,
+    );
 }
 
 #[test]
@@ -492,7 +493,18 @@ fn test_build_diff_rows_ghost_enabled() {
         );
     }
 
-    assert_row_content(0, &rows[0], 1, 1, "deleted_line\n", "deleted_line\n");
+    assert_row_content(
+        0,
+        &rows[0],
+        1,
+        1,
+        "deleted_line\n",
+        "deleted_line\n",
+        &t1,
+        &t2,
+        &s1,
+        &s2,
+    );
 
     if let LineContent::Code { tokens, .. } = &rows[0].right {
         let ghost_color = egui::Color32::from_rgba_unmultiplied(150, 150, 150, 80);
@@ -502,7 +514,7 @@ fn test_build_diff_rows_ghost_enabled() {
         );
     }
 
-    assert_row_content(1, &rows[1], 2, 2, "match\n", "match\n");
+    assert_row_content(1, &rows[1], 2, 2, "match\n", "match\n", &t1, &t2, &s1, &s2);
 }
 
 #[test]
@@ -582,6 +594,10 @@ fn test_build_diff_rows_ignore_whitespace() {
         1,
         "ImGuiChildFlags_Border\n",
         "ImGuiChildFlags_Borders,  // Renamed in 1.91.1\n",
+        &t1,
+        &t2,
+        &s1,
+        &s2,
     );
 }
 
@@ -592,22 +608,42 @@ fn assert_row_content(
     r_line: i32,
     l_text: &str,
     r_text: &str,
+    l_tokens: &[RawToken],
+    r_tokens: &[RawToken],
+    s1: &str,
+    s2: &str,
 ) {
-    let get_data = |content: &LineContent| match content {
+    let get_data = |content: &LineContent,
+                    source_text: &str,
+                    target_text: &str,
+                    source_tokens: &[RawToken],
+                    target_tokens: &[RawToken]| match content {
         LineContent::Code {
             tokens, line_num, ..
         } => {
             let text = tokens
                 .iter()
-                .map(|(s, _)| format!("{:?}", s))
+                .map(|(res, _)| {
+                    let text = match res.operation {
+                        zdiff::diff_ir::DiffOp::Equal | zdiff::diff_ir::DiffOp::Delete => {
+                            let token = &source_tokens[res.token_idx as usize];
+                            &source_text[token.as_ref().span.clone()]
+                        }
+                        zdiff::diff_ir::DiffOp::Insert => {
+                            let token = &target_tokens[res.token_idx as usize];
+                            &target_text[token.as_ref().span.clone()]
+                        }
+                    };
+                    text
+                })
                 .collect::<String>();
             (text, *line_num)
         }
         LineContent::Void => ("VOID".to_string(), -1),
     };
 
-    let (act_l_text, act_l_num) = get_data(&row.left);
-    let (act_r_text, act_r_num) = get_data(&row.right);
+    let (act_l_text, act_l_num) = get_data(&row.left, s1, s2, l_tokens, r_tokens);
+    let (act_r_text, act_r_num) = get_data(&row.right, s1, s2, l_tokens, r_tokens);
 
     if act_l_text != l_text || act_r_text != r_text || act_l_num != l_line || act_r_num != r_line {
         let mut report = String::new();

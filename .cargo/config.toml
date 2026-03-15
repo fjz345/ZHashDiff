@@ -1,2 +1,6 @@
 [env]
 RUST_BACKTRACE = "1"
+
+[alias]
+dev = "run --features pretty-backtrace"
+test-dev = "test --features pretty-backtrace"
