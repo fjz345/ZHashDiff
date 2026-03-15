@@ -214,6 +214,16 @@ enum AppState<T: RawTokenTrait> {
     Exit(AppStateCtx<T>),
 }
 
+impl<T: RawTokenTrait> AppState<T> {
+    fn variant_name(&self) -> &'static str {
+        match self {
+            Self::Startup(_) => "Startup",
+            Self::Idle(_) => "Idle",
+            Self::Exit(_) => "Exit",
+        }
+    }
+}
+
 impl<T: RawTokenTrait> Default for AppState<T> {
     fn default() -> Self {
         AppState::Startup(AppStateCtx::default())
@@ -222,6 +232,11 @@ impl<T: RawTokenTrait> Default for AppState<T> {
 
 impl<T: RawTokenTrait> AppState<T> {
     fn into_ctx(self) -> AppStateCtx<T> {
+        match self {
+            AppState::Startup(ctx) | AppState::Idle(ctx) | AppState::Exit(ctx) => ctx,
+        }
+    }
+    fn ctx_mut(&mut self) -> &mut AppStateCtx<T> {
         match self {
             AppState::Startup(ctx) | AppState::Idle(ctx) | AppState::Exit(ctx) => ctx,
         }
@@ -280,6 +295,17 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
     }
 
     pub fn request_init(&mut self) {
+        log::info!(
+            "Request init called with state: {}",
+            self.state
+                .as_ref()
+                .and_then(|f| Some(f.variant_name()))
+                .unwrap_or_default()
+        );
+        self.state = self
+            .state
+            .take()
+            .map(|ctx| AppState::Startup(ctx.into_ctx()));
         if let Some(state) = &mut self.state {
             match state {
                 AppState::Startup(ctx) | AppState::Idle(ctx) => {
@@ -469,13 +495,13 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
             let mut goto_window_open = *goto_open;
             Self::show_custom_popup(ctx, &mut goto_window_open, "Goto", |ui| {
                 goto_input.retain(|c| c.is_ascii_digit());
-
                 let response = ui.add(
                     egui::TextEdit::singleline(goto_input)
                         .desired_width(40.0)
                         .hint_text("Line..."),
                 );
-                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                response.request_focus();
+                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     if let Ok(line_number) = goto_input.parse::<usize>() {
                         log::info!("Navigating to line: {}", line_number);
                         *goto_open = false;
@@ -572,6 +598,14 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
 
                     log::info!("middle click @({},{})", mouse_pos.x, mouse_pos.y);
                 }
+
+                if r.modifiers.ctrl && r.key_down(egui::Key::G) {
+                    self.state
+                        .as_mut()
+                        .expect("State was not valid while processing inputs")
+                        .ctx_mut()
+                        .goto_open = true;
+                }
             });
         }
 
@@ -593,6 +627,8 @@ impl<T: RawTokenTrait> eframe::App for ZApp<T> {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.process_ctx_inputs(ctx, frame);
+
         let current_state = self
             .state
             .take()
@@ -697,7 +733,6 @@ impl<T: RawTokenTrait> eframe::App for ZApp<T> {
                 }
 
                 self.ui(ctx, frame, &mut state);
-                self.process_ctx_inputs(ctx, frame);
 
                 AppState::Idle(state)
             }
