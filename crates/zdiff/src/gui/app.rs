@@ -27,6 +27,8 @@ use crate::ui_egui::{
 
 #[derive(Debug, Default)]
 pub struct DiffCtx {
+    pub file_1_hash: String,
+    pub file_2_hash: String,
     pub diff_option: DiffBuilderOptions,
     // Myers
     pub diff_rows: Vec<DiffRow>,
@@ -102,6 +104,8 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
                 *diff_ctx = Some(DiffCtx {
+                    file_1_hash: c1_hash,
+                    file_2_hash: c2_hash,
                     diff_option: options.clone(),
                     diff_rows: build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options),
                     num_add_deletes: myers_count_add_deletes(&path),
@@ -136,6 +140,8 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
                 *diff_ctx = Some(DiffCtx {
+                    file_1_hash: c1_hash,
+                    file_2_hash: c2_hash,
                     diff_option: options.clone(),
                     diff_rows: build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options),
                     num_add_deletes: myers_count_add_deletes(&path),
@@ -167,7 +173,11 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
                 let diff_ir = generate_ir(t1, t2, &path);
 
+                let c1_hash = hash_file(&c1.path).expect("Hash failed");
+                let c2_hash = hash_file(&c2.path).expect("Hash failed");
                 *diff_ctx = Some(DiffCtx {
+                    file_1_hash: c1_hash,
+                    file_2_hash: c2_hash,
                     diff_option: options.clone(),
                     diff_rows: build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options),
                     num_add_deletes: myers_count_add_deletes(&path),
@@ -213,8 +223,18 @@ pub struct ZApp<T: RawTokenTrait> {
 
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
 impl<'a, T: RawTokenTrait> ZApp<T> {
-    fn update_files(&mut self, app_ctx: &mut AppStateCtx<T>) -> bool {
+    fn update_source_target(&mut self, app_ctx: &mut AppStateCtx<T>) -> bool {
         let mut changed = false;
+
+        // Want to allow this later, for now easier if cached file is never stale
+        if app_ctx.file_path_1.is_none() {
+            app_ctx.file_1.take();
+            changed = true;
+        }
+        if app_ctx.file_path_2.is_none() {
+            app_ctx.file_2.take();
+            changed = true
+        }
 
         if let Some(path) = &app_ctx.file_path_1 {
             if app_ctx.file_1.is_none()
@@ -322,6 +342,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
         file_path_2: &mut Option<PathBuf>,
         file_1: &mut Option<CachedFile<T>>,
         file_2: &mut Option<CachedFile<T>>,
+        diff_ctx: &mut Option<DiffCtx>,
     ) {
         ui.horizontal(|ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -352,9 +373,10 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                     if ui.button("Clear Cached Files").clicked() {
                         *file_1 = None;
                         *file_2 = None;
+                        *diff_ctx = None;
                     }
                     if ui.button("Clear Diff Rows").clicked() {
-                        // diff_ctx = None;
+                        *diff_ctx = None;
                     }
                 });
             });
@@ -379,8 +401,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 file_2,
             } = app_ctx;
             let diff_options_before = diff_options.clone();
-
-            self.show_menu(ui, file_path_1, file_path_2, file_1, file_2);
+            self.show_menu(ui, file_path_1, file_path_2, file_1, file_2, diff_ctx);
 
             let diff_ctx_ref = diff_ctx.as_ref();
 
@@ -501,18 +522,30 @@ impl<T: RawTokenTrait> eframe::App for ZApp<T> {
             }
 
             AppState::Idle(mut state) => {
-                if self.update_files(&mut state) {
+                if self.update_source_target(&mut state) {
                     state.diff_ctx.take();
                 }
-
-                if state.diff_ctx.is_none() {
-                    let options = state.diff_options.clone();
-
+                let diff_ctx_invalidated = if let Some(diff_ctx) = &state.diff_ctx {
+                    let file_1_hash = state
+                        .file_1
+                        .as_ref()
+                        .and_then(|f| Some(f.hash.clone()))
+                        .unwrap_or_default();
+                    let file_2_hash = state
+                        .file_2
+                        .as_ref()
+                        .and_then(|f| Some(f.hash.clone()))
+                        .unwrap_or_default();
+                    !(diff_ctx.file_1_hash == file_1_hash && diff_ctx.file_2_hash == file_2_hash)
+                } else {
+                    true
+                };
+                if diff_ctx_invalidated {
                     AppStateCtx::update_diff_rows(
                         &mut state.diff_ctx,
                         &state.file_1,
                         &state.file_2,
-                        &options,
+                        &state.diff_options,
                     );
                 }
 

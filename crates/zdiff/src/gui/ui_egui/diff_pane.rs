@@ -194,7 +194,6 @@ impl FileDiffPane {
                                                     ui,
                                                     ctx.file_source,
                                                     ctx.file_target,
-                                                    &ctx.diff_ctx.unwrap(),
                                                     &diff_row.left,
                                                     widths[0],
                                                 );
@@ -231,7 +230,6 @@ impl FileDiffPane {
                                                     ui,
                                                     ctx.file_source,
                                                     ctx.file_target,
-                                                    ctx.diff_ctx.unwrap(),
                                                     &diff_row.right,
                                                     widths[2],
                                                 );
@@ -262,7 +260,6 @@ impl FileDiffPane {
         ui: &mut egui::Ui,
         file_source: Option<&CachedFile<T>>,
         file_target: Option<&CachedFile<T>>,
-        diff_ctx: &DiffCtx,
         content: &LineContent,
         width: f32,
     ) {
