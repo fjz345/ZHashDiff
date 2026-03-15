@@ -1,7 +1,7 @@
 # ZHashDiff
 
-![alt text](img/showcase2.png)
-![alt text](img/showcase.png)
+Library crate for tree folder diffs
+../zhashdiff-gui/README.md builds on this
 
 # Features
 * Tree folder diff view
@@ -9,12 +9,5 @@
 
 # Todo
 * Add filter for Filter for whitelist/blacklist (folder, files & extension)
-* "cursor" on rows
 * sort by diff state, name, folder depth
-* ctrl+1/2, alt+up/down move cursor to next diff
-* Maybe fixed?? ____ Some PCs egui becomes white after first launch ____ 
 * IDEA, catch files/folder with same name but at another depth 
-
-## Duplicate file diff:
-* conflicts found window, highlight current selection
-* Allow restoring of resolved files (maybe mark file names as red?)
