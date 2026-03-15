@@ -720,11 +720,15 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                     .and_then(|f| Some(f.precomputed_diffs.len()))
                     .unwrap_or_default()
                     .saturating_sub(1);
-                if r.modifiers.ctrl && r.key_pressed(egui::Key::Num1) {
+                if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num1))
+                    || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowDown))
+                {
                     ctx.diff_ctx_conflict_cursor = ctx.diff_ctx_conflict_cursor.saturating_sub(1);
                     log::info!("Conflict-- @{}", ctx.diff_ctx_conflict_cursor);
                 }
-                if r.modifiers.ctrl && r.key_pressed(egui::Key::Num2) {
+                if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num2))
+                    || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowUp))
+                {
                     ctx.diff_ctx_conflict_cursor = (ctx.diff_ctx_conflict_cursor + 1).min(max_idx);
                     log::info!("Conflict++ @{}", ctx.diff_ctx_conflict_cursor);
                 }

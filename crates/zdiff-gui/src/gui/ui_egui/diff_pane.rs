@@ -94,8 +94,6 @@ impl FileDiffPane {
             }
         });
 
-        // Currently tokens are only computed when diff_rows is calcualted.
-        // This means that match only matches on diff_rows
         let diff_rows = ctx.diff_ctx.as_ref().and_then(|f| Some(&f.diff_rows));
         let dummy_1: Option<bool> = Some(false);
         let dummy_2: Option<bool> = Some(false);
@@ -292,9 +290,8 @@ impl FileDiffPane {
 
                 ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                     ui.horizontal_centered(|ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0; // Keep tokens tight
+                        ui.spacing_mut().item_spacing.x = 0.0;
 
-                        // Line number gutter (fixed width)
                         let gutter_width = 35.0;
                         let line_num_str = if *line_num > 0 {
                             line_num.to_string()

@@ -10,7 +10,6 @@ Library and Gui for diffing file contents
 
 ## Todo
 * add drag and drop for source & target (same as zhashdiff)
-* go to prev/next diff buttons
 
 * Ctrl+F Search
 
