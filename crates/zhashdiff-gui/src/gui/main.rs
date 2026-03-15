@@ -9,6 +9,7 @@ use zcommon::logger::LogCollector;
 
 use crate::ui_egui::app::ZApp;
 
+mod tests;
 mod ui_egui;
 
 fn main() -> eframe::Result {
