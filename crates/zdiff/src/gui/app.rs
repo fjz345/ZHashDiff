@@ -55,7 +55,9 @@ pub struct AppStateCtx<T: RawTokenTrait> {
     pub diff_options: DiffBuilderOptions,
     #[serde(skip)]
     pub diff_ctx: Option<DiffCtx>,
+    #[serde(skip)]
     pub diff_ctx_invalidated: bool,
+    #[serde(skip)]
     pub diff_ctx_in_progress: bool,
     #[serde(skip)]
     rx: Option<Receiver<DiffCtx>>,
