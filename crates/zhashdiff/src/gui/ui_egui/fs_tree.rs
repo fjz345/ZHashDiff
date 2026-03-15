@@ -1,5 +1,8 @@
 use std::{
-    collections::{BTreeMap, HashMap}, io, path::Path, sync::Arc
+    collections::{BTreeMap, HashMap},
+    io,
+    path::Path,
+    sync::Arc,
 };
 
 use eframe::egui::{self, RichText};
@@ -71,31 +74,26 @@ impl FileSystemView {
         nodes.iter().any(|&id| self.is_anything_collapsed(id))
     }
 
-    pub fn is_collapsed(&self, node_id: FsNodeId) -> bool
-    {
+    pub fn is_collapsed(&self, node_id: FsNodeId) -> bool {
         self.collapsed.get(&node_id).copied().unwrap_or(false)
     }
 
-    pub fn is_parent_chain_collapsed(&self, node_id: FsNodeId) -> bool
-    {
-        if let Some(parent_id) = self.file_system.get_parent_id(node_id)
-        {
+    pub fn is_parent_chain_collapsed(&self, node_id: FsNodeId) -> bool {
+        if let Some(parent_id) = self.file_system.get_parent_id(node_id) {
             let is_parent_collapsed = self.collapsed.get(&parent_id).copied().unwrap_or(false);
-            if is_parent_collapsed
-            {
+            if is_parent_collapsed {
                 return true;
-            }
-            else if let Some(parent_parent_id) = self.file_system.get_parent_id(parent_id)
-            {
+            } else if let Some(parent_parent_id) = self.file_system.get_parent_id(parent_id) {
                 return self.is_parent_chain_collapsed(parent_parent_id);
             }
         }
-        
+
         false
     }
 
     pub fn recursive_collapse(&mut self, node_id: FsNodeId, collapse: bool) {
-        let ids: Vec<FsNodeId> = self.iter_nodes(node_id)
+        let ids: Vec<FsNodeId> = self
+            .iter_nodes(node_id)
             .filter(|(_, node, _)| node.is_dir())
             .map(|(id, _, _)| id)
             .collect();
@@ -111,14 +109,14 @@ impl FileSystemView {
 
     pub fn toggle_collapse(&mut self, id: FsNodeId) {
         let currently_collapsed = self.collapsed.get(&id).copied().unwrap_or(false);
-        
+
         if currently_collapsed {
-            self.collapsed.remove(&id); 
+            self.collapsed.remove(&id);
         } else {
             self.collapsed.insert(id, true);
         }
     }
-    
+
     pub fn recursive_collapse_slice(&mut self, node_ids: &[FsNodeId], collapse: bool) {
         for node_id in node_ids {
             self.recursive_collapse(*node_id, collapse);
@@ -139,18 +137,25 @@ impl FileSystemView {
     ) -> io::Result<Vec<VisibleRowTwoFolderDiff>> {
         let mut entries_map: BTreeMap<
             String,
-            (Option<(FsNodeId, &FsNode, FsNodeDepth)>, Option<(FsNodeId, &FsNode, FsNodeDepth)>),
+            (
+                Option<(FsNodeId, &FsNode, FsNodeDepth)>,
+                Option<(FsNodeId, &FsNode, FsNodeDepth)>,
+            ),
         > = BTreeMap::new();
 
         let get_rel_path = |view: &FileSystemView, id: FsNodeId, node: &FsNode| -> String {
             let root_id = view.file_system.get_root_node_id();
-            if id == root_id { return String::new(); }
-            
+            if id == root_id {
+                return String::new();
+            }
+
             let root_node = view.file_system.get_node(root_id).unwrap();
             let root_path = root_node.as_path();
-            
+
             // Use components to rebuild the path cleanly, avoiding slash/prefix issues
-            node.as_path().as_ref().strip_prefix(&root_path)
+            node.as_path()
+                .as_ref()
+                .strip_prefix(&root_path)
                 .unwrap_or(node.as_path().as_ref())
                 .components()
                 .map(|c| c.as_os_str().to_string_lossy())
@@ -167,21 +172,29 @@ impl FileSystemView {
         if let Some(view) = file_system_2 {
             for (id, node, depth) in view.file_system.iter_tree() {
                 let rel = get_rel_path(view, id, node);
-                entries_map.entry(rel)
+                entries_map
+                    .entry(rel)
                     .and_modify(|e| e.1 = Some((id, node, depth)))
                     .or_insert((None, Some((id, node, depth))));
             }
         }
-        
-        let num_files_and_folders_1 = file_system_1.and_then(|f|Some(f.file_system.total_files_and_folders())).unwrap_or(0) as usize;
-        let num_files_and_folders_2 = file_system_2.and_then(|f|Some(f.file_system.total_files_and_folders())).unwrap_or(0) as usize;
+
+        let num_files_and_folders_1 = file_system_1
+            .and_then(|f| Some(f.file_system.total_files_and_folders()))
+            .unwrap_or(0) as usize;
+        let num_files_and_folders_2 = file_system_2
+            .and_then(|f| Some(f.file_system.total_files_and_folders()))
+            .unwrap_or(0) as usize;
         let initial_capacity = num_files_and_folders_1.max(num_files_and_folders_2);
         let mut out_rows = Vec::with_capacity(initial_capacity);
 
         for (rel_path, (left, right)) in &entries_map {
             let depth = left.map(|l| l.2).or(right.map(|r| r.2)).unwrap_or(0);
 
-            let is_dir = left.map(|l| l.1.is_dir()).or(right.map(|r| r.1.is_dir())).unwrap_or(false);
+            let is_dir = left
+                .map(|l| l.1.is_dir())
+                .or(right.map(|r| r.1.is_dir()))
+                .unwrap_or(false);
 
             let diff_state = match (left, right) {
                 (Some((l_id, l_node, _)), Some((r_id, r_node, _))) => {
@@ -207,7 +220,11 @@ impl FileSystemView {
         Ok(out_rows)
     }
 
-    pub fn build_collapsed_rows(&self, start_id: FsNodeId, start_depth: FsNodeDepth) -> Vec<VisibleRow> {
+    pub fn build_collapsed_rows(
+        &self,
+        start_id: FsNodeId,
+        start_depth: FsNodeDepth,
+    ) -> Vec<VisibleRow> {
         let mut out = Vec::new();
         let mut stack = vec![(start_id, start_depth)];
 
@@ -349,8 +366,9 @@ mod tests {
         if id == file_system.get_root_node_id() {
             return String::new();
         }
-        
-        node.as_path().as_ref()
+
+        node.as_path()
+            .as_ref()
             .strip_prefix(root)
             .unwrap_or(node.as_path().as_ref())
             .components()
@@ -362,11 +380,11 @@ mod tests {
     }
 
     fn get_rel_from_diff_state(
-        file_system_1: &FileSystemModel, 
-        file_system_2: &FileSystemModel, 
-        r1: &Path, 
-        r2: &Path, 
-        state: &DiffState
+        file_system_1: &FileSystemModel,
+        file_system_2: &FileSystemModel,
+        r1: &Path,
+        r2: &Path,
+        state: &DiffState,
     ) -> String {
         match state {
             DiffState::OnlyInFirst(id) => get_rel(file_system_1, r1, *id),
@@ -394,23 +412,47 @@ mod tests {
         diff: &[(String, FsNodeDepth, String)],
     ) -> String {
         let mut output = String::new();
-        output.push_str(&format!("{:<30} | {:<30} | {:<30}\n", "LEFT TREE", "DIFF RESULT", "RIGHT TREE"));
+        output.push_str(&format!(
+            "{:<30} | {:<30} | {:<30}\n",
+            "LEFT TREE", "DIFF RESULT", "RIGHT TREE"
+        ));
         output.push_str(&"-".repeat(96));
         output.push('\n');
 
-        let l_map: HashMap<&str, FsNodeDepth> = left.iter().map(|(p, d)| (p.as_str(), *d)).collect();
-        let r_map: HashMap<&str, FsNodeDepth> = right.iter().map(|(p, d)| (p.as_str(), *d)).collect();
-        
+        let l_map: HashMap<&str, FsNodeDepth> =
+            left.iter().map(|(p, d)| (p.as_str(), *d)).collect();
+        let r_map: HashMap<&str, FsNodeDepth> =
+            right.iter().map(|(p, d)| (p.as_str(), *d)).collect();
+
         for (path, depth, marker) in diff {
-            let l_row = l_map.get(path.as_str())
-                .map(|d| format!("{}└─ {}", "  ".repeat(*d as usize), if path.is_empty() { "/" } else { path }))
+            let l_row = l_map
+                .get(path.as_str())
+                .map(|d| {
+                    format!(
+                        "{}└─ {}",
+                        "  ".repeat(*d as usize),
+                        if path.is_empty() { "/" } else { path }
+                    )
+                })
                 .unwrap_or_default();
-            
-            let r_row = r_map.get(path.as_str())
-                .map(|d| format!("{}└─ {}", "  ".repeat(*d as usize), if path.is_empty() { "/" } else { path }))
+
+            let r_row = r_map
+                .get(path.as_str())
+                .map(|d| {
+                    format!(
+                        "{}└─ {}",
+                        "  ".repeat(*d as usize),
+                        if path.is_empty() { "/" } else { path }
+                    )
+                })
                 .unwrap_or_default();
-                
-            let d_row = format!("{} {}└─ {}", marker, "  ".repeat(*depth as usize), if path.is_empty() { "/" } else { path });
+
+            let d_row = format!(
+                "{} {}└─ {}",
+                marker,
+                "  ".repeat(*depth as usize),
+                if path.is_empty() { "/" } else { path }
+            );
 
             output.push_str(&format!("{:<30} | {:<30} | {:<30}\n", l_row, d_row, r_row));
         }
@@ -422,15 +464,9 @@ mod tests {
         let cases = vec![
             CollapsedTestCase {
                 name: "Simple collapsed directory",
-                structure: vec![
-                    ("a", true),
-                    ("a/file.txt", false),
-                ],
-                collapsed: vec!["a"], 
-                expected: vec![
-                    ("", 0), 
-                    ("a", 1),
-                ],
+                structure: vec![("a", true), ("a/file.txt", false)],
+                collapsed: vec!["a"],
+                expected: vec![("", 0), ("a", 1)],
             },
             CollapsedTestCase {
                 name: "Fully expanded directory",
@@ -440,12 +476,7 @@ mod tests {
                     ("dir_b", true),
                 ],
                 collapsed: vec![],
-                expected: vec![
-                    ("", 0),
-                    ("dir_a", 1),
-                    ("dir_a/file_1.txt", 2),
-                    ("dir_b", 1),
-                ],
+                expected: vec![("", 0), ("dir_a", 1), ("dir_a/file_1.txt", 2), ("dir_b", 1)],
             },
             CollapsedTestCase {
                 name: "Deep nesting with partial collapse",
@@ -456,12 +487,8 @@ mod tests {
                     ("level1/level2/level3", true),
                     ("level1/level2/level3/file.txt", false),
                 ],
-                collapsed: vec!["level1/level2"], 
-                expected: vec![
-                    ("", 0),
-                    ("level1", 1),
-                    ("level1/level2", 2),
-                ],
+                collapsed: vec!["level1/level2"],
+                expected: vec![("", 0), ("level1", 1), ("level1/level2", 2)],
             },
         ];
 
@@ -496,17 +523,25 @@ mod tests {
             let root_id = view.file_system.get_root_node_id();
             let result = view.build_collapsed_rows(root_id, 0);
 
-            let actual: Vec<(String, FsNodeDepth)> = result.into_iter().map(|row| {
-            let node = view.file_system.get_node(row.path).unwrap();
-            let rel = node.as_path().as_ref()
-                .strip_prefix(root_path).unwrap()
-                .to_string_lossy()
-                .replace('\\', "/");
-                
-                (rel, row.depth)
-            }).collect();
+            let actual: Vec<(String, FsNodeDepth)> = result
+                .into_iter()
+                .map(|row| {
+                    let node = view.file_system.get_node(row.path).unwrap();
+                    let rel = node
+                        .as_path()
+                        .as_ref()
+                        .strip_prefix(root_path)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
 
-            let expected_mapped: Vec<(String, FsNodeDepth)> = case.expected.iter()
+                    (rel, row.depth)
+                })
+                .collect();
+
+            let expected_mapped: Vec<(String, FsNodeDepth)> = case
+                .expected
+                .iter()
                 .map(|(p, d)| (p.to_string(), *d))
                 .collect();
 
@@ -532,132 +567,163 @@ mod tests {
         expected: Vec<(&'static str, FsNodeDepth, DiffMarker)>,
     }
 
-    #[test]
-    fn test_build_two_folder_diff_scenarios() {
-        let cases = vec![
-            DiffTestCase {
-                name: "Standard file addition",
-                left_structure: vec![("a.txt", false)],
-                right_structure: vec![("a.txt", false), ("b.txt", false)],
-                left_collapsed: vec![],
-                right_collapsed: vec![],
-                expected: vec![
-                    ("", 0, "~"),
-                    ("a.txt", 1, "="),
-                    ("b.txt", 1, "+"),
-                ],
-            },
-            DiffTestCase {
-                name: "Collapsed directory hides children",
-                left_structure: vec![("dir/file.txt", false)],
-                right_structure: vec![("dir/one_extra_deep/file.txt", false), ("dir/a_file.txt", false)],
-                left_collapsed: vec!["dir"],
-                right_collapsed: vec!["dir"],
-                expected: vec![
-                    ("", 0, "~"),
-                    ("dir", 1, "~"),
-                ],
-            },
-            DiffTestCase {
-                name: "One side collapsed directory should NOT hide children",
-                left_structure: vec![("dir/hidden_file.txt", false)],
-                right_structure: vec![("dir/one_extra_deep", true), ("dir/one_extra_deep/file.txt", false), ("dir/visible_file.txt", false)],
-                left_collapsed: vec!["dir"],
-                right_collapsed: vec![],
-                expected: vec![
-                    ("", 0, "~"),
-                    ("dir", 1, "~"),
-                    ("dir/hidden_file.txt", 2, "-"),
-                    ("dir/one_extra_deep", 2, "+"),
-                    ("dir/one_extra_deep/file.txt", 3, "+"),
-                    ("dir/visible_file.txt", 2, "+"),
-                ],
-            },
-            DiffTestCase {
-                name: "Complex nested diff with partial collapse",
-                left_structure: vec![
-                    ("common/deleted.txt", false),
-                    ("common/same.txt", false),
-                    ("nested/level1/level2/file.txt", false),
-                    ("only_left/a.txt", false),
-                ],
-                right_structure: vec![
-                    ("common/added.txt", false),
-                    ("common/same.txt", false),
-                    ("nested/level1/level2/file.txt", false),
-                    ("only_right/b.txt", false),
-                ],
-                left_collapsed: vec!["nested/level1"],
-                right_collapsed: vec!["nested/level1"], 
-                expected: vec![
-                    ("", 0, "~"),
-                    ("common", 1, "~"),
-                    ("common/added.txt", 2, "+"),
-                    ("common/deleted.txt", 2, "-"),
-                    ("common/same.txt", 2, "="),
-                    ("nested", 1, "="),
-                    ("nested/level1", 2, "="), 
-                    ("only_left", 1, "-"),
-                    ("only_left/a.txt", 2, "-"),
-                    ("only_right", 1, "+"),
-                    ("only_right/b.txt", 2, "+"),
-                ],
-            },
-        ];
+    // Old test, now build_rows does not build with collapsed state, this is handled in the ui code.
+    // #[test]
+    // fn test_build_two_folder_diff_scenarios() {
+    //     let cases = vec![
+    //         DiffTestCase {
+    //             name: "Standard file addition",
+    //             left_structure: vec![("a.txt", false)],
+    //             right_structure: vec![("a.txt", false), ("b.txt", false)],
+    //             left_collapsed: vec![],
+    //             right_collapsed: vec![],
+    //             expected: vec![("", 0, "~"), ("a.txt", 1, "="), ("b.txt", 1, "+")],
+    //         },
+    //         DiffTestCase {
+    //             name: "Collapsed directory hides children",
+    //             left_structure: vec![("dir/file.txt", false)],
+    //             right_structure: vec![
+    //                 ("dir/one_extra_deep/file.txt", false),
+    //                 ("dir/a_file.txt", false),
+    //             ],
+    //             left_collapsed: vec!["dir"],
+    //             right_collapsed: vec!["dir"],
+    //             expected: vec![("", 0, "~"), ("dir", 1, "~")],
+    //         },
+    //         DiffTestCase {
+    //             name: "One side collapsed directory should NOT hide children",
+    //             left_structure: vec![("dir/hidden_file.txt", false)],
+    //             right_structure: vec![
+    //                 ("dir/one_extra_deep", true),
+    //                 ("dir/one_extra_deep/file.txt", false),
+    //                 ("dir/visible_file.txt", false),
+    //             ],
+    //             left_collapsed: vec!["dir"],
+    //             right_collapsed: vec![],
+    //             expected: vec![
+    //                 ("", 0, "~"),
+    //                 ("dir", 1, "~"),
+    //                 ("dir/hidden_file.txt", 2, "-"),
+    //                 ("dir/one_extra_deep", 2, "+"),
+    //                 ("dir/one_extra_deep/file.txt", 3, "+"),
+    //                 ("dir/visible_file.txt", 2, "+"),
+    //             ],
+    //         },
+    //         DiffTestCase {
+    //             name: "Complex nested diff with partial collapse",
+    //             left_structure: vec![
+    //                 ("common/deleted.txt", false),
+    //                 ("common/same.txt", false),
+    //                 ("nested/level1/level2/file.txt", false),
+    //                 ("only_left/a.txt", false),
+    //             ],
+    //             right_structure: vec![
+    //                 ("common/added.txt", false),
+    //                 ("common/same.txt", false),
+    //                 ("nested/level1/level2/file.txt", false),
+    //                 ("only_right/b.txt", false),
+    //             ],
+    //             left_collapsed: vec!["nested/level1"],
+    //             right_collapsed: vec!["nested/level1"],
+    //             expected: vec![
+    //                 ("", 0, "~"),
+    //                 ("common", 1, "~"),
+    //                 ("common/added.txt", 2, "+"),
+    //                 ("common/deleted.txt", 2, "-"),
+    //                 ("common/same.txt", 2, "="),
+    //                 ("nested", 1, "="),
+    //                 ("nested/level1", 2, "="),
+    //                 ("only_left", 1, "-"),
+    //                 ("only_left/a.txt", 2, "-"),
+    //                 ("only_right", 1, "+"),
+    //                 ("only_right/b.txt", 2, "+"),
+    //             ],
+    //         },
+    //     ];
 
-        for case in cases {
-            let temp_l = tempdir().unwrap();
-            let temp_r = tempdir().unwrap();
-            
-            setup_fs(temp_l.path(), &case.left_structure);
-            setup_fs(temp_r.path(), &case.right_structure);
+    //     for case in cases {
+    //         let temp_l = tempdir().unwrap();
+    //         let temp_r = tempdir().unwrap();
 
-            let view_l = create_view(temp_l.path(), &case.left_collapsed);
-            let view_r = create_view(temp_r.path(), &case.right_collapsed);
+    //         setup_fs(temp_l.path(), &case.left_structure);
+    //         setup_fs(temp_r.path(), &case.right_structure);
 
-            let left_tree_actual = view_l.build_collapsed_rows(view_l.file_system.get_root_node_id(), 0)
-                .into_iter().map(|row| (get_rel(&view_l.file_system, temp_l.path(), row.path), row.depth)).collect::<Vec<_>>();
-            let right_tree_actual = view_r.build_collapsed_rows(view_r.file_system.get_root_node_id(), 0)
-                .into_iter().map(|row| (get_rel(&view_r.file_system, temp_r.path(), row.path), row.depth)).collect::<Vec<_>>();
+    //         let view_l = create_view(temp_l.path(), &case.left_collapsed);
+    //         let view_r = create_view(temp_r.path(), &case.right_collapsed);
 
-            let out = FileSystemView::build_two_folder_diff_rows(
-                Some(&view_l),
-                Some(&view_r),
-                &PathComparissonMethod::Byte,
-            ).unwrap();
-            
+    //         let left_tree_actual = view_l
+    //             .build_collapsed_rows(view_l.file_system.get_root_node_id(), 0)
+    //             .into_iter()
+    //             .map(|row| {
+    //                 (
+    //                     get_rel(&view_l.file_system, temp_l.path(), row.path),
+    //                     row.depth,
+    //                 )
+    //             })
+    //             .collect::<Vec<_>>();
+    //         let right_tree_actual = view_r
+    //             .build_collapsed_rows(view_r.file_system.get_root_node_id(), 0)
+    //             .into_iter()
+    //             .map(|row| {
+    //                 (
+    //                     get_rel(&view_r.file_system, temp_r.path(), row.path),
+    //                     row.depth,
+    //                 )
+    //             })
+    //             .collect::<Vec<_>>();
 
-            let actual_diff: Vec<(String, FsNodeDepth, String)> = out.into_iter().map(|row| {
-                let rel = get_rel_from_diff_state(&view_l.file_system, &view_r.file_system, temp_l.path(), temp_r.path(), &row.diff_state);
-                let marker = match row.diff_state {
-                    DiffState::OnlyInFirst(_) => "-",
-                    DiffState::OnlyInSecond(_) => "+",
-                    DiffState::Different(_, _) => "~",
-                    DiffState::Same(_, _) => "=",
-                    _ => "?",
-                };
-                (rel, row.depth, marker.to_string())
-            }).collect();
+    //         let out = FileSystemView::build_two_folder_diff_rows(
+    //             Some(&view_l),
+    //             Some(&view_r),
+    //             &PathComparissonMethod::Byte,
+    //         )
+    //         .unwrap();
 
-            let expected_diff: Vec<(String, FsNodeDepth, String)> = case.expected.iter()
-                .map(|(p, d, m)| (p.to_string(), *d, m.to_string()))
-                .collect();
+    //         let actual_diff: Vec<(String, FsNodeDepth, String)> = out
+    //             .into_iter()
+    //             .map(|row| {
+    //                 let rel = get_rel_from_diff_state(
+    //                     &view_l.file_system,
+    //                     &view_r.file_system,
+    //                     temp_l.path(),
+    //                     temp_r.path(),
+    //                     &row.diff_state,
+    //                 );
+    //                 let marker = match row.diff_state {
+    //                     DiffState::OnlyInFirst(_) => "-",
+    //                     DiffState::OnlyInSecond(_) => "+",
+    //                     DiffState::Different(_, _) => "~",
+    //                     DiffState::Same(_, _) => "=",
+    //                     _ => "?",
+    //                 };
+    //                 (rel, row.depth, marker.to_string())
+    //             })
+    //             .collect();
 
-            let expected_output = format_diff_tree_two(&left_tree_actual, &right_tree_actual, &expected_diff);
-            if actual_diff != expected_diff {
-                let actual_output = format_diff_tree_two(&left_tree_actual, &right_tree_actual, &actual_diff);
+    //         let expected_diff: Vec<(String, FsNodeDepth, String)> = case
+    //             .expected
+    //             .iter()
+    //             .map(|(p, d, m)| (p.to_string(), *d, m.to_string()))
+    //             .collect();
 
-                panic!(
-                    "\nCase Failed!: {}\n\nEXPECTED STATE:\n{}\nACTUAL STATE:\n{}",
-                    case.name,
-                    expected_output,
-                    actual_output
-                );
-            } else {
-                println!("\nPASS: {}\n\nACTUAL STATE:\n{}", case.name, expected_output);
-            }
-        }
-    }
+    //         let expected_output =
+    //             format_diff_tree_two(&left_tree_actual, &right_tree_actual, &expected_diff);
+    //         if actual_diff != expected_diff {
+    //             let actual_output =
+    //                 format_diff_tree_two(&left_tree_actual, &right_tree_actual, &actual_diff);
+
+    //             panic!(
+    //                 "\nCase Failed!: {}\n\nEXPECTED STATE:\n{}\nACTUAL STATE:\n{}",
+    //                 case.name, expected_output, actual_output
+    //             );
+    //         } else {
+    //             println!(
+    //                 "\nPASS: {}\n\nACTUAL STATE:\n{}",
+    //                 case.name, expected_output
+    //             );
+    //         }
+    //     }
+    // }
 
     fn setup_fs(root: &Path, structure: &[(&str, bool)]) {
         for (rel_path, is_dir) in structure {
@@ -805,12 +871,18 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             ui.label("≠");
                             if let Some(fs1_view) = file_system_1_view {
                                 let root_1_id = fs1_view.file_system.get_root_node_id();
-                                if let Some(row) = visible_rows.iter().find(|r| r.diff_state.first() == Some(root_1_id)) {
+                                if let Some(row) = visible_rows
+                                    .iter()
+                                    .find(|r| r.diff_state.first() == Some(root_1_id))
+                                {
                                     ui_custom_diff_state(ui, &row.diff_state);
                                 }
                             } else if let Some(fs2_view) = file_system_2_view {
                                 let root_2_id = fs2_view.file_system.get_root_node_id();
-                                if let Some(row) = visible_rows.iter().find(|r| r.diff_state.second() == Some(root_2_id)) {
+                                if let Some(row) = visible_rows
+                                    .iter()
+                                    .find(|r| r.diff_state.second() == Some(root_2_id))
+                                {
                                     ui_custom_diff_state(ui, &row.diff_state);
                                 }
                             }
@@ -895,18 +967,18 @@ fn handle_drops(
             for dropped_file in &i.raw.dropped_files {
                 if let Some(path) = &dropped_file.path {
                     if rect1.contains(drop_pos) {
-                        match FileSystemModel::new(&path)
-                        {
-                            Ok(new_model) => *fs1_view =
-                            Some(FileSystemView::new(Arc::new(new_model))),
+                        match FileSystemModel::new(&path) {
+                            Ok(new_model) => {
+                                *fs1_view = Some(FileSystemView::new(Arc::new(new_model)))
+                            }
                             Err(e) => log::error!("{e}"),
                         }
                         return true;
                     } else if rect2.contains(drop_pos) {
-                        match FileSystemModel::new(&path)
-                        {
-                            Ok(new_model) => *fs2_view =
-                            Some(FileSystemView::new(Arc::new(new_model))),
+                        match FileSystemModel::new(&path) {
+                            Ok(new_model) => {
+                                *fs2_view = Some(FileSystemView::new(Arc::new(new_model)))
+                            }
                             Err(e) => log::error!("{e}"),
                         }
                         return true;
@@ -992,19 +1064,36 @@ fn file_diff_state(
 
 fn folder_diff_state(
     parent_path: &str,
-    entries_map: &BTreeMap<String, (Option<(FsNodeId, &FsNode, FsNodeDepth)>, Option<(FsNodeId, &FsNode, FsNodeDepth)>)>,
+    entries_map: &BTreeMap<
+        String,
+        (
+            Option<(FsNodeId, &FsNode, FsNodeDepth)>,
+            Option<(FsNodeId, &FsNode, FsNodeDepth)>,
+        ),
+    >,
     method: &PathComparissonMethod,
     threshold: f32,
 ) -> DiffState {
-    let (current_left, current_right) = entries_map.get(parent_path).cloned().unwrap_or((None, None));
+    let (current_left, current_right) = entries_map
+        .get(parent_path)
+        .cloned()
+        .unwrap_or((None, None));
     let l_id = current_left.map(|l| l.0).unwrap_or(0);
     let r_id = current_right.map(|r| r.0).unwrap_or(0);
 
-    let prefix = if parent_path.is_empty() { String::new() } else { format!("{}/", parent_path) };
+    let prefix = if parent_path.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", parent_path)
+    };
 
     for (path, (left, right)) in entries_map.range(prefix.clone()..) {
-        if !path.starts_with(&prefix) { break; }
-        if path == parent_path { continue; }
+        if !path.starts_with(&prefix) {
+            break;
+        }
+        if path == parent_path {
+            continue;
+        }
 
         match (left, right) {
             // If a child exists on one side only, the parent is "Different" (Modified)
@@ -1090,10 +1179,8 @@ fn render_diff_side(
                 if is_dir {
                     // Openness: 0.0 is closed, 1.0 is open
                     let openness = if is_collapsed { 0.0 } else { 1.0 };
-                    let (_rect, response) = ui.allocate_exact_size(
-                        egui::vec2(12.0, row_height), 
-                        egui::Sense::click()
-                    );
+                    let (_rect, response) =
+                        ui.allocate_exact_size(egui::vec2(12.0, row_height), egui::Sense::click());
                     egui::collapsing_header::paint_default_icon(ui, openness, &response);
 
                     if response.clicked() {
@@ -1133,7 +1220,12 @@ fn render_row_folder_tree_diff_column(
     let second_node_id = entry.diff_state.second();
     let mut should_toggle_row = false;
 
-    let is_root = match (&file_system_1_view, &file_system_2_view, &first_node_id, &second_node_id) {
+    let is_root = match (
+        &file_system_1_view,
+        &file_system_2_view,
+        &first_node_id,
+        &second_node_id,
+    ) {
         (Some(v1), _, Some(first_id), _) => *first_id == v1.file_system.get_root_node_id(),
         (_, Some(v2), _, Some(second_id)) => *second_id == v2.file_system.get_root_node_id(),
         _ => false,
@@ -1145,50 +1237,65 @@ fn render_row_folder_tree_diff_column(
 
     let get_collapsed_state = |v: &FileSystemView, id: &FsNodeId| {
         let is_root = v.file_system.get_root_node_id() == *id;
-        let collapsed = if is_root {false}else{v.is_collapsed(*id)};
-        let parent_collapsed = if is_root {false}else{v.is_parent_chain_collapsed(*id)};
+        let collapsed = if is_root { false } else { v.is_collapsed(*id) };
+        let parent_collapsed = if is_root {
+            false
+        } else {
+            v.is_parent_chain_collapsed(*id)
+        };
         (collapsed, parent_collapsed)
     };
 
     // Destructure into specific options for each view's state
-    let (state1, state2) = match (&file_system_1_view, &file_system_2_view, &first_node_id, &second_node_id) {
-        (Some(v1), Some(v2), Some(id1), Some(id2)) => {
-            (Some(get_collapsed_state(v1, id1)), Some(get_collapsed_state(v2, id2)))
-        }
-        (Some(v), _, Some(id1), _) => {
-            (Some(get_collapsed_state(v, id1)), None)
-        }
-        (_, Some(v), _, Some(id2)) => {
-            (None, Some(get_collapsed_state(v, id2)))
-        }
+    let (state1, state2) = match (
+        &file_system_1_view,
+        &file_system_2_view,
+        &first_node_id,
+        &second_node_id,
+    ) {
+        (Some(v1), Some(v2), Some(id1), Some(id2)) => (
+            Some(get_collapsed_state(v1, id1)),
+            Some(get_collapsed_state(v2, id2)),
+        ),
+        (Some(v), _, Some(id1), _) => (Some(get_collapsed_state(v, id1)), None),
+        (_, Some(v), _, Some(id2)) => (None, Some(get_collapsed_state(v, id2))),
         _ => panic!("unreachable"),
     };
 
-    let is_collapsed_1 = state1.and_then(|f|Some(f.0)).unwrap_or(false);
-    let is_parent_collapsed_1 = state1.and_then(|f|Some(f.1)).unwrap_or(false);
-    let is_collapsed_2 = state2.and_then(|f|Some(f.0)).unwrap_or(false);
-    let is_parent_collapsed_2 = state2.and_then(|f|Some(f.1)).unwrap_or(false);
+    let is_collapsed_1 = state1.and_then(|f| Some(f.0)).unwrap_or(false);
+    let is_parent_collapsed_1 = state1.and_then(|f| Some(f.1)).unwrap_or(false);
+    let is_collapsed_2 = state2.and_then(|f| Some(f.0)).unwrap_or(false);
+    let is_parent_collapsed_2 = state2.and_then(|f| Some(f.1)).unwrap_or(false);
     // If both parets are collapsed or invalid, hide the whole row (skip index)
-    let hide_row = (is_parent_collapsed_1 || state1.is_none()) && (is_parent_collapsed_2 || state2.is_none());
+    let hide_row =
+        (is_parent_collapsed_1 || state1.is_none()) && (is_parent_collapsed_2 || state2.is_none());
     // --- Left Column (Folder 1) ---
     // if !hide_row Need to set total_rows if we hide
     {
-        if !is_parent_collapsed_1
-        {
+        if !is_parent_collapsed_1 {
             row.col(|ui| {
-                render_diff_side(ui, file_system_1_view.as_deref(), first_node_id, entry.depth, entry.is_dir, is_collapsed_1, row_height, ||{
-                    on_row_item_clicked(
-                        file_system_1_view.as_deref(),
-                        file_system_2_view.as_deref(),
-                        entry,
-                        diff_tool_config,
-                    );
-                }, ||{should_toggle_row = true});
+                render_diff_side(
+                    ui,
+                    file_system_1_view.as_deref(),
+                    first_node_id,
+                    entry.depth,
+                    entry.is_dir,
+                    is_collapsed_1,
+                    row_height,
+                    || {
+                        on_row_item_clicked(
+                            file_system_1_view.as_deref(),
+                            file_system_2_view.as_deref(),
+                            entry,
+                            diff_tool_config,
+                        );
+                    },
+                    || should_toggle_row = true,
+                );
             });
         }
         // --- Middle Column (Diff Status) ---
-        if (!is_parent_collapsed_1 && !is_parent_collapsed_2)
-        {
+        if (!is_parent_collapsed_1 && !is_parent_collapsed_2) {
             row.col(|ui| {
                 ui.horizontal(|ui| {
                     ui_custom_diff_state(ui, &entry.diff_state);
@@ -1196,32 +1303,38 @@ fn render_row_folder_tree_diff_column(
             });
         }
         // --- Right Column (Folder 2) ---
-        if !is_parent_collapsed_2
-        {
+        if !is_parent_collapsed_2 {
             row.col(|ui| {
-                render_diff_side(ui, file_system_2_view.as_deref(), second_node_id, entry.depth, entry.is_dir, is_collapsed_2, row_height, ||{
-                    on_row_item_clicked(
-                        file_system_1_view.as_deref(),
-                        file_system_2_view.as_deref(),
-                        entry,
-                        diff_tool_config,
-                    );
-                }, ||{should_toggle_row = true});
+                render_diff_side(
+                    ui,
+                    file_system_2_view.as_deref(),
+                    second_node_id,
+                    entry.depth,
+                    entry.is_dir,
+                    is_collapsed_2,
+                    row_height,
+                    || {
+                        on_row_item_clicked(
+                            file_system_1_view.as_deref(),
+                            file_system_2_view.as_deref(),
+                            entry,
+                            diff_tool_config,
+                        );
+                    },
+                    || should_toggle_row = true,
+                );
             });
         }
     }
 
     if should_toggle_row {
-        if let Some(first) = &entry.diff_state.first()
-        {
+        if let Some(first) = &entry.diff_state.first() {
             if let Some(view) = file_system_1_view.as_mut() {
                 view.toggle_collapse(*first);
             }
         }
-        if let Some(second) = &entry.diff_state.second()
-        {
-            if let Some(view) = file_system_2_view.as_mut()
-            {
+        if let Some(second) = &entry.diff_state.second() {
+            if let Some(view) = file_system_2_view.as_mut() {
                 view.toggle_collapse(*second);
             }
         }
