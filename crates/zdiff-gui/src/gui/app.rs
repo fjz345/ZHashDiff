@@ -37,7 +37,7 @@ pub struct DiffCtx {
     pub file_2_hash: String,
     pub one_sided_diff_is_left: Option<bool>,
     pub diff_option: DiffBuilderOptions,
-    pub precomputed_diffs: Vec<usize>, // list indicies of diff_rows of DiffOp != Equal from diff_rows
+    pub precomputed_diffs: Vec<(usize, usize)>, // list indicies of diff_rows of DiffOp != Equal from diff_rows
     // Myers
     pub diff_rows: Vec<DiffRow>,
     pub num_add_deletes: (u32, u32),
@@ -122,18 +122,18 @@ impl<T: RawTokenTrait> Default for AppStateCtx<T> {
 }
 
 impl<T: RawTokenTrait> AppStateCtx<T> {
-    fn precompute_diffs(diff_rows: &[DiffRow]) -> Vec<usize> {
-        let precomputed_diffs: Vec<usize> = diff_rows
+    fn precompute_diff_spans(diff_rows: &[DiffRow]) -> Vec<(usize, usize)> {
+        let has_change = |content: &LineContent| match content {
+            LineContent::Code { tokens, .. } => {
+                tokens.iter().any(|(res, _)| res.operation != DiffOp::Equal)
+            }
+            _ => false,
+        };
+
+        let diff_indices: Vec<usize> = diff_rows
             .iter()
             .enumerate()
             .filter_map(|(idx, row)| {
-                let has_change = |content: &LineContent| match content {
-                    LineContent::Code { tokens, .. } => {
-                        tokens.iter().any(|(res, _)| res.operation != DiffOp::Equal)
-                    }
-                    LineContent::Void => false,
-                };
-
                 if has_change(&row.left) || has_change(&row.right) {
                     Some(idx)
                 } else {
@@ -141,7 +141,11 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 }
             })
             .collect();
-        precomputed_diffs
+
+        diff_indices
+            .chunk_by(|&a, &b| b == a + 1)
+            .map(|chunk| (*chunk.first().unwrap(), *chunk.last().unwrap()))
+            .collect()
     }
 
     fn update_diff_rows(
@@ -174,7 +178,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
 
                 let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
-                let precomputed_diffs = Self::precompute_diffs(&diff_rows);
+                let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
                 DiffCtx {
                     file_1_hash: c1_hash,
                     file_2_hash: c2_hash,
@@ -208,7 +212,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
-                let precomputed_diffs = Self::precompute_diffs(&diff_rows);
+                let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
                 DiffCtx {
                     file_1_hash: c1_hash.clone(),
                     file_2_hash: c1_hash,
@@ -242,7 +246,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
                 let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
-                let precomputed_diffs = Self::precompute_diffs(&diff_rows);
+                let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
                 DiffCtx {
                     file_1_hash: c2_hash.clone(),
                     file_2_hash: c2_hash,
@@ -326,9 +330,12 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 || app_ctx.file_1.as_ref().unwrap().path != *path
                 || app_ctx.file_1.as_ref().unwrap().hash != hash_file(path).expect("failed to hash")
             {
-                if let Ok(r) = CachedFile::new(path) {
-                    app_ctx.file_1 = Some(Arc::new(r));
-                    changed |= app_ctx.file_1.is_some()
+                match CachedFile::new(path) {
+                    Ok(r) => {
+                        app_ctx.file_1 = Some(Arc::new(r));
+                        changed |= app_ctx.file_1.is_some();
+                    }
+                    Err(e) => log::error!("Cannot find file {}, Error: {e}", path.display()),
                 }
             }
         }
@@ -338,9 +345,12 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 || app_ctx.file_2.as_ref().unwrap().path != *path
                 || app_ctx.file_2.as_ref().unwrap().hash != hash_file(path).expect("failed to hash")
             {
-                if let Ok(r) = CachedFile::new(path) {
-                    app_ctx.file_2 = Some(Arc::new(r));
-                    changed |= app_ctx.file_2.is_some()
+                match CachedFile::new(path) {
+                    Ok(r) => {
+                        app_ctx.file_2 = Some(Arc::new(r));
+                        changed |= app_ctx.file_2.is_some()
+                    }
+                    Err(e) => log::error!("Cannot find file {}, Error: {e}", path.display()),
                 }
             }
         }
@@ -513,6 +523,27 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                         *diff_ctx_invalidated = true;
                     }
                     if ui.button("Clear Diff Rows").clicked() {
+                        *diff_ctx = None;
+                        *diff_ctx_invalidated = true;
+                    }
+                    #[cfg(debug_assertions)]
+                    if ui.button("Load $1").clicked() {
+                        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
+                        *file_path_1 =
+                            Some(base.join("../../test/rust_files_diff_1/advanced_rust.rs"));
+                        *file_path_2 =
+                            Some(base.join("../../test/rust_files_diff_1/advanced_rust_2.rs"));
+
+                        *diff_ctx = None;
+                        *diff_ctx_invalidated = true;
+                    }
+                    #[cfg(debug_assertions)]
+                    if ui.button("Load $2").clicked() {
+                        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
+                        *file_path_1 =
+                            Some(base.join("../../test/rust_files_diff_1/imgui.1.91.1.h"));
+                        *file_path_2 = Some(base.join("../../test/rust_files_diff_1/imgui.h"));
+
                         *diff_ctx = None;
                         *diff_ctx_invalidated = true;
                     }
@@ -874,9 +905,9 @@ impl<T: RawTokenTrait> eframe::App for ZApp<T> {
 
                 if state.diff_ctx_conflict_input {
                     if let Some(diff_ctx) = state.diff_ctx.as_ref() {
-                        let conflict_idx =
+                        let conflict_idx_span =
                             diff_ctx.precomputed_diffs[state.diff_ctx_conflict_cursor];
-                        state.scroll_to_goto_row = Some(conflict_idx);
+                        state.scroll_to_goto_row = Some(conflict_idx_span.0);
                     }
                 }
 
