@@ -458,6 +458,8 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
         diff_ctx_invalidated: &mut bool,
         find_open: &mut bool,
         goto_open: &mut bool,
+        scroll_left: &mut f32,
+        scroll_right: &mut f32,
     ) {
         let check_file_rx = |rx_opt: &mut Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
                              target: &mut Option<std::path::PathBuf>| {
@@ -496,11 +498,14 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                             *file_path_2 = Some(path.clone());
                         }
                     }
-                    // if ui.button("Swap Source/Target").clicked() {
-                    // std::mem::swap(&mut file_1, &mut file_2);
-                    // std::mem::swap(&mut file_path_1, &mut file_path_2);
-                    // std::mem::swap(&mut scroll_left, &mut scroll_right);
-                    // }
+                    if ui.button("Swap Source/Target").clicked() {
+                        std::mem::swap(file_1, file_2);
+                        std::mem::swap(file_path_1, file_path_2);
+                        std::mem::swap(scroll_left, scroll_right);
+
+                        *diff_ctx = None;
+                        *diff_ctx_invalidated = true;
+                    }
                     if ui.button("Find").clicked() {
                         *find_open = true;
                     }
@@ -595,6 +600,8 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 diff_ctx_invalidated,
                 find_open,
                 goto_open,
+                scroll_left,
+                scroll_right,
             );
 
             let mut goto_window_open = *goto_open;
