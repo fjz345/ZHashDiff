@@ -38,6 +38,7 @@ pub struct DiffCtx {
     pub one_sided_diff_is_left: Option<bool>,
     pub diff_option: DiffBuilderOptions,
     pub precomputed_diffs: Vec<(usize, usize)>, // list indicies of diff_rows of DiffOp != Equal from diff_rows
+    pub precomputed_file_rows: (Vec<usize>, Vec<usize>), // list indicies of diff_rows of DiffOp != Equal from diff_rows
     // Myers
     pub diff_rows: Vec<DiffRow>,
     pub num_add_deletes: (u32, u32),
@@ -75,7 +76,7 @@ pub struct AppStateCtx<T: RawTokenTrait> {
     pub scroll_left: f32,
     pub scroll_right: f32,
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub scroll_to_goto_rows: Option<(usize, Option<usize>)>,
+    pub scroll_to_rows: Option<(usize, Option<usize>)>,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub goto_open: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -84,8 +85,6 @@ pub struct AppStateCtx<T: RawTokenTrait> {
     pub find_open: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub find_input: String,
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub scroll_to_find_row: Option<usize>,
 
     #[cfg_attr(feature = "serde", serde(skip))]
     pub diff_ctx_conflict_cursor: usize,
@@ -109,14 +108,13 @@ impl<T: RawTokenTrait> Default for AppStateCtx<T> {
             scroll_left: Default::default(),
             scroll_right: Default::default(),
             diff_ctx_invalidated: Default::default(),
-            scroll_to_goto_rows: Default::default(),
+            scroll_to_rows: Default::default(),
             goto_open: Default::default(),
             find_open: Default::default(),
             goto_input: Default::default(),
             find_input: Default::default(),
             rx_file_path_1: Default::default(),
             rx_file_path_2: Default::default(),
-            scroll_to_find_row: Default::default(),
             diff_ctx_conflict_cursor: Default::default(),
             diff_ctx_conflict_input: Default::default(),
             diff_ctx_active_highlights: Default::default(),
@@ -151,6 +149,37 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
             .collect()
     }
 
+    fn precompute_file_rows(
+        diff_rows: &[DiffRow],
+        file_1_line_count: usize,
+        file_2_line_count: usize,
+    ) -> (Vec<usize>, Vec<usize>) {
+        let mut file_1_to_diff = vec![0; file_1_line_count];
+        let mut file_2_to_diff = vec![0; file_2_line_count];
+
+        for (row_idx, row) in diff_rows.iter().enumerate() {
+            if let LineContent::Code { line_num, .. } = row.left {
+                if line_num > 0 {
+                    let idx = line_num as usize - 1;
+                    if idx < file_1_line_count {
+                        file_1_to_diff[idx] = row_idx;
+                    }
+                }
+            }
+
+            if let LineContent::Code { line_num, .. } = row.right {
+                if line_num > 0 {
+                    let idx = line_num as usize - 1;
+                    if idx < file_2_line_count {
+                        file_2_to_diff[idx] = row_idx;
+                    }
+                }
+            }
+        }
+
+        (file_1_to_diff, file_2_to_diff)
+    }
+
     fn update_diff_rows(
         file_1: Option<Arc<CachedFile<T>>>,
         file_2: Option<Arc<CachedFile<T>>>,
@@ -182,6 +211,11 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 
                 let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
                 let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
+                let line_count_1 = c1.metadata.line_starts.len();
+                let line_count_2 = c2.metadata.line_starts.len();
+                let precomputed_file_rows =
+                    Self::precompute_file_rows(&diff_rows, line_count_1, line_count_2);
+
                 DiffCtx {
                     file_1_hash: c1_hash,
                     file_2_hash: c2_hash,
@@ -190,6 +224,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                     num_add_deletes: myers_count_add_deletes(&path),
                     one_sided_diff_is_left: None,
                     precomputed_diffs,
+                    precomputed_file_rows,
                 }
             }
             (Some(c1), None) => {
@@ -216,6 +251,10 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
                 let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
+                let line_count_1 = c1.metadata.line_starts.len();
+                let line_count_2 = c2.metadata.line_starts.len();
+                let precomputed_file_rows =
+                    Self::precompute_file_rows(&diff_rows, line_count_1, line_count_2);
                 DiffCtx {
                     file_1_hash: c1_hash.clone(),
                     file_2_hash: c1_hash,
@@ -224,6 +263,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                     num_add_deletes: myers_count_add_deletes(&path),
                     one_sided_diff_is_left: Some(true),
                     precomputed_diffs,
+                    precomputed_file_rows,
                 }
             }
             (None, Some(c2)) => {
@@ -250,6 +290,10 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
                 let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
                 let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
+                let line_count_1 = c1.metadata.line_starts.len();
+                let line_count_2 = c2.metadata.line_starts.len();
+                let precomputed_file_rows =
+                    Self::precompute_file_rows(&diff_rows, line_count_1, line_count_2);
                 DiffCtx {
                     file_1_hash: c2_hash.clone(),
                     file_2_hash: c2_hash,
@@ -258,6 +302,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                     num_add_deletes: myers_count_add_deletes(&path),
                     one_sided_diff_is_left: Some(false),
                     precomputed_diffs,
+                    precomputed_file_rows,
                 }
             }
             (None, None) => {
@@ -579,8 +624,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 rx,
                 diff_ctx_in_progress,
                 diff_ctx_invalidated,
-                scroll_to_goto_rows: scroll_to_goto_row,
-                scroll_to_find_row,
+                scroll_to_rows,
                 goto_open,
                 find_open,
                 goto_input,
@@ -618,10 +662,11 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 );
                 response.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    if let Ok(line_number) = goto_input.parse::<usize>() {
+                    if let Ok(mut line_number) = goto_input.parse::<usize>() {
+                        line_number += 1; // zero indexed
                         log::info!("Goto to line: {}", line_number);
                         *goto_open = false;
-                        *scroll_to_goto_row = goto_input.parse::<usize>().ok().map(|f| (f, None));
+                        *scroll_to_rows = goto_input.parse::<usize>().ok().map(|f| (f, None));
                         goto_input.clear();
                     }
                 }
@@ -639,10 +684,50 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 response.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     log::info!("Finding line: {}", find_input);
-                    log::info!("Navigating to line: {}", find_input);
                     *find_open = false;
-                    *scroll_to_find_row = None;
-                    log::warn!("NYI - Find");
+
+                    if let Some(diff) = diff_ctx.as_ref() {
+                        if let Some(found_in_file_1) =
+                            file_1.as_ref().map(|f| f.content_search(&find_input))
+                        {
+                            if let Some(&first_line) = found_in_file_1.first() {
+                                // Safe lookup with .get()
+                                let start_row = diff
+                                    .precomputed_file_rows
+                                    .0
+                                    .get(first_line)
+                                    .copied()
+                                    .unwrap_or(0);
+                                let end_row = found_in_file_1
+                                    .last()
+                                    .and_then(|&l| diff.precomputed_file_rows.0.get(l))
+                                    .copied();
+
+                                *scroll_to_rows = Some((start_row, end_row));
+                            }
+                        } else if let Some(found_in_file_2) =
+                            file_2.as_ref().map(|f| f.content_search(&find_input))
+                        {
+                            if let Some(&first_line) = found_in_file_2.first() {
+                                // Safe lookup with .get()
+                                let start_row = diff
+                                    .precomputed_file_rows
+                                    .1
+                                    .get(first_line)
+                                    .copied()
+                                    .unwrap_or(0);
+                                let end_row = found_in_file_2
+                                    .last()
+                                    .and_then(|&l| diff.precomputed_file_rows.1.get(l))
+                                    .copied();
+
+                                *scroll_to_rows = Some((start_row, end_row));
+                            }
+                        }
+                    }
+                    if let Some(scroll_to) = &scroll_to_rows {
+                        log::info!("Navigating to line: {:?}", scroll_to);
+                    }
                     find_input.clear();
                 }
             });
@@ -654,19 +739,16 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
 
             ui.separator();
 
-            let mut scroll_to_row_span = scroll_to_goto_row
-                .clone()
-                .or(scroll_to_find_row.clone().map(|f| (f, None)));
-
-            if let Some((start, maybe_end)) = &mut scroll_to_row_span {
+            if let Some((start, maybe_end)) = &mut scroll_to_rows.as_ref() {
                 diff_ctx_active_highlights.clear();
                 if let Some(end) = maybe_end {
                     diff_ctx_active_highlights.extend(*start..=*end);
                 } else {
                     diff_ctx_active_highlights.push(*start);
                 }
-                scroll_to_row_span = None;
+                *scroll_to_rows = None;
             }
+
             let mut behavior = TreeBehavior {
                 ctx_file_diff: FileDiffPaneCtx {
                     diff_ctx: diff_ctx_ref,
@@ -675,7 +757,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                     diff_options: diff_options,
                     file_source: file_1.clone(),
                     file_target: file_2.clone(),
-                    scroll_to_row_span: &scroll_to_row_span,
+                    scroll_to_row_span: &scroll_to_rows,
                     active_highlights: &diff_ctx_active_highlights,
                 },
             };
@@ -687,11 +769,6 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
             // Invalidate diff if options changed
             if diff_options_before != *diff_options {
                 app_ctx.diff_ctx_invalidated = true;
-            }
-            // Invalidate goto
-            if scroll_to_row_span.is_none() {
-                *scroll_to_goto_row = None;
-                *scroll_to_find_row = None;
             }
 
             for (_tile_id, tile) in self.tree.tiles.iter() {
@@ -931,7 +1008,7 @@ impl<T: RawTokenTrait> eframe::App for ZApp<T> {
                     if let Some(diff_ctx) = state.diff_ctx.as_ref() {
                         let conflict_idx_span =
                             diff_ctx.precomputed_diffs[state.diff_ctx_conflict_cursor];
-                        state.scroll_to_goto_rows =
+                        state.scroll_to_rows =
                             Some((conflict_idx_span.0, Some(conflict_idx_span.1)));
                     }
                 }
