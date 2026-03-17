@@ -75,7 +75,7 @@ pub struct AppStateCtx<T: RawTokenTrait> {
     pub scroll_left: f32,
     pub scroll_right: f32,
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub scroll_to_goto_row: Option<usize>,
+    pub scroll_to_goto_rows: Option<(usize, Option<usize>)>,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub goto_open: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -91,6 +91,8 @@ pub struct AppStateCtx<T: RawTokenTrait> {
     pub diff_ctx_conflict_cursor: usize,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub diff_ctx_conflict_input: bool,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub diff_ctx_active_highlights: Vec<usize>,
 }
 
 impl<T: RawTokenTrait> Default for AppStateCtx<T> {
@@ -107,7 +109,7 @@ impl<T: RawTokenTrait> Default for AppStateCtx<T> {
             scroll_left: Default::default(),
             scroll_right: Default::default(),
             diff_ctx_invalidated: Default::default(),
-            scroll_to_goto_row: Default::default(),
+            scroll_to_goto_rows: Default::default(),
             goto_open: Default::default(),
             find_open: Default::default(),
             goto_input: Default::default(),
@@ -117,6 +119,7 @@ impl<T: RawTokenTrait> Default for AppStateCtx<T> {
             scroll_to_find_row: Default::default(),
             diff_ctx_conflict_cursor: Default::default(),
             diff_ctx_conflict_input: Default::default(),
+            diff_ctx_active_highlights: Default::default(),
         }
     }
 }
@@ -576,7 +579,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 rx,
                 diff_ctx_in_progress,
                 diff_ctx_invalidated,
-                scroll_to_goto_row,
+                scroll_to_goto_rows: scroll_to_goto_row,
                 scroll_to_find_row,
                 goto_open,
                 find_open,
@@ -586,6 +589,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 rx_file_path_2,
                 diff_ctx_conflict_cursor,
                 diff_ctx_conflict_input,
+                diff_ctx_active_highlights,
             } = app_ctx;
             let diff_options_before = diff_options.clone();
             self.show_menu(
@@ -617,7 +621,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                     if let Ok(line_number) = goto_input.parse::<usize>() {
                         log::info!("Goto to line: {}", line_number);
                         *goto_open = false;
-                        *scroll_to_goto_row = goto_input.parse::<usize>().ok();
+                        *scroll_to_goto_row = goto_input.parse::<usize>().ok().map(|f| (f, None));
                         goto_input.clear();
                     }
                 }
@@ -650,7 +654,19 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
 
             ui.separator();
 
-            let mut scroll_to_row = scroll_to_goto_row.clone().or(scroll_to_find_row.clone());
+            let mut scroll_to_row_span = scroll_to_goto_row
+                .clone()
+                .or(scroll_to_find_row.clone().map(|f| (f, None)));
+
+            if let Some((start, maybe_end)) = &mut scroll_to_row_span {
+                diff_ctx_active_highlights.clear();
+                if let Some(end) = maybe_end {
+                    diff_ctx_active_highlights.extend(*start..=*end);
+                } else {
+                    diff_ctx_active_highlights.push(*start);
+                }
+                scroll_to_row_span = None;
+            }
             let mut behavior = TreeBehavior {
                 ctx_file_diff: FileDiffPaneCtx {
                     diff_ctx: diff_ctx_ref,
@@ -659,7 +675,8 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                     diff_options: diff_options,
                     file_source: file_1.clone(),
                     file_target: file_2.clone(),
-                    scroll_to_row: &mut scroll_to_row,
+                    scroll_to_row_span: &scroll_to_row_span,
+                    active_highlights: &diff_ctx_active_highlights,
                 },
             };
 
@@ -672,7 +689,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
                 app_ctx.diff_ctx_invalidated = true;
             }
             // Invalidate goto
-            if scroll_to_row.is_none() {
+            if scroll_to_row_span.is_none() {
                 *scroll_to_goto_row = None;
                 *scroll_to_find_row = None;
             }
@@ -914,7 +931,8 @@ impl<T: RawTokenTrait> eframe::App for ZApp<T> {
                     if let Some(diff_ctx) = state.diff_ctx.as_ref() {
                         let conflict_idx_span =
                             diff_ctx.precomputed_diffs[state.diff_ctx_conflict_cursor];
-                        state.scroll_to_goto_row = Some(conflict_idx_span.0);
+                        state.scroll_to_goto_rows =
+                            Some((conflict_idx_span.0, Some(conflict_idx_span.1)));
                     }
                 }
 

@@ -17,7 +17,9 @@ pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
     pub diff_options: &'a mut DiffBuilderOptions,
     pub scroll_left: &'a mut f32,
     pub scroll_right: &'a mut f32,
-    pub scroll_to_row: &'a mut Option<usize>,
+
+    pub scroll_to_row_span: &'a Option<(usize, Option<usize>)>,
+    pub active_highlights: &'a Vec<usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -144,10 +146,11 @@ impl FileDiffPane {
                         use egui_extras::{Column, TableBuilder};
 
                         let mut table_builder = TableBuilder::new(ui);
-                        if let Some(scroll_to_row) = ctx.scroll_to_row {
+
+                        if let Some((start, maybe_end)) = ctx.scroll_to_row_span {
+                            log::info!("scroll_to_row_span: ({:?}, {:?})", start, maybe_end);
                             table_builder =
-                                table_builder.scroll_to_row(*scroll_to_row, Some(egui::Align::Min));
-                            *ctx.scroll_to_row = None;
+                                table_builder.scroll_to_row(*start, Some(egui::Align::Min));
                         }
                         table_builder
                             .id_salt("file_diff_table")
@@ -185,6 +188,7 @@ impl FileDiffPane {
                                 body.rows(row_height, rows.len(), |mut row| {
                                     let row_index = row.index();
                                     let diff_row = &rows[row.index()];
+                                    let is_highlighted = ctx.active_highlights.contains(&row_index);
 
                                     row.col(|ui| {
                                         egui::ScrollArea::horizontal()
@@ -200,6 +204,7 @@ impl FileDiffPane {
                                                     ctx.file_target.clone(),
                                                     &diff_row.left,
                                                     widths[0],
+                                                    is_highlighted,
                                                 );
                                             });
                                     });
@@ -241,6 +246,7 @@ impl FileDiffPane {
                                                     ctx.file_target.clone(),
                                                     &diff_row.right,
                                                     widths[2],
+                                                    is_highlighted,
                                                 );
                                             });
                                     });
@@ -271,6 +277,7 @@ impl FileDiffPane {
         file_target: Option<Arc<CachedFile<T>>>,
         content: &LineContent,
         width: f32,
+        is_highlighted: bool,
     ) {
         let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
 
@@ -287,6 +294,14 @@ impl FileDiffPane {
                     0.0,
                     egui::Color32::from_rgba_unmultiplied(bg.0[0], bg.0[1], bg.0[2], bg.0[3]),
                 );
+
+                if is_highlighted {
+                    ui.painter().rect_filled(
+                        rect,
+                        0.0,
+                        egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40), // Faint yellow
+                    );
+                }
 
                 ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                     ui.horizontal_centered(|ui| {
@@ -348,8 +363,12 @@ impl FileDiffPane {
                 });
             }
             LineContent::Void => {
-                ui.painter()
-                    .rect_filled(rect, 0.0, egui::Color32::from_gray(15));
+                let fill = if is_highlighted {
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40)
+                } else {
+                    egui::Color32::from_gray(15)
+                };
+                ui.painter().rect_filled(rect, 0.0, fill);
             }
         }
     }
