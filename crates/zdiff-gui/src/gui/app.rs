@@ -14,8 +14,8 @@ use std::{
 use zcommon::{hash::hash_file, ui_egui::common::show_custom_popup};
 use zdiff::{
     diff_builder::{CachedFile, DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
-    diff_ir::{DiffOp, generate_ir},
-    lexer::{Lexer, RawToken, RawTokenTrait, TokenKind},
+    diff_ir::{DiffIR, DiffOp},
+    lexer::{Lexer, RawToken, TokenKind},
     myers::{myers_backtrack, myers_count_add_deletes, myers_diff_trace},
     read_file_contents,
 };
@@ -47,10 +47,10 @@ pub struct DiffCtx {
 #[derive(Debug)]
 #[cfg_attr(
     feature = "serde",
-    serde(bound(serialize = "", deserialize = "T: RawTokenTrait"))
+    // serde(bound(serialize = "", deserialize = "T: RawToken"))
 )]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct AppStateCtx<T: RawTokenTrait> {
+pub struct AppStateCtx {
     #[cfg_attr(feature = "serde", serde(skip))]
     rx_file_path_1: Option<mpsc::Receiver<std::path::PathBuf>>,
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -59,9 +59,9 @@ pub struct AppStateCtx<T: RawTokenTrait> {
     file_path_1: Option<PathBuf>,
     file_path_2: Option<PathBuf>,
     #[cfg_attr(feature = "serde", serde(skip))]
-    file_1: Option<Arc<CachedFile<T>>>,
+    file_1: Option<Arc<CachedFile<RawToken>>>,
     #[cfg_attr(feature = "serde", serde(skip))]
-    file_2: Option<Arc<CachedFile<T>>>,
+    file_2: Option<Arc<CachedFile<RawToken>>>,
 
     pub diff_options: DiffBuilderOptions,
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -94,7 +94,7 @@ pub struct AppStateCtx<T: RawTokenTrait> {
     pub diff_ctx_active_highlights: Vec<usize>,
 }
 
-impl<T: RawTokenTrait> Default for AppStateCtx<T> {
+impl Default for AppStateCtx {
     fn default() -> Self {
         Self {
             file_path_1: Default::default(),
@@ -122,7 +122,7 @@ impl<T: RawTokenTrait> Default for AppStateCtx<T> {
     }
 }
 
-impl<T: RawTokenTrait> AppStateCtx<T> {
+impl AppStateCtx {
     fn precompute_diff_spans(diff_rows: &[DiffRow]) -> Vec<(usize, usize)> {
         let has_change = |content: &LineContent| match content {
             LineContent::Code { tokens, .. } => {
@@ -192,18 +192,18 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
     }
 
     fn update_diff_rows(
-        file_1: Option<Arc<CachedFile<T>>>,
-        file_2: Option<Arc<CachedFile<T>>>,
+        file_1: Option<Arc<CachedFile<RawToken>>>,
+        file_2: Option<Arc<CachedFile<RawToken>>>,
         options: &DiffBuilderOptions,
     ) -> DiffCtx {
         match (&file_1, &file_2) {
             (Some(c1), Some(c2)) => {
                 let t1 = &c1.tokens;
                 let t2 = &c2.tokens;
-                let lex1 = Lexer::<T>::new(&c1.contents);
-                let lex2 = Lexer::<T>::new(&c2.contents);
+                let lex1 = Lexer::<RawToken>::new(&c1.contents);
+                let lex2 = Lexer::<RawToken>::new(&c2.contents);
 
-                let cmp = |a: &T, b: &T| {
+                let cmp = |a: &RawToken, b: &RawToken| {
                     if options.ignore_whitespace
                         && a.as_ref().kind.is_whitespace()
                         && b.as_ref().kind.is_whitespace()
@@ -215,7 +215,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 
                 let trace = myers_diff_trace(t1, t2, cmp);
                 let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
-                let diff_ir = generate_ir(&path);
+                let diff_ir = DiffIR::new(&path, false, t1, t2);
 
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
@@ -245,7 +245,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let lex1 = Lexer::new(&c1.contents);
                 let lex2 = Lexer::new(&c2.contents);
 
-                let cmp = |a: &T, b: &T| {
+                let cmp = |a: &RawToken, b: &RawToken| {
                     if options.ignore_whitespace
                         && a.as_ref().kind.is_whitespace()
                         && b.as_ref().kind.is_whitespace()
@@ -257,7 +257,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 
                 let trace = myers_diff_trace(t1, t2, cmp);
                 let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
-                let diff_ir = generate_ir(&path);
+                let diff_ir = DiffIR::new(&path, false, &t1, &t2);
 
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
@@ -284,7 +284,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
                 let lex1 = Lexer::new(&c1.contents);
                 let lex2 = Lexer::new(&c2.contents);
 
-                let cmp = |a: &T, b: &T| {
+                let cmp = |a: &RawToken, b: &RawToken| {
                     if options.ignore_whitespace
                         && a.as_ref().kind.is_whitespace()
                         && b.as_ref().kind.is_whitespace()
@@ -296,7 +296,7 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 
                 let trace = myers_diff_trace(t1, t2, cmp);
                 let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
-                let diff_ir = generate_ir(&path);
+                let diff_ir = DiffIR::new(&path, false, &t1, &t2);
 
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
                 let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
@@ -324,14 +324,14 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(bound(serialize = "", deserialize = "T: RawTokenTrait"))]
-enum AppState<T: RawTokenTrait> {
-    Startup(AppStateCtx<T>),
-    Idle(AppStateCtx<T>),
-    Exit(AppStateCtx<T>),
+// #[serde(bound(serialize = "", deserialize = "T: RawToken"))]
+enum AppState {
+    Startup(AppStateCtx),
+    Idle(AppStateCtx),
+    Exit(AppStateCtx),
 }
 
-impl<T: RawTokenTrait> AppState<T> {
+impl AppState {
     fn variant_name(&self) -> &'static str {
         match self {
             Self::Startup(_) => "Startup",
@@ -341,19 +341,19 @@ impl<T: RawTokenTrait> AppState<T> {
     }
 }
 
-impl<T: RawTokenTrait> Default for AppState<T> {
+impl Default for AppState {
     fn default() -> Self {
         AppState::Startup(AppStateCtx::default())
     }
 }
 
-impl<T: RawTokenTrait> AppState<T> {
-    fn into_ctx(self) -> AppStateCtx<T> {
+impl AppState {
+    fn into_ctx(self) -> AppStateCtx {
         match self {
             AppState::Startup(ctx) | AppState::Idle(ctx) | AppState::Exit(ctx) => ctx,
         }
     }
-    fn ctx_mut(&mut self) -> &mut AppStateCtx<T> {
+    fn ctx_mut(&mut self) -> &mut AppStateCtx {
         match self {
             AppState::Startup(ctx) | AppState::Idle(ctx) | AppState::Exit(ctx) => ctx,
         }
@@ -361,19 +361,19 @@ impl<T: RawTokenTrait> AppState<T> {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(bound(serialize = "", deserialize = "T: RawTokenTrait"))]
-pub struct ZApp<T: RawTokenTrait> {
+// #[serde(bound(serialize = "", deserialize = "T: RawToken"))]
+pub struct ZApp {
     monitor_size: Vec2,
     scale_factor: f32,
     native_pixel_per_point: f32,
     // Option > Hack to avoid cloning state when matching &mut self.state in update loop
-    state: Option<AppState<T>>,
+    state: Option<AppState>,
     tree: egui_tiles::Tree<Pane>,
 }
 
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
-impl<'a, T: RawTokenTrait> ZApp<T> {
-    fn update_source_target(&mut self, app_ctx: &mut AppStateCtx<T>) -> bool {
+impl<'a> ZApp {
+    fn update_source_target(&mut self, app_ctx: &mut AppStateCtx) -> bool {
         let mut changed = false;
 
         // Want to allow this later, for now easier if cached file is never stale
@@ -511,8 +511,8 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
         rx_file_path_2: &mut Option<mpsc::Receiver<PathBuf>>,
         file_path_1: &mut Option<PathBuf>,
         file_path_2: &mut Option<PathBuf>,
-        file_1: &mut Option<Arc<CachedFile<T>>>,
-        file_2: &mut Option<Arc<CachedFile<T>>>,
+        file_1: &mut Option<Arc<CachedFile<RawToken>>>,
+        file_2: &mut Option<Arc<CachedFile<RawToken>>>,
         diff_ctx: &mut Option<DiffCtx>,
         diff_ctx_invalidated: &mut bool,
         find_open: &mut bool,
@@ -616,12 +616,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
         });
     }
 
-    fn ui(
-        &mut self,
-        ctx: &egui::Context,
-        _frame: &mut eframe::Frame,
-        app_ctx: &mut AppStateCtx<T>,
-    ) {
+    fn ui(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
         egui::CentralPanel::default().show(ctx, |ui| {
             let AppStateCtx {
                 file_path_1,
@@ -890,7 +885,7 @@ impl<'a, T: RawTokenTrait> ZApp<T> {
     }
 }
 
-impl<T: RawTokenTrait> eframe::App for ZApp<T> {
+impl eframe::App for ZApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         log::info!("SAVING...");
 

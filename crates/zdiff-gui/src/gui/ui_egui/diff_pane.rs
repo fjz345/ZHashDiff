@@ -5,7 +5,7 @@ use eframe::egui::{self, UiBuilder, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
 use zdiff::{
     diff_builder::{CachedFile, DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
-    diff_ir::{DiffResult, generate_ir},
+    diff_ir::DiffResult,
     lexer::{Lexer, RawToken, RawTokenTrait},
 };
 
@@ -192,7 +192,7 @@ impl FileDiffPane {
 
                                     row.col(|ui| {
                                         egui::ScrollArea::horizontal()
-                                            .id_salt((format!("l{}", row_index)))
+                                            .id_salt(format!("l{}", row_index))
                                             .scroll_bar_visibility(
                                                 ScrollBarVisibility::AlwaysHidden,
                                             )
