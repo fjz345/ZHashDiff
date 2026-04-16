@@ -1,3 +1,4 @@
+#![cfg(feature = "gui")] // Fix cargo test
 use eframe::egui::{self, ScrollArea};
 use log::{Metadata, Record, SetLoggerError};
 use std::sync::{Arc, Mutex, OnceLock};

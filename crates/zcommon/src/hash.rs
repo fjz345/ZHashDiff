@@ -186,3 +186,102 @@ impl HashService {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_service_basic_hashing() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        let mut file = File::create(&file_path).unwrap();
+        writeln!(file, "hello world").unwrap();
+
+        let service = HashService::new(1);
+        service.request(&file_path);
+
+        let mut hash = None;
+        for _ in 0..20 {
+            hash = service.get_hash(&file_path);
+            if hash.is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        assert!(hash.is_some());
+        assert_eq!(hash.unwrap(), hash_file(&file_path).unwrap());
+    }
+
+    #[test]
+    fn test_worker_resizing() {
+        let mut service = HashService::new(2);
+        assert_eq!(service.count_threads(), 2);
+
+        service.resize_workers(4);
+        assert_eq!(service.count_threads(), 4);
+
+        service.resize_workers(1);
+        assert_eq!(service.count_threads(), 1);
+    }
+
+    #[test]
+    fn test_queue_and_snapshot_counts() {
+        let dir = tempdir().unwrap();
+        let service = HashService::new(0); // 0 workers to freeze the queue
+
+        let paths: Vec<PathBuf> = (0..5)
+            .map(|i| {
+                let p = dir.path().join(format!("{}.txt", i));
+                File::create(&p).unwrap();
+                p
+            })
+            .collect();
+
+        for p in &paths {
+            service.request(p);
+        }
+
+        let snap = service.snapshot();
+        assert_eq!(snap.queue_count, 5);
+        assert_eq!(snap.active_count, 0);
+        assert_eq!(snap.hashes.len(), 5);
+
+        // Ensure they are all pending (None)
+        assert!(snap.hashes.values().all(|v| v.is_none()));
+    }
+
+    #[test]
+    fn test_clear_and_remove() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("remove_me.txt");
+        File::create(&file_path).unwrap();
+
+        let service = HashService::new(1);
+        service.request(&file_path);
+
+        service.remove(&file_path);
+        assert!(service.get_hash(&file_path).is_none());
+
+        service.request(&file_path);
+        service.clear();
+        assert_eq!(service.snapshot().hashes.len(), 0);
+    }
+
+    #[test]
+    fn test_duplicate_requests_ignored() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("dup.txt");
+        File::create(&file_path).unwrap();
+
+        let service = HashService::new(1);
+        service.request(&file_path);
+        service.request(&file_path);
+
+        assert_eq!(service.snapshot().hashes.len(), 1);
+    }
+}
