@@ -13,6 +13,7 @@ Library diffing file contents.
 * go to prev/next diff buttons
 * toggle filter only diffs rows
 * image file diff
+* String <-> String token diff (eg: foo -> foobar should diff only on bar)
 
 * Myers linear diff algo
 * hex diff/binary diff

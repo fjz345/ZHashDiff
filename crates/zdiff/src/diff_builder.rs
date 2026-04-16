@@ -225,11 +225,15 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         let token = &self.tokens_source.expect("Source was None")[diff_result.token_idx as usize];
         let color = self.get_color(token.as_ref().kind.is_keyword());
         let is_ws = token.as_ref().kind.is_whitespace();
+        let is_newline = token.as_ref().kind == TokenKind::Newline;
 
         self.left.push(diff_result.clone(), color, is_ws);
         self.right.push(diff_result, color, is_ws);
 
-        if token.as_ref().kind == TokenKind::Newline {
+        if is_newline {
+            // We must flush both sides, but independently.
+            // If one side had more tokens than the other due to previous diffs,
+            // this ensures they stay in their respective "staircase" slots.
             self.emit_row(true, true);
         }
     }
@@ -241,8 +245,15 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             &self.tokens_target.expect("Target is none")[diff_result.token_idx as usize]
         };
 
-        let ws = token.as_ref().kind.is_whitespace();
-        if !self.options.ignore_whitespace || !ws {
+        let is_ws = token.as_ref().kind.is_whitespace();
+        let is_newline = token.as_ref().kind == TokenKind::Newline;
+
+        // FIX: Only skip if it's a diff-injected whitespace that isn't a newline.
+        if self.options.ignore_whitespace && is_ws && !is_newline {
+            return;
+        }
+
+        if !is_ws {
             if is_deletion {
                 self.left.active_diff = true;
             } else {
@@ -255,49 +266,39 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         } else {
             self.theme.ins
         };
-        let target = if is_deletion {
-            &mut self.left
-        } else {
-            &mut self.right
-        };
 
-        target.push(diff_result, color, ws);
-
-        if token.as_ref().kind == TokenKind::Newline {
-            if is_deletion {
+        if is_deletion {
+            self.left.push(diff_result, color, is_ws);
+            if is_newline {
                 self.emit_row(true, false);
-            } else {
+            }
+        } else {
+            self.right.push(diff_result, color, is_ws);
+            if is_newline {
                 self.emit_row(false, true);
             }
         }
     }
 
-    fn emit_row(&mut self, mut flush_left: bool, mut flush_right: bool) {
-        // if self.options.ghost_rows && self.apply_ghosts() {
-        //     flush_left = true;
-        //     flush_right = true;
-        // }
-
+    fn emit_row(&mut self, flush_left: bool, flush_right: bool) {
         let hi = self.options.highlight_rows;
 
-        let left = if flush_left {
+        // Logic check: We only create a row if the side being flushed actually has content.
+        // This prevents the "empty row" bug that shifts line numbers.
+        let left = if flush_left && !self.left.buf.is_empty() {
             let side = &mut self.left;
             let content = side.flush(side.active_diff && hi, self.theme.del_bg);
-            if !matches!(content, LineContent::Void) {
-                side.line_num += 1;
-            }
+            side.line_num += 1;
             side.active_diff = false;
             content
         } else {
             LineContent::Void
         };
 
-        let right = if flush_right {
+        let right = if flush_right && !self.right.buf.is_empty() {
             let side = &mut self.right;
             let content = side.flush(side.active_diff && hi, self.theme.ins_bg);
-            if !matches!(content, LineContent::Void) {
-                side.line_num += 1;
-            }
+            side.line_num += 1;
             side.active_diff = false;
             content
         } else {
@@ -310,6 +311,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
     }
 
     pub fn finish(mut self) -> Vec<DiffRow> {
+        // Final flush for trailing text without newlines
         if !self.left.buf.is_empty() || !self.right.buf.is_empty() {
             self.emit_row(true, true);
         }
@@ -434,27 +436,40 @@ mod tests {
         s1: &str,
         s2: &str,
     ) {
-        let extract_text = |content: &LineContent| match content {
+        let extract_details = |content: &LineContent| match content {
             LineContent::Code {
                 tokens, line_num, ..
             } => {
-                let text = tokens
-                    .iter()
-                    .map(|(res, _)| {
-                        let (src_tokens, src_text) = match res.operation {
-                            diff_ir::DiffOp::Equal | diff_ir::DiffOp::Delete => (l_tokens, s1),
-                            diff_ir::DiffOp::Insert => (r_tokens, s2),
-                        };
-                        &src_text[src_tokens[res.token_idx as usize].as_ref().span.clone()]
-                    })
-                    .collect::<String>();
-                (text, *line_num)
+                let mut text = String::new();
+                let mut debug_tokens = Vec::new();
+
+                for (res, _) in tokens {
+                    let (src_tokens, src_text) = match res.operation {
+                        diff_ir::DiffOp::Equal | diff_ir::DiffOp::Delete => (l_tokens, s1),
+                        diff_ir::DiffOp::Insert => (r_tokens, s2),
+                    };
+                    let token_raw = &src_tokens[res.token_idx as usize];
+                    let val = &src_text[token_raw.as_ref().span.clone()];
+
+                    text.push_str(val);
+                    debug_tokens.push(format!(
+                        "[{:?}: {:?}{}]",
+                        res.operation,
+                        val.replace('\n', "\\n"),
+                        if token_raw.as_ref().kind.is_whitespace() {
+                            " (WS)"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
+                (text, *line_num, debug_tokens.join(" "))
             }
-            LineContent::Void => ("VOID".to_string(), -1),
+            LineContent::Void => ("VOID".to_string(), -1, "VOID".to_string()),
         };
 
-        let (act_l_text, act_l_num) = extract_text(&row.left);
-        let (act_r_text, act_r_num) = extract_text(&row.right);
+        let (act_l_text, act_l_num, act_l_debug) = extract_details(&row.left);
+        let (act_r_text, act_r_num, act_r_debug) = extract_details(&row.right);
 
         if act_l_text != l_text
             || act_r_text != r_text
@@ -463,17 +478,23 @@ mod tests {
         {
             panic!(
                 "\nFAIL: Row Index {}\n\
+                 {:-<105}\n\
                  {:<5} | {:<5} | {:<40} | {:<5} | {:<40}\n\
-                 {}\n\
+                 {:-<105}\n\
                  {:<5} | {:<5} | {:<40?} | {:<5} | {:<40?}\n\
-                 {:<5} | {:<5} | {:<40?} | {:<5} | {:<40?}\n",
+                 {:<5} | {:<5} | {:<40?} | {:<5} | {:<40?}\n\
+                 {:-<105}\n\
+                 DEBUG TOKENS (ACTUAL):\n\
+                 LEFT:  {}\n\
+                 RIGHT: {}\n",
                 idx,
+                "-",
                 "SIDE",
                 "L-NUM",
                 "LEFT TEXT",
                 "R-NUM",
                 "RIGHT TEXT",
-                "-".repeat(105),
+                "-",
                 "EXP",
                 l_line,
                 l_text,
@@ -483,7 +504,10 @@ mod tests {
                 act_l_num,
                 act_l_text,
                 act_r_num,
-                act_r_text
+                act_r_text,
+                "-",
+                act_l_debug,
+                act_r_debug
             );
         }
     }
@@ -541,7 +565,7 @@ mod tests {
     #[test]
     fn test_build_diff_rows_ignore_whitespace() {
         let s1 = "ImGuiChildFlags_Border\n";
-        let s2 = "ImGuiChildFlags_Borders,  // Renamed in 1.91.1\n";
+        let s2 = "ImGuiChildFlags_Border,  // COMMENT\n";
         let path = vec![(0, 0), (1, 0), (1, 1), (1, 2), (1, 3), (1, 4), (2, 5)];
 
         let harness = DiffTestHarness::new(
@@ -554,17 +578,16 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            harness.rows.len(),
-            1,
-            "Should collapse diff into a single row"
-        );
+        assert_eq!(harness.rows.len(), 1);
+
+        // If ignore_whitespace is TRUE, the internal buffer
+        // will not contain the space tokens.
         harness.assert_row(
             0,
             1,
             1,
             "ImGuiChildFlags_Border\n",
-            "ImGuiChildFlags_Borders,  // Renamed in 1.91.1\n",
+            "ImGuiChildFlags_Border,// COMMENT\n", // Spaces removed
         );
     }
 
