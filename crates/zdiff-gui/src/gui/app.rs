@@ -154,14 +154,14 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
         file_1_line_count: usize,
         file_2_line_count: usize,
     ) -> (Vec<usize>, Vec<usize>) {
-        let mut file_1_to_diff = vec![0; file_1_line_count];
-        let mut file_2_to_diff = vec![0; file_2_line_count];
+        let mut file_1_to_diff = vec![usize::MAX; file_1_line_count];
+        let mut file_2_to_diff = vec![usize::MAX; file_2_line_count];
 
         for (row_idx, row) in diff_rows.iter().enumerate() {
             if let LineContent::Code { line_num, .. } = row.left {
                 if line_num > 0 {
                     let idx = line_num as usize - 1;
-                    if idx < file_1_line_count {
+                    if idx < file_1_line_count && file_1_to_diff[idx] == usize::MAX {
                         file_1_to_diff[idx] = row_idx;
                     }
                 }
@@ -170,10 +170,21 @@ impl<T: RawTokenTrait> AppStateCtx<T> {
             if let LineContent::Code { line_num, .. } = row.right {
                 if line_num > 0 {
                     let idx = line_num as usize - 1;
-                    if idx < file_2_line_count {
+                    if idx < file_2_line_count && file_2_to_diff[idx] == usize::MAX {
                         file_2_to_diff[idx] = row_idx;
                     }
                 }
+            }
+        }
+
+        for val in file_1_to_diff.iter_mut() {
+            if *val == usize::MAX {
+                *val = 0;
+            }
+        }
+        for val in file_2_to_diff.iter_mut() {
+            if *val == usize::MAX {
+                *val = 0;
             }
         }
 

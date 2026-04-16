@@ -12,6 +12,7 @@ GUI for zdiff crate
 * add drag and drop for source & target (same as zhashdiff)
 
 * Ctrl+F Search
+* Line Pivot
 
 * user defined comparison per file format
 * better horizontal scrolling

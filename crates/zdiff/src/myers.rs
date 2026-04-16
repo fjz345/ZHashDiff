@@ -16,95 +16,124 @@ pub fn myers_diff_trace<T, F>(source: &[T], target: &[T], mut cmp: F) -> Vec<Vec
 where
     F: FnMut(&T, &T) -> bool,
 {
-    let source_len = source.len() as i32; // N
-    let target_len = target.len() as i32; // M
-    let max_edit_distance = source_len + target_len; // MAX = N + M
+    let source_len = source.len() as i32;
+    let target_len = target.len() as i32;
+    let max_possible_edits = source_len + target_len;
 
-    if max_edit_distance == 0 {
-        return vec![vec![0]];
-    }
+    // We use +2 to allow safe boundary checks for (diagonal + 1) and (diagonal - 1)
+    // even at the extreme edges of the search space.
+    let mut furthest_x_on_diagonal = vec![0; (2 * max_possible_edits + 2) as usize];
+    let mut trace = Vec::with_capacity(max_possible_edits as usize + 1);
+    let diagonal_offset = max_possible_edits as usize;
 
-    let mut furthest_x = vec![0; (2 * max_edit_distance + 1) as usize]; // V array
-    let mut trace = Vec::with_capacity(max_edit_distance as usize + 1);
-    let offset = max_edit_distance as usize;
+    // Initialization: the virtual starting point for the D=0 iteration
+    furthest_x_on_diagonal[diagonal_offset + 1] = 0;
 
-    for d in 0..=max_edit_distance {
-        // Optimization: Only clone the active diagonal range [-d, d]
-        let start = offset - d as usize;
-        let end = offset + d as usize + 1;
-        trace.push(furthest_x[start..end].to_vec());
+    for edit_distance in 0..=max_possible_edits {
+        for diagonal in (-edit_distance..=edit_distance).step_by(2) {
+            let v_index = (diagonal + max_possible_edits) as usize;
 
-        for k in (-d..=d).step_by(2) {
-            // diagonal
-            let idx = (k + max_edit_distance) as usize;
-
-            let mut x = if k == -d || (k != d && furthest_x[idx - 1] < furthest_x[idx + 1]) {
-                furthest_x[idx + 1] // Move Down
+            // Determine move direction based on the furthest reaching previous diagonals
+            let mut current_x = if diagonal == -edit_distance
+                || (diagonal != edit_distance
+                    && furthest_x_on_diagonal[v_index - 1] < furthest_x_on_diagonal[v_index + 1])
+            {
+                furthest_x_on_diagonal[v_index + 1] // Move Down
             } else {
-                furthest_x[idx - 1] + 1 // Move Right
+                furthest_x_on_diagonal[v_index - 1] + 1 // Move Right
             };
 
-            let mut y = x - k;
-            while x < source_len && y < target_len && cmp(&source[x as usize], &target[y as usize])
-            {
-                x += 1;
-                y += 1;
-            }
-            furthest_x[idx] = x;
+            let mut current_y = current_x - diagonal;
 
-            if x >= source_len && y >= target_len {
+            // Slide down the "snake" (diagonal matches)
+            while current_x < source_len
+                && current_y < target_len
+                && cmp(&source[current_x as usize], &target[current_y as usize])
+            {
+                current_x += 1;
+                current_y += 1;
+            }
+
+            furthest_x_on_diagonal[v_index] = current_x;
+
+            // If we've reached the end of both sequences, we're done
+            if current_x >= source_len && current_y >= target_len {
+                trace.push(
+                    furthest_x_on_diagonal[(diagonal_offset - edit_distance as usize)
+                        ..=(diagonal_offset + edit_distance as usize)]
+                        .to_vec(),
+                );
                 return trace;
             }
         }
+
+        // Save the furthest X for every diagonal at this edit distance
+        trace.push(
+            furthest_x_on_diagonal[(diagonal_offset - edit_distance as usize)
+                ..=(diagonal_offset + edit_distance as usize)]
+                .to_vec(),
+        );
     }
     trace
 }
 
 pub fn myers_backtrack(trace: Vec<Vec<i32>>, source_len: i32, target_len: i32) -> Vec<(i32, i32)> {
     let mut path = Vec::new();
-    let mut x = source_len;
-    let mut y = target_len;
+    let mut current_x = source_len;
+    let mut current_y = target_len;
 
-    for d in (1..trace.len()).rev() {
-        let edit_distance = d as i32; // D
-        let k = x - y; // diagonal
-        let v_prev = &trace[d];
-        let offset = d;
+    // Start from the final depth and work backwards to D=1
+    for edit_distance in (1..trace.len()).rev() {
+        let d_idx = edit_distance as i32;
+        let diagonal = current_x - current_y;
+        let prev_v_slice = &trace[edit_distance - 1];
+        let prev_d_idx = d_idx - 1;
 
-        let came_from_k_plus = if k == -edit_distance {
-            true // Came from k + 1
-        } else if k == edit_distance {
-            false // Came from k - 1
+        // Logic check: Did we come from the diagonal above (Down) or the diagonal to the left (Right)?
+        let came_from_above = if diagonal == -d_idx
+            || (diagonal != d_idx
+                && prev_v_slice[(diagonal + 1 + prev_d_idx) as usize]
+                    > prev_v_slice[(diagonal - 1 + prev_d_idx) as usize])
+        {
+            true
         } else {
-            v_prev[(k - 1 + offset as i32) as usize] < v_prev[(k + 1 + offset as i32) as usize]
+            false
         };
 
-        let (prev_k, prev_x) = if came_from_k_plus {
-            (k + 1, v_prev[(k + 1 + offset as i32) as usize])
+        let k_prev = if came_from_above {
+            diagonal + 1
         } else {
-            (k - 1, v_prev[(k - 1 + offset as i32) as usize])
+            diagonal - 1
+        };
+        let x_before_snake = if came_from_above {
+            prev_v_slice[(k_prev + prev_d_idx) as usize]
+        } else {
+            prev_v_slice[(k_prev + prev_d_idx) as usize] + 1
         };
 
-        let prev_y = prev_x - prev_k;
-
-        let (x_mid, y_mid) = if came_from_k_plus {
-            (prev_x, prev_y + 1)
-        } else {
-            (prev_x + 1, prev_y)
-        };
-
-        while x > x_mid && y > y_mid {
-            path.push((x, y));
-            x -= 1;
-            y -= 1;
+        // 1. Backtrack the diagonal snake (matches)
+        while current_x > x_before_snake {
+            path.push((current_x, current_y));
+            current_x -= 1;
+            current_y -= 1;
         }
 
-        path.push((x, y));
-        x = prev_x;
-        y = prev_y;
+        // 2. Backtrack the single edit (Right or Down move)
+        path.push((current_x, current_y));
+
+        // 3. Update coordinates to the point *before* the edit
+        current_x = prev_v_slice[(k_prev + prev_d_idx) as usize];
+        current_y = current_x - k_prev;
     }
 
+    // 4. Final step: handle the potential diagonal snake leading back to (0,0) at D=0
+    while current_x > 0 || current_y > 0 {
+        path.push((current_x, current_y));
+        current_x -= 1;
+        current_y -= 1;
+    }
     path.push((0, 0));
+
     path.reverse();
     path
 }

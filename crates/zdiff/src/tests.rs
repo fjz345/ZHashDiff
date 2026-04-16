@@ -666,6 +666,7 @@ mod tests {
 
         let dist = myers_diff(&a, &b, cmp);
         let trace = myers_diff_trace(&a, &b, cmp);
+        dbg!(&trace);
         let path = myers_backtrack(trace, a.len() as i32, b.len() as i32);
 
         assert_eq!(dist, 0);

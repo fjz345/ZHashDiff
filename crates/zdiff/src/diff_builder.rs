@@ -222,6 +222,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
     pub fn handle_match(&mut self, diff_result: DiffResult) {
         assert!(matches!(diff_result.operation, DiffOp::Equal));
+
         let token = &self.tokens_source.expect("Source was None")[diff_result.token_idx as usize];
         let color = self.get_color(token.as_ref().kind.is_keyword());
 
@@ -276,7 +277,6 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
     }
 
     fn emit_row(&mut self) {
-        // Apply ghosting only if one side is empty and the other has content
         if self.options.ghost_rows {
             self.apply_ghosts();
         }
@@ -289,7 +289,6 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             .right
             .flush(self.right.active_diff && hi, self.theme.ins_bg);
 
-        // Increment line numbers for any side that produced a row (real or ghost)
         if !matches!(left_row, LineContent::Void) {
             self.left.line_num += 1;
         }
@@ -338,7 +337,11 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         }
     }
 
-    pub fn finish(self) -> Vec<DiffRow> {
+    pub fn finish(mut self) -> Vec<DiffRow> {
+        if !self.left.buf.is_empty() || !self.right.buf.is_empty() {
+            self.emit_row();
+        }
+
         self.rows
     }
 }
