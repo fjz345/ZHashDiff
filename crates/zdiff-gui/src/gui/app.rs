@@ -215,7 +215,7 @@ impl AppStateCtx {
 
                 let trace = myers_diff_trace(t1, t2, cmp);
                 let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
-                let diff_ir = DiffIR::new(&path, false, t1, t2);
+                let diff_ir = DiffIR::new(&path);
 
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
@@ -257,7 +257,7 @@ impl AppStateCtx {
 
                 let trace = myers_diff_trace(t1, t2, cmp);
                 let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
-                let diff_ir = DiffIR::new(&path, false, &t1, &t2);
+                let diff_ir = DiffIR::new(&path);
 
                 let c1_hash = hash_file(&c1.path).expect("Hash failed");
                 let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
@@ -296,7 +296,7 @@ impl AppStateCtx {
 
                 let trace = myers_diff_trace(t1, t2, cmp);
                 let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
-                let diff_ir = DiffIR::new(&path, false, &t1, &t2);
+                let diff_ir = DiffIR::new(&path);
 
                 let c2_hash = hash_file(&c2.path).expect("Hash failed");
                 let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);

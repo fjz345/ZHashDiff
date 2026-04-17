@@ -49,6 +49,8 @@ impl FileDiffPane {
             *ctx.scroll_right = (*ctx.scroll_right - scroll_delta).max(0.0);
         }
 
+        println!("=================================================");
+
         let sl = *ctx.scroll_left;
         let sr = *ctx.scroll_right;
         let available_width = ui.available_width();
@@ -190,6 +192,7 @@ impl FileDiffPane {
                                     let diff_row = &rows[row.index()];
                                     let is_highlighted = ctx.active_highlights.contains(&row_index);
 
+                                    println!("==LEFT==");
                                     row.col(|ui| {
                                         egui::ScrollArea::horizontal()
                                             .id_salt(format!("l{}", row_index))
@@ -232,6 +235,7 @@ impl FileDiffPane {
                                         });
                                     });
 
+                                    println!("==RIGHT==");
                                     row.col(|ui| {
                                         egui::ScrollArea::horizontal()
                                             .id_salt(format!("r{}", row_index))
@@ -348,11 +352,25 @@ impl FileDiffPane {
                             };
                             return str;
                         };
+                        println!("-----------------------------------------------");
                         for (diff_result, color) in tokens {
                             let str = read_string(diff_result);
-                            if str == "\n" || str == "\r\n" {
+                            // println!(
+                            //     "Op: {:?}, Str: {:?}, L: {:?}, R: {:?}",
+                            //     diff_result.operation,
+                            //     str,
+                            //     diff_result.right_idx,
+                            //     diff_result.right_idx
+                            // );
+                            println!(
+                                "Op: {:?}, Str: {:?}, Token: {:?}",
+                                diff_result.operation, str, diff_result.token_idx,
+                            );
+
+                            if str.is_empty() || str == "\n" || str == "\r\n" {
                                 continue;
                             }
+
                             ui.label(egui::RichText::new(str).color(
                                 egui::Color32::from_rgba_unmultiplied(
                                     color.0[0], color.0[1], color.0[2], color.0[3],
@@ -366,7 +384,7 @@ impl FileDiffPane {
                 let fill = if is_highlighted {
                     egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40)
                 } else {
-                    egui::Color32::from_gray(15)
+                    egui::Color32::from_gray(30)
                 };
                 ui.painter().rect_filled(rect, 0.0, fill);
             }
