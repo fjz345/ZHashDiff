@@ -5,7 +5,7 @@ use eframe::egui::{self, UiBuilder, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
 use zdiff::{
     diff_builder::{CachedFile, DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
-    diff_ir::DiffResult,
+    diff_ir::{DiffOp, DiffResult},
     lexer::{Lexer, RawToken, RawTokenTrait},
 };
 
@@ -217,13 +217,48 @@ impl FileDiffPane {
                                             (LineContent::Void, _) => "+",
                                             (_, LineContent::Void) => "-",
                                             (
-                                                LineContent::Code { .. },
-                                                LineContent::Code { bg, .. },
-                                            ) if egui::Color32::from_rgba_unmultiplied(
-                                                bg.0[0], bg.0[1], bg.0[2], bg.0[3],
-                                            ) != egui::Color32::TRANSPARENT =>
-                                            {
-                                                "≠"
+                                                LineContent::Code {
+                                                    tokens: tokens_1, ..
+                                                },
+                                                LineContent::Code {
+                                                    tokens: tokens_2, ..
+                                                },
+                                            ) => {
+                                                let tokens_1_contains_delete =
+                                                    tokens_1.iter().any(|f| {
+                                                        !f.0.hide_in_diff
+                                                            && f.0.operation == DiffOp::Delete
+                                                    });
+                                                let tokens_1_contains_insert =
+                                                    tokens_1.iter().any(|f| {
+                                                        !f.0.hide_in_diff
+                                                            && f.0.operation == DiffOp::Insert
+                                                    });
+                                                let tokens_2_contains_insert =
+                                                    tokens_2.iter().any(|f| {
+                                                        !f.0.hide_in_diff
+                                                            && f.0.operation == DiffOp::Insert
+                                                    });
+                                                let tokens_2_contains_delete =
+                                                    tokens_2.iter().any(|f| {
+                                                        !f.0.hide_in_diff
+                                                            && f.0.operation == DiffOp::Delete
+                                                    });
+
+                                                let contains_delete = tokens_1_contains_delete
+                                                    || tokens_2_contains_delete;
+                                                let contains_insert = tokens_1_contains_insert
+                                                    || tokens_2_contains_insert;
+
+                                                let char = match (contains_delete, contains_insert)
+                                                {
+                                                    (true, true) => "≠",
+                                                    (true, false) => "-",
+                                                    (false, true) => "+",
+                                                    (false, false) => " ",
+                                                };
+
+                                                char
                                             }
                                             _ => " ",
                                         };

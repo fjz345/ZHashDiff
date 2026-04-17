@@ -103,14 +103,14 @@ impl SideState {
         self.buf.push((val, color));
     }
 
-    fn flush(&mut self, has_diff: bool, bg_color: Color32) -> LineContent {
+    fn flush(&mut self, line_num: i32, has_diff: bool, bg_color: Color32) -> LineContent {
         if self.buf.is_empty() {
             LineContent::Void
         } else {
-            let tokens = self.buf.drain(..).map(|(s, c)| (s, c)).collect();
+            let tokens = self.buf.drain(..).collect();
             LineContent::Code {
                 tokens,
-                line_num: self.line_num,
+                line_num,
                 bg: if has_diff {
                     bg_color
                 } else {
@@ -222,6 +222,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
     pub fn handle_match(&mut self, diff_result: DiffResult) {
         assert!(matches!(diff_result.operation, DiffOp::Equal));
+
         let token_idx = diff_result
             .token_source_idx
             .expect("Equal op must have source index");
@@ -234,8 +235,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         self.right.push(diff_result, color);
 
         if is_newline {
-            // Equal newlines always flush both sides into a single row
-            self.emit_row(true, true);
+            self.emit_row(true, true, true, true);
         }
     }
 
@@ -244,6 +244,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             diff_result.operation,
             DiffOp::Delete | DiffOp::Insert
         ));
+
         let token = if is_deletion {
             let idx = diff_result
                 .token_source_idx
@@ -258,14 +259,13 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
         let is_newline = token.as_ref().kind == TokenKind::Newline;
 
-        if is_deletion {
-            if !diff_result.hide_in_diff {
-                self.left.active_diff = true;
-            }
+        let side = if is_deletion {
+            &mut self.left
         } else {
-            if !diff_result.hide_in_diff {
-                self.right.active_diff = true;
-            }
+            &mut self.right
+        };
+        if !diff_result.hide_in_diff {
+            side.active_diff = true;
         }
 
         let color = if is_deletion {
@@ -273,102 +273,87 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         } else {
             self.theme.ins
         };
+        side.push(diff_result.clone(), color);
 
-        if is_deletion {
-            self.left.push(diff_result, color);
-            if is_newline {
-                self.emit_row(true, false);
-            }
-        } else {
-            self.right.push(diff_result, color);
-            if is_newline {
-                self.emit_row(false, true);
+        if self.options.ghost_rows {
+            self.apply_ghosts(is_deletion, diff_result);
+        }
+
+        if is_newline {
+            if self.options.ghost_rows {
+                // Force flush is needed for better new line handling for ghosting
+                self.emit_row(true, true, is_deletion, !is_deletion);
+            } else {
+                self.emit_row(is_deletion, !is_deletion, is_deletion, !is_deletion);
             }
         }
     }
 
-    fn emit_row(&mut self, flush_left: bool, flush_right: bool) {
-        let left = if flush_left && !self.left.buf.is_empty() {
-            let side = &mut self.left;
-            let content = side.flush(
-                side.active_diff && self.options.highlight_rows,
-                self.theme.del_bg,
-            );
-            side.line_num += 1;
-            side.active_diff = false;
+    fn emit_row(&mut self, flush_left: bool, flush_right: bool, inc_left: bool, inc_right: bool) {
+        let left_num = if inc_left {
+            let n = self.left.line_num;
+            self.left.line_num += 1;
+            n
+        } else {
+            -1
+        };
+
+        let right_num = if inc_right {
+            let n = self.right.line_num;
+            self.right.line_num += 1;
+            n
+        } else {
+            -1
+        };
+
+        let left = if flush_left {
+            let active = self.left.active_diff && self.options.highlight_rows;
+            let content = self.left.flush(left_num, active, self.theme.del_bg);
+            self.left.active_diff = false;
             content
         } else {
             LineContent::Void
         };
 
-        let right = if flush_right && !self.right.buf.is_empty() {
-            let side = &mut self.right;
-            let content = side.flush(
-                side.active_diff && self.options.highlight_rows,
-                self.theme.ins_bg,
-            );
-            side.line_num += 1;
-            side.active_diff = false;
+        let right = if flush_right {
+            let active = self.right.active_diff && self.options.highlight_rows;
+            let content = self.right.flush(right_num, active, self.theme.ins_bg);
+            self.right.active_diff = false;
             content
         } else {
             LineContent::Void
         };
 
-        if !matches!(left, LineContent::Void) || !matches!(right, LineContent::Void) {
-            if matches!(left, LineContent::Void) {
-                if let Some(last_row) = self.rows.last_mut() {
-                    if matches!(last_row.right, LineContent::Void) {
-                        last_row.right = right;
-                        return;
-                    }
-                }
-            }
-            self.rows.push(DiffRow { left, right });
-        }
+        self.rows.push(DiffRow { left, right });
     }
 
     pub fn finish(mut self) -> Vec<DiffRow> {
         if !self.left.buf.is_empty() || !self.right.buf.is_empty() {
-            self.emit_row(true, true);
+            let inc_l = self
+                .left
+                .buf
+                .iter()
+                .any(|(r, _)| r.operation != DiffOp::Insert);
+            let inc_r = self
+                .right
+                .buf
+                .iter()
+                .any(|(r, _)| r.operation != DiffOp::Delete);
+            self.emit_row(true, true, inc_l, inc_r);
         }
         self.rows
     }
 
-    // fn apply_ghosts(&mut self) -> bool {
-    //     let l_empty = self.left.buf.is_empty();
-    //     let r_empty = self.right.buf.is_empty();
-
-    //     if l_empty && !r_empty {
-    //         let mut started = false;
-    //         for (val, _, is_ws) in &self.right.buf {
-    //             let color = if *is_ws && !started {
-    //                 Color32::BLACK
-    //             } else {
-    //                 self.theme.ghost
-    //             };
-    //             if !*is_ws {
-    //                 started = true;
-    //             }
-    //             self.left.buf.push((val.clone(), color, *is_ws));
-    //         }
-    //         return true;
-    //     } else if r_empty && !l_empty {
-    //         let mut started = false;
-    //         for (val, _, is_ws) in &self.left.buf {
-    //             let color = if *is_ws && !started {
-    //                 Color32::TRANSPARENT
-    //             } else {
-    //                 self.theme.ghost
-    //             };
-    //             if !*is_ws {
-    //                 started = true;
-    //             }
-    //             self.right.buf.push((val.clone(), color, *is_ws));
-    //         }
-    //         return true;
-    //     }
-    //     false
-    // }
+    fn apply_ghosts(&mut self, last_was_deletion: bool, result: DiffResult) {
+        let ghost_color = self.theme.ghost;
+        if last_was_deletion {
+            self.right.push(result, ghost_color);
+            self.right.active_diff = true;
+        } else {
+            self.left.push(result, ghost_color);
+            self.left.active_diff = true;
+        }
+    }
 }
 
 pub fn build_diff_rows<'a, T: RawTokenTrait>(
