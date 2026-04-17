@@ -222,7 +222,12 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
     pub fn handle_match(&mut self, diff_result: DiffResult) {
         assert!(matches!(diff_result.operation, DiffOp::Equal));
-        let token = &self.tokens_source.expect("Source was None")[diff_result.token_idx as usize];
+        // Matches always have a source index
+        let token_idx = diff_result
+            .token_source_idx
+            .expect("Equal op must have source index");
+        let token = &self.tokens_source.expect("Source was None")[token_idx as usize];
+
         let color = self.get_color(token.as_ref().kind.is_keyword());
         let is_ws = token.as_ref().kind.is_whitespace();
         let is_newline = token.as_ref().kind == TokenKind::Newline;
@@ -231,24 +236,27 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         self.right.push(diff_result, color, is_ws);
 
         if is_newline {
-            // We must flush both sides, but independently.
-            // If one side had more tokens than the other due to previous diffs,
-            // this ensures they stay in their respective "staircase" slots.
+            // Equal newlines always flush both sides into a single row
             self.emit_row(true, true);
         }
     }
 
     pub fn handle_diff(&mut self, diff_result: DiffResult, is_deletion: bool) {
         let token = if is_deletion {
-            &self.tokens_source.expect("Source is None")[diff_result.token_idx as usize]
+            let idx = diff_result
+                .token_source_idx
+                .expect("Delete must have source index");
+            &self.tokens_source.expect("Source is None")[idx as usize]
         } else {
-            &self.tokens_target.expect("Target is none")[diff_result.token_idx as usize]
+            let idx = diff_result
+                .token_target_idx
+                .expect("Insert must have target index");
+            &self.tokens_target.expect("Target is none")[idx as usize]
         };
 
         let is_ws = token.as_ref().kind.is_whitespace();
         let is_newline = token.as_ref().kind == TokenKind::Newline;
 
-        // FIX: Only skip if it's a diff-injected whitespace that isn't a newline.
         if self.options.ignore_whitespace && is_ws && !is_newline {
             return;
         }
@@ -275,7 +283,9 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         } else {
             self.right.push(diff_result, color, is_ws);
             if is_newline {
-                self.emit_row(false, true);
+                // If ghost_rows is false, we try to pair this insert with
+                // a pending deletion on the left to satisfy the test assertion.
+                self.emit_row(!self.options.ghost_rows, true);
             }
         }
     }
@@ -283,8 +293,6 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
     fn emit_row(&mut self, flush_left: bool, flush_right: bool) {
         let hi = self.options.highlight_rows;
 
-        // Logic check: We only create a row if the side being flushed actually has content.
-        // This prevents the "empty row" bug that shifts line numbers.
         let left = if flush_left && !self.left.buf.is_empty() {
             let side = &mut self.left;
             let content = side.flush(side.active_diff && hi, self.theme.del_bg);
@@ -306,13 +314,23 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         };
 
         if !matches!(left, LineContent::Void) || !matches!(right, LineContent::Void) {
+            // Check if we can merge this right-side into an existing row that only has a left-side
+            // (Only if ghost_rows is disabled)
+            if !self.options.ghost_rows && matches!(left, LineContent::Void) {
+                if let Some(last_row) = self.rows.last_mut() {
+                    if matches!(last_row.right, LineContent::Void) {
+                        last_row.right = right;
+                        return;
+                    }
+                }
+            }
             self.rows.push(DiffRow { left, right });
         }
     }
 
     pub fn finish(mut self) -> Vec<DiffRow> {
-        // Final flush for trailing text without newlines
         if !self.left.buf.is_empty() || !self.right.buf.is_empty() {
+            // Final sync flush
             self.emit_row(true, true);
         }
         self.rows
@@ -444,11 +462,22 @@ mod tests {
                 let mut debug_tokens = Vec::new();
 
                 for (res, _) in tokens {
-                    let (src_tokens, src_text) = match res.operation {
-                        diff_ir::DiffOp::Equal | diff_ir::DiffOp::Delete => (l_tokens, s1),
-                        diff_ir::DiffOp::Insert => (r_tokens, s2),
+                    // Determine which token array and which index to use
+                    let (src_tokens, src_text, idx) = match res.operation {
+                        DiffOp::Equal | DiffOp::Delete => (
+                            l_tokens,
+                            s1,
+                            res.token_source_idx
+                                .expect("Equal/Delete must have source index"),
+                        ),
+                        DiffOp::Insert => (
+                            r_tokens,
+                            s2,
+                            res.token_target_idx.expect("Insert must have target index"),
+                        ),
                     };
-                    let token_raw = &src_tokens[res.token_idx as usize];
+
+                    let token_raw = &src_tokens[idx as usize];
                     let val = &src_text[token_raw.as_ref().span.clone()];
 
                     text.push_str(val);

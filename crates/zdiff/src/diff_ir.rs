@@ -1,3 +1,5 @@
+use crate::lexer::RawTokenTrait;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiffOp {
     Equal,  // From Source 1
@@ -8,7 +10,9 @@ pub enum DiffOp {
 #[derive(Debug, Clone)]
 pub struct DiffResult {
     pub operation: DiffOp,
-    pub token_idx: u32,
+    pub token_source_idx: Option<u32>,
+    pub token_target_idx: Option<u32>,
+    pub hide_in_diff: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -16,13 +20,26 @@ pub struct DiffIR {
     pub entries: Vec<DiffResult>,
     pub distance: i32,
 }
+// type DiffIR_NoWS = DiffIR;
+// pub fn diff_ir_to_no_ws<T: RawTokenTrait>(diff_ir: DiffIR, tokens_source: Option<&'a [T]>, tokens_target: Option<&'a [T]>) -> DiffIR_NoWS {
 
+//     for entry in &mut diff_ir.entries
+//     {
+//         match entry.operation{
+//             DiffOp::Equal | DiffOp::Delete
+//              => todo!(),
+//             DiffOp::Insert => todo!(),
+//         }
+//     }
+
+//     DiffIR_NoWS{ entries: todo!(), distance: todo!() }
+// }
 impl DiffIR {
     pub fn new(path: &[(i32, i32)]) -> Self {
         Self::generate_ir(path)
     }
 
-    // path from myers backtracking, plus original source/target slices, to generate a diff IR
+    // path from myers backtracking
     fn generate_ir(path: &[(i32, i32)]) -> DiffIR {
         let mut entries = Vec::new();
         let mut distance = 0;
@@ -39,35 +56,45 @@ impl DiffIR {
                     for i in 0..(dx - dy) {
                         entries.push(DiffResult {
                             operation: DiffOp::Delete,
-                            token_idx: (x1 + i) as u32,
+                            token_source_idx: Some((x1 + i) as u32),
+                            token_target_idx: None,
+                            hide_in_diff: false,
                         });
                         distance += 1;
                     }
                     for i in 0..dy {
                         entries.push(DiffResult {
                             operation: DiffOp::Equal,
-                            token_idx: (x1 + (dx - dy) + i) as u32,
+                            token_source_idx: Some((x1 + (dx - dy) + i) as u32),
+                            token_target_idx: Some((y1 + i) as u32),
+                            hide_in_diff: false,
                         });
                     }
                 } else if dy > dx {
                     for i in 0..(dy - dx) {
                         entries.push(DiffResult {
                             operation: DiffOp::Insert,
-                            token_idx: (y1 + i) as u32,
+                            token_source_idx: None,
+                            token_target_idx: Some((y1 + i) as u32),
+                            hide_in_diff: false,
                         });
                         distance += 1;
                     }
                     for i in 0..dx {
                         entries.push(DiffResult {
                             operation: DiffOp::Equal,
-                            token_idx: (x1 + i) as u32,
+                            token_source_idx: Some((x1 + i) as u32),
+                            token_target_idx: Some((y1 + (dy - dx) + i) as u32),
+                            hide_in_diff: false,
                         });
                     }
                 } else {
                     for i in 0..dx {
                         entries.push(DiffResult {
                             operation: DiffOp::Equal,
-                            token_idx: (x1 + i) as u32,
+                            token_source_idx: Some((x1 + i) as u32),
+                            token_target_idx: Some((y1 + i) as u32),
+                            hide_in_diff: false,
                         });
                     }
                 }
@@ -75,7 +102,9 @@ impl DiffIR {
                 for i in 0..dx {
                     entries.push(DiffResult {
                         operation: DiffOp::Delete,
-                        token_idx: (x1 + i) as u32,
+                        token_source_idx: Some((x1 + i) as u32),
+                        token_target_idx: None,
+                        hide_in_diff: false,
                     });
                     distance += 1;
                 }
@@ -83,7 +112,9 @@ impl DiffIR {
                 for i in 0..dy {
                     entries.push(DiffResult {
                         operation: DiffOp::Insert,
-                        token_idx: (y1 + i) as u32,
+                        token_source_idx: None,
+                        token_target_idx: Some((y1 + i) as u32),
+                        hide_in_diff: false,
                     });
                     distance += 1;
                 }
@@ -124,9 +155,8 @@ mod tests {
         assert_eq!(ir.entries.len(), 2);
         assert_eq!(ir.distance, 0);
         assert_eq!(ir.entries[0].operation, DiffOp::Equal);
-        assert_eq!(ir.entries[0].token_idx, 0);
-        // assert_eq!(ir.entries[0].left_idx, Some(0));
-        // assert_eq!(ir.entries[0].right_idx, Some(0));
+        assert_eq!(ir.entries[0].token_source_idx, Some(0));
+        assert_eq!(ir.entries[0].token_target_idx, Some(0));
     }
 
     #[test]

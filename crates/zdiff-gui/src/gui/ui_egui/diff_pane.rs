@@ -334,7 +334,7 @@ impl FileDiffPane {
                                 zdiff::diff_ir::DiffOp::Equal | zdiff::diff_ir::DiffOp::Delete => {
                                     let token =
                                         &file_source.clone().expect("Source was None").tokens
-                                            [diff_result.token_idx as usize];
+                                            [diff_result.token_source_idx.unwrap() as usize];
                                     file_source
                                         .as_ref()
                                         .unwrap()
@@ -343,7 +343,7 @@ impl FileDiffPane {
                                 zdiff::diff_ir::DiffOp::Insert => {
                                     let token =
                                         &file_target.clone().expect("Source was None").tokens
-                                            [diff_result.token_idx as usize];
+                                            [diff_result.token_target_idx.unwrap() as usize];
                                     file_target
                                         .as_ref()
                                         .unwrap()
@@ -364,7 +364,7 @@ impl FileDiffPane {
                             // );
                             println!(
                                 "Op: {:?}, Str: {:?}, Token: {:?}",
-                                diff_result.operation, str, diff_result.token_idx,
+                                diff_result.operation, str, diff_result.token_source_idx,
                             );
 
                             if str.is_empty() || str == "\n" || str == "\r\n" {
