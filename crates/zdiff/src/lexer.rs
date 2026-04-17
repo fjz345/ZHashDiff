@@ -200,19 +200,20 @@ impl<'a, T: RawTokenTrait + From<RawToken>> Iterator for Lexer<'a, T> {
                 }
                 TokenKind::Comment
             }
-            '/' if self.source[self.cursor..].starts_with("/*") => {
-                self.consume(); // /
-                self.consume(); // *
-                while let Some(next_c) = self.peek() {
-                    if next_c == '*' && self.source[self.cursor..].starts_with("*/") {
-                        self.consume(); // *
-                        self.consume(); // /
-                        break;
-                    }
-                    self.consume();
-                }
-                TokenKind::Comment
-            }
+            // This breaks line order in the differ, disable for now
+            // '/' if self.source[self.cursor..].starts_with("/*") => {
+            //     self.consume(); // /
+            //     self.consume(); // *
+            //     while let Some(next_c) = self.peek() {
+            //         if next_c == '*' && self.source[self.cursor..].starts_with("*/") {
+            //             self.consume(); // *
+            //             self.consume(); // /
+            //             break;
+            //         }
+            //         self.consume();
+            //     }
+            //     TokenKind::Comment
+            // }
             '"' => {
                 self.consume();
                 while let Some(next_c) = self.peek() {
