@@ -49,7 +49,7 @@ impl FileDiffPane {
             *ctx.scroll_right = (*ctx.scroll_right - scroll_delta).max(0.0);
         }
 
-        println!("=================================================");
+        log::trace!("=================================================");
 
         let sl = *ctx.scroll_left;
         let sr = *ctx.scroll_right;
@@ -192,7 +192,7 @@ impl FileDiffPane {
                                     let diff_row = &rows[row.index()];
                                     let is_highlighted = ctx.active_highlights.contains(&row_index);
 
-                                    println!("==LEFT==");
+                                    log::trace!("==LEFT==");
                                     row.col(|ui| {
                                         egui::ScrollArea::horizontal()
                                             .id_salt(format!("l{}", row_index))
@@ -201,7 +201,7 @@ impl FileDiffPane {
                                             )
                                             .scroll_offset(egui::vec2(sl, 0.0))
                                             .show(ui, |ui| {
-                                                Self::render_side(
+                                                Self::render_side_row(
                                                     ui,
                                                     ctx.file_source.clone(),
                                                     ctx.file_target.clone(),
@@ -235,7 +235,7 @@ impl FileDiffPane {
                                         });
                                     });
 
-                                    println!("==RIGHT==");
+                                    log::trace!("==RIGHT==");
                                     row.col(|ui| {
                                         egui::ScrollArea::horizontal()
                                             .id_salt(format!("r{}", row_index))
@@ -244,7 +244,7 @@ impl FileDiffPane {
                                             )
                                             .scroll_offset(egui::vec2(sr, 0.0))
                                             .show(ui, |ui| {
-                                                Self::render_side(
+                                                Self::render_side_row(
                                                     ui,
                                                     ctx.file_source.clone(),
                                                     ctx.file_target.clone(),
@@ -275,7 +275,7 @@ impl FileDiffPane {
         egui_tiles::UiResponse::None
     }
 
-    fn render_side<T: RawTokenTrait>(
+    fn render_side_row<T: RawTokenTrait>(
         ui: &mut egui::Ui,
         file_source: Option<Arc<CachedFile<T>>>,
         file_target: Option<Arc<CachedFile<T>>>,
@@ -352,19 +352,15 @@ impl FileDiffPane {
                             };
                             return str;
                         };
-                        println!("-----------------------------------------------");
+                        log::trace!("-----------------------------------------------");
                         for (diff_result, color) in tokens {
                             let str = read_string(diff_result);
-                            // println!(
-                            //     "Op: {:?}, Str: {:?}, L: {:?}, R: {:?}",
-                            //     diff_result.operation,
-                            //     str,
-                            //     diff_result.right_idx,
-                            //     diff_result.right_idx
-                            // );
-                            println!(
-                                "Op: {:?}, Str: {:?}, Token: {:?}",
-                                diff_result.operation, str, diff_result.token_source_idx,
+                            log::trace!(
+                                "Op: {:?}, Str: {:?}, L: {:?}, R: {:?}",
+                                diff_result.operation,
+                                str,
+                                diff_result.token_source_idx,
+                                diff_result.token_target_idx
                             );
 
                             if str.is_empty() || str == "\n" || str == "\r\n" {

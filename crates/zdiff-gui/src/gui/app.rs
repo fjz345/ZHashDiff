@@ -204,12 +204,6 @@ impl AppStateCtx {
                 let lex2 = Lexer::<RawToken>::new(&c2.contents);
 
                 let cmp = |a: &RawToken, b: &RawToken| {
-                    if options.ignore_whitespace
-                        && a.as_ref().kind.is_whitespace()
-                        && b.as_ref().kind.is_whitespace()
-                    {
-                        return true;
-                    }
                     a.as_ref().kind == b.as_ref().kind && lex1.token_value(a) == lex2.token_value(b)
                 };
 
@@ -246,12 +240,6 @@ impl AppStateCtx {
                 let lex2 = Lexer::new(&c2.contents);
 
                 let cmp = |a: &RawToken, b: &RawToken| {
-                    if options.ignore_whitespace
-                        && a.as_ref().kind.is_whitespace()
-                        && b.as_ref().kind.is_whitespace()
-                    {
-                        return true;
-                    }
                     a.as_ref().kind == b.as_ref().kind && lex1.token_value(a) == lex2.token_value(b)
                 };
 
@@ -285,12 +273,6 @@ impl AppStateCtx {
                 let lex2 = Lexer::new(&c2.contents);
 
                 let cmp = |a: &RawToken, b: &RawToken| {
-                    if options.ignore_whitespace
-                        && a.as_ref().kind.is_whitespace()
-                        && b.as_ref().kind.is_whitespace()
-                    {
-                        return true;
-                    }
                     a.as_ref().kind == b.as_ref().kind && lex1.token_value(a) == lex2.token_value(b)
                 };
 
@@ -591,7 +573,7 @@ impl<'a> ZApp {
                         *diff_ctx_invalidated = true;
                     }
                     #[cfg(debug_assertions)]
-                    if ui.button("Load $1").clicked() {
+                    if ui.button("Load $A").clicked() {
                         let base = Path::new(env!("CARGO_MANIFEST_DIR"));
                         *file_path_1 =
                             Some(base.join("../../test/rust_files_diff_1/advanced_rust.rs"));
@@ -602,11 +584,22 @@ impl<'a> ZApp {
                         *diff_ctx_invalidated = true;
                     }
                     #[cfg(debug_assertions)]
-                    if ui.button("Load $2").clicked() {
+                    if ui.button("Load $B").clicked() {
                         let base = Path::new(env!("CARGO_MANIFEST_DIR"));
                         *file_path_1 =
                             Some(base.join("../../test/rust_files_diff_1/imgui.1.91.1.h"));
                         *file_path_2 = Some(base.join("../../test/rust_files_diff_1/imgui.h"));
+
+                        *diff_ctx = None;
+                        *diff_ctx_invalidated = true;
+                    }
+                    #[cfg(debug_assertions)]
+                    if ui.button("Load $C").clicked() {
+                        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
+                        *file_path_1 =
+                            Some(base.join("../../test/test_ignore_whitespace_simple/1.txt"));
+                        *file_path_2 =
+                            Some(base.join("../../test/test_ignore_whitespace_simple/2.txt"));
 
                         *diff_ctx = None;
                         *diff_ctx_invalidated = true;

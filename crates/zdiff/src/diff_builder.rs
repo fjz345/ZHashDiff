@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    diff_ir::{DiffIR, DiffOp, DiffResult},
+    diff_ir::{DiffIR, DiffOp, DiffResult, diff_ir_to_no_ws},
     lexer::{Lexer, RawTokenTrait, TokenKind},
     read_file_contents,
 };
@@ -85,7 +85,7 @@ impl Default for DiffTheme {
 }
 
 struct SideState {
-    buf: Vec<(DiffResult, Color32, bool)>, // String, Color, is_whitespace
+    buf: Vec<(DiffResult, Color32)>,
     line_num: i32,
     active_diff: bool,
 }
@@ -99,15 +99,15 @@ impl SideState {
         }
     }
 
-    fn push(&mut self, val: DiffResult, color: Color32, is_ws: bool) {
-        self.buf.push((val, color, is_ws));
+    fn push(&mut self, val: DiffResult, color: Color32) {
+        self.buf.push((val, color));
     }
 
     fn flush(&mut self, has_diff: bool, bg_color: Color32) -> LineContent {
         if self.buf.is_empty() {
             LineContent::Void
         } else {
-            let tokens = self.buf.drain(..).map(|(s, c, _)| (s, c)).collect();
+            let tokens = self.buf.drain(..).map(|(s, c)| (s, c)).collect();
             LineContent::Code {
                 tokens,
                 line_num: self.line_num,
@@ -222,18 +222,16 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
     pub fn handle_match(&mut self, diff_result: DiffResult) {
         assert!(matches!(diff_result.operation, DiffOp::Equal));
-        // Matches always have a source index
         let token_idx = diff_result
             .token_source_idx
             .expect("Equal op must have source index");
         let token = &self.tokens_source.expect("Source was None")[token_idx as usize];
 
         let color = self.get_color(token.as_ref().kind.is_keyword());
-        let is_ws = token.as_ref().kind.is_whitespace();
         let is_newline = token.as_ref().kind == TokenKind::Newline;
 
-        self.left.push(diff_result.clone(), color, is_ws);
-        self.right.push(diff_result, color, is_ws);
+        self.left.push(diff_result.clone(), color);
+        self.right.push(diff_result, color);
 
         if is_newline {
             // Equal newlines always flush both sides into a single row
@@ -242,6 +240,10 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
     }
 
     pub fn handle_diff(&mut self, diff_result: DiffResult, is_deletion: bool) {
+        assert!(matches!(
+            diff_result.operation,
+            DiffOp::Delete | DiffOp::Insert
+        ));
         let token = if is_deletion {
             let idx = diff_result
                 .token_source_idx
@@ -254,17 +256,14 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             &self.tokens_target.expect("Target is none")[idx as usize]
         };
 
-        let is_ws = token.as_ref().kind.is_whitespace();
         let is_newline = token.as_ref().kind == TokenKind::Newline;
 
-        if self.options.ignore_whitespace && is_ws && !is_newline {
-            return;
-        }
-
-        if !is_ws {
-            if is_deletion {
+        if is_deletion {
+            if !diff_result.hide_in_diff {
                 self.left.active_diff = true;
-            } else {
+            }
+        } else {
+            if !diff_result.hide_in_diff {
                 self.right.active_diff = true;
             }
         }
@@ -276,26 +275,25 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         };
 
         if is_deletion {
-            self.left.push(diff_result, color, is_ws);
+            self.left.push(diff_result, color);
             if is_newline {
                 self.emit_row(true, false);
             }
         } else {
-            self.right.push(diff_result, color, is_ws);
+            self.right.push(diff_result, color);
             if is_newline {
-                // If ghost_rows is false, we try to pair this insert with
-                // a pending deletion on the left to satisfy the test assertion.
-                self.emit_row(!self.options.ghost_rows, true);
+                self.emit_row(false, true);
             }
         }
     }
 
     fn emit_row(&mut self, flush_left: bool, flush_right: bool) {
-        let hi = self.options.highlight_rows;
-
         let left = if flush_left && !self.left.buf.is_empty() {
             let side = &mut self.left;
-            let content = side.flush(side.active_diff && hi, self.theme.del_bg);
+            let content = side.flush(
+                side.active_diff && self.options.highlight_rows,
+                self.theme.del_bg,
+            );
             side.line_num += 1;
             side.active_diff = false;
             content
@@ -305,7 +303,10 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
         let right = if flush_right && !self.right.buf.is_empty() {
             let side = &mut self.right;
-            let content = side.flush(side.active_diff && hi, self.theme.ins_bg);
+            let content = side.flush(
+                side.active_diff && self.options.highlight_rows,
+                self.theme.ins_bg,
+            );
             side.line_num += 1;
             side.active_diff = false;
             content
@@ -314,9 +315,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         };
 
         if !matches!(left, LineContent::Void) || !matches!(right, LineContent::Void) {
-            // Check if we can merge this right-side into an existing row that only has a left-side
-            // (Only if ghost_rows is disabled)
-            if !self.options.ghost_rows && matches!(left, LineContent::Void) {
+            if matches!(left, LineContent::Void) {
                 if let Some(last_row) = self.rows.last_mut() {
                     if matches!(last_row.right, LineContent::Void) {
                         last_row.right = right;
@@ -330,7 +329,6 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
     pub fn finish(mut self) -> Vec<DiffRow> {
         if !self.left.buf.is_empty() || !self.right.buf.is_empty() {
-            // Final sync flush
             self.emit_row(true, true);
         }
         self.rows
@@ -374,11 +372,15 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 }
 
 pub fn build_diff_rows<'a, T: RawTokenTrait>(
-    diff_ir: DiffIR,
+    mut diff_ir: DiffIR,
     tokens_source: Option<&'a [T]>,
     tokens_target: Option<&'a [T]>,
     options: &DiffBuilderOptions,
 ) -> Vec<DiffRow> {
+    if options.ignore_whitespace {
+        diff_ir = diff_ir_to_no_ws(diff_ir, tokens_source, tokens_target);
+    }
+
     let mut builder = DiffBuilder::new(tokens_source, tokens_target, options);
     for diff_result in diff_ir.entries {
         match &diff_result.operation {
@@ -387,6 +389,7 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
             DiffOp::Insert => builder.handle_diff(diff_result, false),
         }
     }
+
     builder.finish()
 }
 
@@ -569,196 +572,6 @@ mod tests {
         harness.assert_row(0, 1, 1, "\t#define hello_there\n", "\t#define world_here\n");
         harness.assert_row(1, 2, 2, "\t// Comment\n", "\t// Comment\n");
     }
-
-    // #[test]
-    // fn test_build_diff_rows_ghost_enabled() {
-    //     let s1 = "deleted_line\nmatch\n";
-    //     let s2 = "match\n";
-    //     let path = vec![(0, 0), (1, 0), (2, 0), (3, 1), (4, 2)];
-
-    //     let harness = DiffTestHarness::new(
-    //         s1,
-    //         s2,
-    //         path,
-    //         DiffBuilderOptions {
-    //             ghost_rows: true,
-    //             ..Default::default()
-    //         },
-    //     );
-
-    //     // The deleted line flushes a row. Ghosting inserts the deleted tokens into the target buffer.
-    //     harness.assert_row(0, 1, 1, "deleted_line\n", "deleted_line\n");
-    //     harness.assert_row(1, 2, 2, "match\n", "match\n");
-    // }
-
-    // #[test]
-    // fn test_build_diff_rows_respects_whitespace() {
-    //     let s1 = "ImGuiChildFlags_Border\n";
-    //     let s2 = "ImGuiChildFlags_Border,  // COMMENT\n";
-    //     // Path adjusted to include the whitespace tokens in s2
-    //     let path = vec![(0, 0), (1, 0), (1, 1), (1, 2), (1, 3), (1, 4), (2, 5)];
-
-    //     // TEST 1: Literal (ignore_whitespace: false)
-    //     let harness_literal = DiffTestHarness::new(
-    //         s1,
-    //         s2,
-    //         path.clone(),
-    //         DiffBuilderOptions {
-    //             ignore_whitespace: false,
-    //             ..Default::default()
-    //         },
-    //     );
-
-    //     harness_literal.assert_row(
-    //         0,
-    //         1,
-    //         1,
-    //         "ImGuiChildFlags_Border\n",
-    //         "ImGuiChildFlags_Border,  // COMMENT\n", // Must be literal
-    //     );
-
-    //     // TEST 2: Neutralized (ignore_whitespace: true)
-    //     let harness_ignored = DiffTestHarness::new(
-    //         s1,
-    //         s2,
-    //         path,
-    //         DiffBuilderOptions {
-    //             ignore_whitespace: true,
-    //             ..Default::default()
-    //         },
-    //     );
-
-    //     harness_ignored.assert_row(
-    //         0,
-    //         1,
-    //         1,
-    //         "ImGuiChildFlags_Border\n",
-    //         "ImGuiChildFlags_Border,// COMMENT\n", // Spaces neutralized/collapsed
-    //     );
-    // }
-
-    // #[test]
-    // fn test_build_diff_rows_staircase_regression() {
-    //     // Scenario: Source has one line, Target splits it into two.
-    //     // This is exactly what happened with your 'id: u64' example.
-    //     let s1 = "id: u64,\ninner: Arc,\n";
-    //     let s2 = "id:\n    usize,\ninner: Arc,\n";
-
-    //     // Manually constructed path to simulate the edit:
-    //     // 1. Match "id:"
-    //     // 2. Delete " " and "u64,"
-    //     // 3. Insert "\n" (This is the trigger!)
-    //     // 4. Insert "    " and "usize,"
-    //     // 5. Match "\n"
-    //     // 6. Match "inner: Arc,\n"
-    //     let path = vec![
-    //         (0, 0),
-    //         (1, 1), // Match "id:"
-    //         (2, 1), // Delete " "
-    //         (3, 1), // Delete "u64,"
-    //         (3, 2), // Insert "\n" -> CURRENT BUG: This flushes 'id: u64,' + 'id:\n'
-    //         (3, 3), // Insert "    "
-    //         (3, 4), // Insert "usize,"
-    //         (4, 5), // Match "\n"
-    //         (5, 6), // Match "inner:"
-    //         (6, 7), // Match " "
-    //         (7, 8), // Match "Arc,"
-    //         (8, 9), // Match "\n"
-    //     ];
-
-    //     let harness = DiffTestHarness::new(
-    //         s1,
-    //         s2,
-    //         path,
-    //         DiffBuilderOptions {
-    //             ghost_rows: false,
-    //             ..Default::default()
-    //         },
-    //     );
-
-    //     // --- EXPECTED BEHAVIOR ---
-    //     // Row 0: VOID on left, "id:\n" on right
-    //     // Row 1: "id: u64,\n" on left, "    usize,\n" on right
-    //     // Row 2: "inner: Arc,\n" on left, "inner: Arc,\n" on right
-
-    //     // --- CURRENT BUGGY BEHAVIOR ---
-    //     // Row 0: "id: u64," on left, "id:\n" on right
-    //     // Row 1: "inner: Arc," on left, "    usize,\n" on right  <-- SHIFT!
-
-    //     harness.assert_row(0, -1, 1, "VOID", "id:\n");
-    //     harness.assert_row(1, 1, 2, "id: u64,\n", "    usize,\n");
-    //     harness.assert_row(2, 2, 3, "inner: Arc,\n", "inner: Arc,\n");
-    // }
-
-    // #[test]
-    // fn test_whitespace_and_newline_behavior() {
-    //     // Scenario 1: Source has a standard use and trait.
-    //     // Scenario 2: Target inserts a newline after 'use' and an extra space in the trait.
-    //     let s1 = "use std::collections::HashMap;\npub trait NewProcessor {\n";
-    //     let s2 = "use \nstd::collections::HashMap;\npub trait  Processor {\n";
-
-    //     // Manually constructed path to replicate the reported bugged behavior:
-    //     // 1. Match "use "
-    //     // 2. Insert "\n" -> This triggers the premature flush in the current code.
-    //     // 3. Match the rest of the HashMap line.
-    //     // 4. Match "pub trait "
-    //     // 5. Insert " " -> This causes the double space when ignore_whitespace is true.
-    //     // 6. Match/Diff "Processor {" and "\n"
-    //     let path = vec![
-    //         (0, 0),
-    //         (1, 1), // "use "
-    //         (1, 2), // Insert "\n"
-    //         (2, 3),
-    //         (3, 4),
-    //         (4, 5),
-    //         (5, 6),
-    //         (6, 7),
-    //         (7, 8),
-    //         (8, 9), // "std::collections::HashMap;\n"
-    //         (9, 10),
-    //         (10, 11),
-    //         (11, 12),
-    //         (12, 13), // "pub trait "
-    //         (12, 14), // Insert " "
-    //         (13, 15), // "Processor"
-    //         (14, 16),
-    //         (15, 17),
-    //         (16, 18), // " {\n"
-    //     ];
-
-    //     let harness = DiffTestHarness::new(
-    //         s1,
-    //         s2,
-    //         path,
-    //         DiffBuilderOptions {
-    //             ignore_whitespace: true,
-    //             ghost_rows: false,
-    //             ..Default::default()
-    //         },
-    //     );
-
-    //     // --- EXPECTED BEHAVIOR (FIXED) ---
-
-    //     // 1. The inserted newline should not orphan "use " if ignore_whitespace is true.
-    //     // It should ideally be part of a single logical change or collapsed.
-    //     harness.assert_row(
-    //         0,
-    //         1,
-    //         1,
-    //         "use std::collections::HashMap;\n",
-    //         "use \nstd::collections::HashMap;\n",
-    //     );
-
-    //     // 2. The extra space in "pub trait  Processor" should be dropped/collapsed
-    //     // because ignore_whitespace is enabled.
-    //     harness.assert_row(
-    //         1,
-    //         2,
-    //         2,
-    //         "pub trait NewProcessor {\n",
-    //         "pub trait Processor {\n",
-    //     );
-    // }
 }
 
 #[cfg(test)]
@@ -794,9 +607,9 @@ mod integration_tests {
             Some(&f1.tokens),
             Some(&f2.tokens),
             &DiffBuilderOptions {
-            ignore_whitespace: false,
-            ghost_rows: false,
-            ..Default::default()
+                ignore_whitespace: false,
+                ghost_rows: false,
+                ..Default::default()
             },
         );
 
