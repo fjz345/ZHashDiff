@@ -1005,7 +1005,10 @@ impl eframe::App for ZApp {
                                 ctx.request_repaint();
                             }
                             Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                            Err(e) => log::error!("Channel error: {e}"),
+                            Err(e) => {
+                                log::error!("Channel error: {e}");
+                                state.diff_ctx_in_progress = false;
+                            }
                         }
                     }
                 }
