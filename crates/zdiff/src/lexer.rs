@@ -15,6 +15,8 @@ pub enum TokenKind {
     Whitespace,
     Tab,
     Comment,
+    CommentStart,
+    CommentEnd,
     Newline,
     Keyword,
     Preprocessor,
@@ -200,20 +202,16 @@ impl<'a, T: RawTokenTrait + From<RawToken>> Iterator for Lexer<'a, T> {
                 }
                 TokenKind::Comment
             }
-            // This breaks line order in the differ, disable for now
-            // '/' if self.source[self.cursor..].starts_with("/*") => {
-            //     self.consume(); // /
-            //     self.consume(); // *
-            //     while let Some(next_c) = self.peek() {
-            //         if next_c == '*' && self.source[self.cursor..].starts_with("*/") {
-            //             self.consume(); // *
-            //             self.consume(); // /
-            //             break;
-            //         }
-            //         self.consume();
-            //     }
-            //     TokenKind::Comment
-            // }
+            '/' if self.source[self.cursor..].starts_with("/*") => {
+                self.consume(); // /
+                self.consume(); // *
+                TokenKind::CommentStart
+            }
+            '*' if self.source[self.cursor..].starts_with("*/") => {
+                self.consume(); // *
+                self.consume(); // /
+                TokenKind::CommentEnd
+            }
             '"' => {
                 self.consume();
                 while let Some(next_c) = self.peek() {
@@ -550,21 +548,25 @@ mod tests {
         // Verification Table:
         // Index | Token Kind | Value
         // -------------------------
-        // 0     | Identifier | "x"
-        // 1     | Whitespace | " "
-        // 2     | Symbol     | "/"
-        // 3     | Whitespace | " "
-        // 4     | Symbol     | "/"
-        // 5     | Whitespace | " "
-        // 6     | Identifier | "y"
-        // 7     | Whitespace | " "
-        // 8     | Comment    | "// comment"
-        // 9     | Whitespace | "\n"
-        // 10    | Identifier | "x"
-        // 11    | Whitespace | " "
-        // 12    | Comment    | "/* block */"
-        // 13    | Whitespace | " "
-        // 14    | Identifier | "y"
+        // 0     | Identifier   | "x"
+        // 1     | Whitespace   | " "
+        // 2     | Symbol       | "/"
+        // 3     | Whitespace   | " "
+        // 4     | Symbol       | "/"
+        // 5     | Whitespace   | " "
+        // 6     | Identifier   | "y"
+        // 7     | Whitespace   | " "
+        // 8     | Comment      | "// comment"
+        // 9     | Whitespace   | "\n"
+        // 10    | Identifier   | "x"
+        // 11    | Whitespace   | " "
+        // 12    | CommentStart | "/*"
+        // 13    | Whitespace   | " "
+        // 14    | Identifier   | "block"
+        // 15    | Whitespace   | " "
+        // 16    | CommentEnd   | "*/"
+        // 17    | Whitespace   | " "
+        // 18    | Identifier   | "y"
 
         let expected = vec![
             (TokenKind::Identifier, "x"),
@@ -579,12 +581,18 @@ mod tests {
             (TokenKind::Newline, "\n"),
             (TokenKind::Identifier, "x"),
             (TokenKind::Whitespace, " "),
-            (TokenKind::Comment, "/* block */"),
+            (TokenKind::CommentStart, "/*"),
+            (TokenKind::Whitespace, " "),
+            (TokenKind::Identifier, "block"),
+            (TokenKind::Whitespace, " "),
+            (TokenKind::CommentEnd, "*/"),
             (TokenKind::Whitespace, " "),
             (TokenKind::Identifier, "y"),
         ];
 
         assert_eq!(tokens.len(), expected.len(), "Token count mismatch.");
+
+        println!("Tokens: {:#?}", tokens);
 
         for (i, (kind, value)) in expected.into_iter().enumerate() {
             assert_eq!(
@@ -823,11 +831,8 @@ mod tests {
                     );
                 }
                 "main.rs" => {
-                    assert!(
-                        tokens
-                            .iter()
-                            .any(|t| lexer.token_value(t) == "/* Macros use the ! symbol */")
-                    );
+                    assert!(tokens.iter().any(|t| lexer.token_value(t) == "/*"));
+                    assert!(tokens.iter().any(|t| lexer.token_value(t) == "*/"));
                 }
                 "main.py" => {
                     assert!(tokens.iter().any(|t| lexer.token_value(t) == "__name__"));
