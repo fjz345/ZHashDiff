@@ -760,3 +760,86 @@ mod tests {
     //     );
     // }
 }
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::diff_ir::DiffIR;
+    use crate::lexer::RawToken;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_file_reconstruction_from_diff_rows() {
+        use crate::myers::{myers_backtrack, myers_diff_trace}; // Adjust path as needed
+
+        let dir = tempdir().unwrap();
+        let file1_path = dir.path().join("file1.rs");
+        let file2_path = dir.path().join("file2.rs");
+
+        let s1_content = "fn main() {\n    let x = 10;\n    println!(\"{}\", x);\n}\n";
+        let s2_content =
+            "fn main() {\n    let x = 20;\n    let y = 30;\n    println!(\"{}\", x + y);\n}\n";
+
+        std::fs::File::create(&file1_path)
+            .unwrap()
+            .write_all(s1_content.as_bytes())
+            .unwrap();
+        std::fs::File::create(&file2_path)
+            .unwrap()
+            .write_all(s2_content.as_bytes())
+            .unwrap();
+
+        let f1 = CachedFile::<RawToken>::new(&file1_path).unwrap();
+        let f2 = CachedFile::<RawToken>::new(&file2_path).unwrap();
+        let cmp = |t1: &RawToken, t2: &RawToken| {
+            let s1 = &f1.contents[t1.as_ref().span.clone()];
+            let s2 = &f2.contents[t2.as_ref().span.clone()];
+            s1 == s2
+        };
+
+        let trace = myers_diff_trace(&f1.tokens, &f2.tokens, cmp);
+        let path = myers_backtrack(trace, f1.tokens.len() as i32, f2.tokens.len() as i32);
+
+        let diff_ir = DiffIR::new(&path);
+        let options = DiffBuilderOptions {
+            ignore_whitespace: false,
+            ghost_rows: false,
+            ..Default::default()
+        };
+
+        let rows = build_diff_rows(diff_ir, Some(&f1.tokens), Some(&f2.tokens), &options);
+        let mut reconstructed_left = String::new();
+        let mut reconstructed_right = String::new();
+        for row in rows {
+            if let LineContent::Code { tokens, .. } = row.left {
+                for (res, _) in tokens {
+                    if res.operation != DiffOp::Insert {
+                        let idx = res.token_source_idx.expect("Source index missing");
+                        reconstructed_left
+                            .push_str(&f1.contents[f1.tokens[idx as usize].as_ref().span.clone()]);
+                    }
+                }
+            }
+            if let LineContent::Code { tokens, .. } = row.right {
+                for (res, _) in tokens {
+                    if res.operation != DiffOp::Delete {
+                        let idx = res.token_target_idx.expect("Target index missing");
+                        reconstructed_right
+                            .push_str(&f2.contents[f2.tokens[idx as usize].as_ref().span.clone()]);
+                    }
+                }
+            }
+        }
+
+        // 4. Final Verification
+        assert_eq!(
+            s1_content, reconstructed_left,
+            "Source reconstruction failed using Myers path"
+        );
+        assert_eq!(
+            s2_content, reconstructed_right,
+            "Target reconstruction failed using Myers path"
+        );
+    }
+}
