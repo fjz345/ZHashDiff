@@ -745,7 +745,6 @@ impl<'a> ZApp {
                 } else {
                     diff_ctx_active_highlights.push(*start);
                 }
-                *scroll_to_rows = None;
             }
 
             let mut behavior = TreeBehavior {
@@ -764,6 +763,8 @@ impl<'a> ZApp {
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 self.tree.ui(&mut behavior, ui);
             });
+
+            *scroll_to_rows = None;
 
             // Invalidate diff if options changed
             if diff_options_before != *diff_options {
