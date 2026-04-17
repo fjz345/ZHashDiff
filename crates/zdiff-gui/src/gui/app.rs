@@ -125,9 +125,9 @@ impl Default for AppStateCtx {
 impl AppStateCtx {
     fn precompute_diff_spans(diff_rows: &[DiffRow]) -> Vec<(usize, usize)> {
         let has_change = |content: &LineContent| match content {
-            LineContent::Code { tokens, .. } => {
-                tokens.iter().any(|(res, _)| res.operation != DiffOp::Equal)
-            }
+            LineContent::Code { tokens, .. } => tokens
+                .iter()
+                .any(|(res, _)| !res.hide_in_diff && res.operation != DiffOp::Equal),
             _ => false,
         };
 
