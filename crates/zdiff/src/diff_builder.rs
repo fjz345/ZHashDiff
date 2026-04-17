@@ -103,7 +103,7 @@ impl SideState {
         self.buf.push((val, color));
     }
 
-    fn flush(&mut self, line_num: i32, has_diff: bool, bg_color: Color32) -> LineContent {
+    fn flush(&mut self, line_num: i32, bg_color: Color32) -> LineContent {
         if self.buf.is_empty() {
             LineContent::Void
         } else {
@@ -111,11 +111,7 @@ impl SideState {
             LineContent::Code {
                 tokens,
                 line_num,
-                bg: if has_diff {
-                    bg_color
-                } else {
-                    Color32::TRANSPARENT
-                },
+                bg: bg_color,
             }
         }
     }
@@ -308,7 +304,12 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
         let left = if flush_left {
             let active = self.left.active_diff && self.options.highlight_rows;
-            let content = self.left.flush(left_num, active, self.theme.del_bg);
+            let color = if active {
+                self.theme.del_bg
+            } else {
+                Color32::TRANSPARENT
+            };
+            let content = self.left.flush(left_num, color);
             self.left.active_diff = false;
             content
         } else {
@@ -317,7 +318,12 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
         let right = if flush_right {
             let active = self.right.active_diff && self.options.highlight_rows;
-            let content = self.right.flush(right_num, active, self.theme.ins_bg);
+            let color = if active {
+                self.theme.ins_bg
+            } else {
+                Color32::TRANSPARENT
+            };
+            let content = self.right.flush(right_num, color);
             self.right.active_diff = false;
             content
         } else {
@@ -348,10 +354,8 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         let ghost_color = self.theme.ghost;
         if last_was_deletion {
             self.right.push(result, ghost_color);
-            self.right.active_diff = true;
         } else {
             self.left.push(result, ghost_color);
-            self.left.active_diff = true;
         }
     }
 }
