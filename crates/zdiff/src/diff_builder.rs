@@ -315,7 +315,7 @@ mod tests {
     use super::*;
     use crate::{
         diff_ir::{self},
-        lexer::RawToken,
+        lexer::{LexerDefault, RawToken},
     };
 
     struct DiffTestHarness<'a> {
@@ -333,8 +333,8 @@ mod tests {
             path: Vec<(i32, i32)>,
             options: DiffBuilderOptions,
         ) -> Self {
-            let t1: Vec<RawToken> = Lexer::<LEXER_MODE_DEFAULT>::new(s1).collect();
-            let t2: Vec<RawToken> = Lexer::<LEXER_MODE_DEFAULT>::new(s2).collect();
+            let t1: Vec<RawToken> = LexerDefault::<RawToken>::new(s1).collect();
+            let t2: Vec<RawToken> = LexerDefault::<RawToken>::new(s2).collect();
             let diff_ir = DiffIR::new(&path);
             let rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
 
@@ -494,6 +494,7 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    use crate::cached_file::CachedFile;
     use crate::diff_ir::DiffIR;
     use crate::lexer::RawToken;
     use crate::myers::{myers_backtrack, myers_diff_trace};
