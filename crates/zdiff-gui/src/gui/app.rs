@@ -15,7 +15,7 @@ use zcommon::{hash::hash_file, ui_egui::common::show_custom_popup};
 use zdiff::{
     diff_builder::{CachedFile, DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
-    lexer::{Lexer, RawToken, TokenKind},
+    lexer::{Lexer, LexerDefault, RawToken, TokenKind},
     myers::{myers_backtrack, myers_count_add_deletes, myers_diff_trace},
     read_file_contents,
 };
@@ -200,8 +200,8 @@ impl AppStateCtx {
             (Some(c1), Some(c2)) => {
                 let t1 = &c1.tokens;
                 let t2 = &c2.tokens;
-                let lex1 = Lexer::<RawToken>::new(&c1.contents);
-                let lex2 = Lexer::<RawToken>::new(&c2.contents);
+                let lex1 = LexerDefault::new(&c1.contents);
+                let lex2 = LexerDefault::new(&c2.contents);
 
                 let cmp = |a: &RawToken, b: &RawToken| {
                     a.as_ref().kind == b.as_ref().kind && lex1.token_value(a) == lex2.token_value(b)
@@ -236,8 +236,8 @@ impl AppStateCtx {
                 let c2 = c1;
                 let t1 = &c1.tokens;
                 let t2 = &c2.tokens;
-                let lex1 = Lexer::new(&c1.contents);
-                let lex2 = Lexer::new(&c2.contents);
+                let lex1 = LexerDefault::new(&c1.contents);
+                let lex2 = LexerDefault::new(&c2.contents);
 
                 let cmp = |a: &RawToken, b: &RawToken| {
                     a.as_ref().kind == b.as_ref().kind && lex1.token_value(a) == lex2.token_value(b)
@@ -269,8 +269,8 @@ impl AppStateCtx {
                 let c1 = c2;
                 let t1 = &c1.tokens;
                 let t2 = &c2.tokens;
-                let lex1 = Lexer::new(&c1.contents);
-                let lex2 = Lexer::new(&c2.contents);
+                let lex1 = LexerDefault::new(&c1.contents);
+                let lex2 = LexerDefault::new(&c2.contents);
 
                 let cmp = |a: &RawToken, b: &RawToken| {
                     a.as_ref().kind == b.as_ref().kind && lex1.token_value(a) == lex2.token_value(b)
@@ -975,7 +975,7 @@ impl eframe::App for ZApp {
                     let options_equal = diff_ctx.diff_option == state.diff_options;
 
                     if !hash_equal || !options_equal {
-                        log::info!(
+                        log::debug!(
                             "diff_ctx invalidated!, reason: hash_equal: {}, options_equal: {}",
                             hash_equal,
                             options_equal

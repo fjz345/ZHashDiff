@@ -47,20 +47,27 @@ impl AsRef<RawToken> for RawToken {
     }
 }
 
-impl<T: RawTokenTrait> Lexer<'_, T> {
+impl<const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'_, LEXER_MODE, T> {
     pub fn read_content_span(&self, span: Range<usize>) -> &str {
         &self.source[span]
     }
 }
 
+pub const LEXER_MODE_DEFAULT: u8 = 0;
+pub const LEXER_MODE_GREEDY: u8 = 1; // longest possible token lengths to reduce number of tokens
+pub const LEXER_MODE_TOKENIZE: u8 = 2; // Try to tokenize as much as possible
+pub type LexerDefault<'a, T> = Lexer<'a, LEXER_MODE_DEFAULT, T>;
+pub type LexerGreedy<'a, T> = Lexer<'a, LEXER_MODE_GREEDY, T>;
+pub type LexerTokenize<'a, T> = Lexer<'a, LEXER_MODE_TOKENIZE, T>;
+
 #[derive(Debug, Clone)]
-pub struct Lexer<'a, T: RawTokenTrait> {
+pub struct Lexer<'a, const LEXER_MODE: u8, T: RawTokenTrait> {
     source: &'a str,
     cursor: usize,
     phantom_data: PhantomData<T>,
 }
 
-impl<'a, T: RawTokenTrait> Lexer<'a, T> {
+impl<'a, const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'a, LEXER_MODE, T> {
     pub fn new(source: &'a str) -> Self {
         Self {
             source,
@@ -159,7 +166,9 @@ const KEYWORDS: &[&str] = &[
     "yield",
 ];
 
-impl<'a, T: RawTokenTrait + From<RawToken>> Iterator for Lexer<'a, T> {
+impl<'a, const LEXER_MODE: u8, T: RawTokenTrait + From<RawToken>> Iterator
+    for Lexer<'a, LEXER_MODE, T>
+{
     type Item = RawToken;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -184,21 +193,25 @@ impl<'a, T: RawTokenTrait + From<RawToken>> Iterator for Lexer<'a, T> {
             }
             _ if c.is_whitespace() => {
                 self.consume();
-                while self.peek().map_or(false, |next| {
-                    next.is_whitespace() && next != '\n' && next != '\r'
-                }) {
-                    self.consume();
+                if LEXER_MODE == LEXER_MODE_GREEDY {
+                    while self.peek().map_or(false, |next| {
+                        next.is_whitespace() && next != '\n' && next != '\r'
+                    }) {
+                        self.consume();
+                    }
                 }
                 TokenKind::Whitespace
             }
             '/' if self.source[self.cursor..].starts_with("//") => {
                 self.consume(); // /
                 self.consume(); // /
-                while let Some(next_c) = self.peek() {
-                    if next_c == '\n' {
-                        break;
+                if LEXER_MODE == LEXER_MODE_GREEDY {
+                    while let Some(next_c) = self.peek() {
+                        if next_c == '\n' {
+                            break;
+                        }
+                        self.consume();
                     }
-                    self.consume();
                 }
                 TokenKind::Comment
             }
@@ -230,12 +243,14 @@ impl<'a, T: RawTokenTrait + From<RawToken>> Iterator for Lexer<'a, T> {
                 let start = self.cursor;
                 self.consume();
 
-                while self.peek().map_or(false, |next| {
-                    next.is_alphanumeric()
-                        || next == '_'
-                        || (next > '\x7f' && !next.is_control() && !next.is_whitespace())
-                }) {
-                    self.consume();
+                if LEXER_MODE == LEXER_MODE_GREEDY {
+                    while self.peek().map_or(false, |next| {
+                        next.is_alphanumeric()
+                            || next == '_'
+                            || (next > '\x7f' && !next.is_control() && !next.is_whitespace())
+                    }) {
+                        self.consume();
+                    }
                 }
 
                 let word = &self.source[start..self.cursor];
@@ -247,18 +262,22 @@ impl<'a, T: RawTokenTrait + From<RawToken>> Iterator for Lexer<'a, T> {
             }
             _ if c.is_digit(10) => {
                 self.consume();
-                while self.peek().map_or(false, |next| next.is_digit(10)) {
-                    self.consume();
+                if LEXER_MODE == LEXER_MODE_GREEDY {
+                    while self.peek().map_or(false, |next| next.is_digit(10)) {
+                        self.consume();
+                    }
                 }
                 TokenKind::Number
             }
             '#' => {
                 self.consume();
-                while let Some(next_c) = self.peek() {
-                    if next_c == '\n' || next_c == '\r' {
-                        break;
+                if LEXER_MODE == LEXER_MODE_GREEDY {
+                    while let Some(next_c) = self.peek() {
+                        if next_c == '\n' || next_c == '\r' {
+                            break;
+                        }
+                        self.consume();
                     }
-                    self.consume();
                 }
                 TokenKind::Preprocessor
             }
@@ -299,10 +318,10 @@ impl<'a, T: RawTokenTrait + From<RawToken>> Iterator for Lexer<'a, T> {
     }
 }
 
-pub fn visualize_diff_grid<'a, T: RawTokenTrait + From<RawToken>>(
-    lexer1: &Lexer<'a, T>,
+pub fn visualize_diff_grid<'a, const LEXER_MODE: u8, T: RawTokenTrait + From<RawToken>>(
+    lexer1: &Lexer<'a, LEXER_MODE, T>,
     tokens1: &[T],
-    lexer2: &Lexer<'a, T>,
+    lexer2: &Lexer<'a, LEXER_MODE, T>,
     tokens2: &[T],
 ) {
     let n = tokens1.len();
@@ -385,10 +404,15 @@ pub fn visualize_diff_grid<'a, T: RawTokenTrait + From<RawToken>>(
     }
 }
 
-pub fn visualize_diff_grid_with_path<'a, F, T: RawTokenTrait + From<RawToken>>(
-    lexer1: &Lexer<'a, T>,
+pub fn visualize_diff_grid_with_path<
+    'a,
+    const LEXER_MODE: u8,
+    F,
+    T: RawTokenTrait + From<RawToken>,
+>(
+    lexer1: &Lexer<'a, LEXER_MODE, T>,
     tokens1: &[T],
-    lexer2: &Lexer<'a, T>,
+    lexer2: &Lexer<'a, LEXER_MODE, T>,
     tokens2: &[T],
     path: &[(i32, i32)],
     mut cmp: F,
@@ -516,7 +540,7 @@ mod tests {
         ];
 
         for (name, src) in cases {
-            let mut lexer = Lexer::<RawToken>::new(src);
+            let mut lexer = Lexer::<LEXER_MODE_DEFAULT>::new(src);
             let tokens = lexer.parse();
 
             assert!(
@@ -542,7 +566,7 @@ mod tests {
     #[test]
     fn test_greedy_operators_exhaustive() {
         let input = "x / / y // comment\nx /* block */ y";
-        let mut lexer = Lexer::<RawToken>::new(input);
+        let mut lexer = Lexer::<LEXER_MODE_DEFAULT, RawToken>::new(input);
         let tokens = lexer.parse();
 
         // Verification Table:
@@ -614,7 +638,7 @@ mod tests {
     #[test]
     fn test_complex_strings() {
         let input = r#"" " "" "with symbols !@#" "unclosed"#;
-        let mut lexer = Lexer::<RawToken>::new(input);
+        let mut lexer = Lexer::<LEXER_MODE_DEFAULT>::new(input);
         let tokens = lexer.parse();
 
         assert!(
@@ -634,7 +658,7 @@ mod tests {
     #[test]
     fn test_numeric_boundaries() {
         let input = "123.456 789";
-        let mut lexer = Lexer::<RawToken>::new(input);
+        let mut lexer = Lexer::<LEXER_MODE_DEFAULT>::new(input);
         let tokens = lexer.parse();
 
         assert_eq!(
@@ -672,7 +696,7 @@ mod tests {
     #[test]
     fn test_unicode_and_whitespace() {
         let input = "let 🦀 = \"value\";\t\n ";
-        let mut lexer = Lexer::<RawToken>::new(input);
+        let mut lexer = Lexer::<LEXER_MODE_DEFAULT>::new(input);
         let tokens = lexer.parse();
 
         for token in &tokens {
@@ -694,11 +718,11 @@ mod tests {
     #[test]
     fn test_lex_idempotency() {
         let input = "fn main() { let x = 5; } // check";
-        let mut lexer1 = Lexer::<RawToken>::new(input);
+        let mut lexer1 = Lexer::<LEXER_MODE_DEFAULT>::new(input);
         let tokens1 = lexer1.parse();
 
         let reconstructed = lexer1.reconstruct_source(&tokens1);
-        let mut lexer2 = Lexer::<RawToken>::new(&reconstructed);
+        let mut lexer2 = Lexer::<LEXER_MODE_DEFAULT>::new(&reconstructed);
         let tokens2 = lexer2.parse();
 
         assert_eq!(
@@ -729,7 +753,7 @@ mod tests {
         let win_input = "a\r\nb";
 
         // Test Unix Lexing
-        let lex_unix = Lexer::<RawToken>::new(unix_input);
+        let lex_unix = Lexer::<LEXER_MODE_DEFAULT>::new(unix_input);
         let tokens_unix: Vec<RawToken> = lex_unix.collect();
 
         // Expect: [Identifier("a"), Newline("\n"), Identifier("b")]
@@ -739,7 +763,7 @@ mod tests {
         assert_eq!(&unix_input[tokens_unix[1].span.clone()], "\n");
 
         // Test Windows Lexing
-        let lex_win = Lexer::<RawToken>::new(win_input);
+        let lex_win = Lexer::<LEXER_MODE_DEFAULT>::new(win_input);
         let tokens_win: Vec<RawToken> = lex_win.collect();
 
         // Expect: [Identifier("a"), Newline("\r\n"), Identifier("b")]
@@ -752,7 +776,7 @@ mod tests {
     #[test]
     fn test_lexer_mixed_whitespace_and_newlines() {
         let input = " \n \r\n ";
-        let tokens: Vec<RawToken> = Lexer::<RawToken>::new(input).collect();
+        let tokens: Vec<RawToken> = Lexer::<LEXER_MODE_DEFAULT>::new(input).collect();
 
         dbg!(&tokens);
 
@@ -801,7 +825,7 @@ mod tests {
         ];
 
         for (filename, content) in files {
-            let mut lexer = Lexer::<RawToken>::new(content);
+            let mut lexer = Lexer::<LEXER_MODE_DEFAULT>::new(content);
             let tokens = lexer.parse();
 
             assert!(
@@ -987,7 +1011,7 @@ mod tests {
         ];
 
         for (name, source) in workload {
-            let mut lexer = Lexer::<RawToken>::new(source);
+            let mut lexer = Lexer::<LEXER_MODE_DEFAULT>::new(source);
             let tokens = lexer.parse();
 
             let unknown_tokens: Vec<_> = tokens
@@ -1065,7 +1089,7 @@ mod tests {
             ("\n", TokenKind::Newline),
         ];
 
-        let mut lexer = Lexer::<RawToken>::new(source);
+        let mut lexer = Lexer::<LEXER_MODE_DEFAULT>::new(source);
         let tokens = lexer.parse();
 
         let unknown: Vec<_> = tokens

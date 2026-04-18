@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     diff_ir::{DiffIR, DiffOp, DiffResult, diff_ir_to_no_ws},
-    lexer::{Lexer, RawTokenTrait, TokenKind},
+    lexer::{Lexer, LexerDefault, RawTokenTrait, TokenKind},
     read_file_contents,
 };
 use zcommon::hash::hash_file;
@@ -168,7 +168,7 @@ impl<T: RawTokenTrait> CachedFile<T> {
     pub fn new(path: impl AsRef<Path>) -> io::Result<Self> {
         let contents = read_file_contents(&path)?;
         let hash = hash_file(&path)?;
-        let tokens = Lexer::<T>::new(&contents).map(T::from).collect();
+        let tokens = LexerDefault::<T>::new(&contents).map(T::from).collect();
         let path = path.as_ref().to_path_buf();
         let metadata = FileMetadata::new(&contents);
         Ok(Self {
@@ -405,8 +405,8 @@ mod tests {
             path: Vec<(i32, i32)>,
             options: DiffBuilderOptions,
         ) -> Self {
-            let t1: Vec<RawToken> = Lexer::<RawToken>::new(s1).collect();
-            let t2: Vec<RawToken> = Lexer::<RawToken>::new(s2).collect();
+            let t1: Vec<RawToken> = Lexer::<LEXER_MODE_DEFAULT>::new(s1).collect();
+            let t2: Vec<RawToken> = Lexer::<LEXER_MODE_DEFAULT>::new(s2).collect();
             let diff_ir = DiffIR::new(&path);
             let rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
 

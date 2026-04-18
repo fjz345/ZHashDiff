@@ -166,7 +166,7 @@ mod tests {
     use std::ops::Range;
 
     use super::*;
-    use crate::lexer::{Lexer, RawToken, TokenKind};
+    use crate::lexer::{Lexer, LexerDefault, RawToken, TokenKind};
 
     fn mock_token(kind: TokenKind, start: usize, end: usize) -> RawToken {
         RawToken {
@@ -179,8 +179,11 @@ mod tests {
     fn setup_lexers(
         content1: &'static str,
         content2: &'static str,
-    ) -> (Lexer<'static, RawToken>, Lexer<'static, RawToken>) {
-        (Lexer::new(content1), Lexer::new(content2))
+    ) -> (
+        LexerDefault<'static, RawToken>,
+        LexerDefault<'static, RawToken>,
+    ) {
+        (LexerDefault::new(content1), LexerDefault::new(content2))
     }
 
     #[test]
