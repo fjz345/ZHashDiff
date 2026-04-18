@@ -760,6 +760,7 @@ impl<'a> ZApp {
                     conflict_cursor: diff_ctx_conflict_cursor,
                     load_file_1_request: &mut None,
                     load_file_2_request: &mut None,
+                    find_cursor,
                 },
             };
 

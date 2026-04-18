@@ -22,6 +22,7 @@ pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
     pub scroll_to_row_span: &'a Option<(usize, Option<usize>)>,
     pub active_highlights: &'a Vec<usize>,
     pub conflict_cursor: &'a mut ClampedCursor,
+    pub find_cursor: &'a mut ClampedCursor,
     pub load_file_1_request: &'a mut Option<PathBuf>,
     pub load_file_2_request: &'a mut Option<PathBuf>,
 }
@@ -111,9 +112,33 @@ impl FileDiffPane {
                 if ui.button("<").clicked() {
                     ctx.conflict_cursor.dec();
                 }
-                if ui.button(ctx.conflict_cursor.get().to_string()).clicked() {}
+                if ui
+                    .button(format!(
+                        "{}/{}",
+                        ctx.conflict_cursor.get().to_string(),
+                        ctx.conflict_cursor.get_max().to_string()
+                    ))
+                    .clicked()
+                {}
                 if ui.button(">").clicked() {
                     ctx.conflict_cursor.inc();
+                }
+            });
+            ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if ui.button("<").clicked() {
+                    ctx.find_cursor.dec();
+                }
+                if ui
+                    .button(format!(
+                        "{}/{}",
+                        ctx.find_cursor.get().to_string(),
+                        ctx.find_cursor.get_max().to_string()
+                    ))
+                    .clicked()
+                {}
+                if ui.button(">").clicked() {
+                    ctx.find_cursor.inc();
                 }
             });
         });
