@@ -52,6 +52,9 @@ impl ClampedCursor {
     pub fn set_max(&mut self, new_max: usize) {
         self.max = new_max;
     }
+    pub fn get_max(&self) -> usize {
+        self.max
+    }
     pub fn get(&self) -> usize {
         self.cursor
     }

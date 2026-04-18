@@ -704,12 +704,11 @@ impl<'a> ZApp {
                     log::info!("Found (in #2): {:?}", find_found_lines_2);
 
                     if find_found_lines_1.len() > 0 || find_found_lines_2.len() > 0 {
-                        find_cursor.set_max(
-                            find_found_lines_1
-                                .len()
-                                .max(find_found_lines_2.len())
-                                .saturating_sub(1),
-                        );
+                        let mut all_found_lines = find_found_lines_1.clone();
+                        all_found_lines.extend(find_found_lines_2.clone());
+                        all_found_lines.dedup();
+                        all_found_lines.sort();
+                        find_cursor.set_max(all_found_lines.len().saturating_sub(1));
                         find_cursor.set(0);
                         find_cursor.invalidate_ack();
                     }
@@ -1046,18 +1045,20 @@ impl eframe::App for ZApp {
                 // FIND
                 if state.find_cursor.has_changed() {
                     state.find_cursor.ack_change();
-                    let find_idx_1 = state
-                        .find_found_lines_1
-                        .get(state.find_cursor.get())
-                        .cloned();
-                    let find_idx_2 = state
-                        .find_found_lines_2
-                        .get(state.find_cursor.get())
-                        .cloned();
+
+                    let mut all_found_lines = state.find_found_lines_1.clone();
+                    all_found_lines.extend(state.find_found_lines_2.clone());
+                    all_found_lines.dedup();
+                    all_found_lines.sort();
+                    assert_eq!(
+                        state.find_cursor.get_max(),
+                        all_found_lines.len().saturating_sub(1)
+                    );
+
+                    let find_idx_1 = all_found_lines.get(state.find_cursor.get()).cloned();
 
                     // TODO: Improve so that user can decide which 1/2 file search operates on
-                    state.scroll_to_rows =
-                        Some((find_idx_1.unwrap_or(find_idx_2.unwrap_or_default()), None));
+                    state.scroll_to_rows = Some((find_idx_1.unwrap_or_default(), None));
                 }
 
                 if let Some(scroll_to) = &state.scroll_to_rows {
