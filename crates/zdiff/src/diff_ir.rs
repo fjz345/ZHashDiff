@@ -163,28 +163,7 @@ impl DiffIR {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Range;
-
     use super::*;
-    use crate::lexer::{Lexer, LexerDefault, RawToken, TokenKind};
-
-    fn mock_token(kind: TokenKind, start: usize, end: usize) -> RawToken {
-        RawToken {
-            kind,
-            span: Range { start, end },
-        }
-    }
-
-    // Lexer requires a lifetime 'a to match the string slice it wraps
-    fn setup_lexers(
-        content1: &'static str,
-        content2: &'static str,
-    ) -> (
-        LexerDefault<'static, RawToken>,
-        LexerDefault<'static, RawToken>,
-    ) {
-        (LexerDefault::new(content1), LexerDefault::new(content2))
-    }
 
     #[test]
     fn test_generate_ir_simple_equal() {

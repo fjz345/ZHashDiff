@@ -1092,7 +1092,6 @@ fn get_folder_selection_state(
 mod tests {
     use crate::ui_egui::fs_tree::{DiffState, FileSystemView};
 
-    use super::*;
     use std::collections::HashMap;
     use std::fs::{self, File};
     use std::path::Path;
@@ -1107,6 +1106,17 @@ mod tests {
         expected: Vec<(&'static str, FsNodeDepth)>,
     }
 
+    fn find_id_by_rel_path(fs: &FileSystemModel, root: &Path, rel: &str) -> FsNodeId {
+        let target = root.join(rel);
+        for (id, node, _) in fs.iter_tree() {
+            if node.as_path().as_ref() == target {
+                return id;
+            }
+        }
+        panic!("Test setup error: path {:?} not found in model", target);
+    }
+
+    #[allow(dead_code)]
     fn get_rel(file_system: &FileSystemModel, root: &Path, id: FsNodeId) -> String {
         let node = file_system.get_node(id).expect("Node ID not found");
         if id == file_system.get_root_node_id() {
@@ -1125,6 +1135,7 @@ mod tests {
             .to_string()
     }
 
+    #[allow(dead_code)]
     fn get_rel_from_diff_state(
         file_system_1: &FileSystemModel,
         file_system_2: &FileSystemModel,
@@ -1152,6 +1163,7 @@ mod tests {
             .join("\n")
     }
 
+    #[allow(dead_code)]
     fn format_diff_tree_two(
         left: &[(String, FsNodeDepth)],
         right: &[(String, FsNodeDepth)],
@@ -1300,212 +1312,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    // type DiffMarker = &'static str;
-    // struct DiffTestCase {
-    //     name: &'static str,
-    //     left_structure: Vec<(&'static str, FsIsDir)>, // path, is_dir
-    //     right_structure: Vec<(&'static str, FsIsDir)>, // path, is_dir
-    //     left_collapsed: Vec<&'static str>,
-    //     right_collapsed: Vec<&'static str>,
-    //     // (Path, Depth, Diff Marker: "+" for Left, "-" for Right, "~" for Modified, "=" for Same)
-    //     expected: Vec<(&'static str, FsNodeDepth, DiffMarker)>,
-    // }
-    //
-    // Old test, now build_rows does not build with collapsed state, this is handled in the ui code.
-    // #[test]
-    // fn test_build_two_folder_diff_scenarios() {
-    //     let cases = vec![
-    //         DiffTestCase {
-    //             name: "Standard file addition",
-    //             left_structure: vec![("a.txt", false)],
-    //             right_structure: vec![("a.txt", false), ("b.txt", false)],
-    //             left_collapsed: vec![],
-    //             right_collapsed: vec![],
-    //             expected: vec![("", 0, "~"), ("a.txt", 1, "="), ("b.txt", 1, "+")],
-    //         },
-    //         DiffTestCase {
-    //             name: "Collapsed directory hides children",
-    //             left_structure: vec![("dir/file.txt", false)],
-    //             right_structure: vec![
-    //                 ("dir/one_extra_deep/file.txt", false),
-    //                 ("dir/a_file.txt", false),
-    //             ],
-    //             left_collapsed: vec!["dir"],
-    //             right_collapsed: vec!["dir"],
-    //             expected: vec![("", 0, "~"), ("dir", 1, "~")],
-    //         },
-    //         DiffTestCase {
-    //             name: "One side collapsed directory should NOT hide children",
-    //             left_structure: vec![("dir/hidden_file.txt", false)],
-    //             right_structure: vec![
-    //                 ("dir/one_extra_deep", true),
-    //                 ("dir/one_extra_deep/file.txt", false),
-    //                 ("dir/visible_file.txt", false),
-    //             ],
-    //             left_collapsed: vec!["dir"],
-    //             right_collapsed: vec![],
-    //             expected: vec![
-    //                 ("", 0, "~"),
-    //                 ("dir", 1, "~"),
-    //                 ("dir/hidden_file.txt", 2, "-"),
-    //                 ("dir/one_extra_deep", 2, "+"),
-    //                 ("dir/one_extra_deep/file.txt", 3, "+"),
-    //                 ("dir/visible_file.txt", 2, "+"),
-    //             ],
-    //         },
-    //         DiffTestCase {
-    //             name: "Complex nested diff with partial collapse",
-    //             left_structure: vec![
-    //                 ("common/deleted.txt", false),
-    //                 ("common/same.txt", false),
-    //                 ("nested/level1/level2/file.txt", false),
-    //                 ("only_left/a.txt", false),
-    //             ],
-    //             right_structure: vec![
-    //                 ("common/added.txt", false),
-    //                 ("common/same.txt", false),
-    //                 ("nested/level1/level2/file.txt", false),
-    //                 ("only_right/b.txt", false),
-    //             ],
-    //             left_collapsed: vec!["nested/level1"],
-    //             right_collapsed: vec!["nested/level1"],
-    //             expected: vec![
-    //                 ("", 0, "~"),
-    //                 ("common", 1, "~"),
-    //                 ("common/added.txt", 2, "+"),
-    //                 ("common/deleted.txt", 2, "-"),
-    //                 ("common/same.txt", 2, "="),
-    //                 ("nested", 1, "="),
-    //                 ("nested/level1", 2, "="),
-    //                 ("only_left", 1, "-"),
-    //                 ("only_left/a.txt", 2, "-"),
-    //                 ("only_right", 1, "+"),
-    //                 ("only_right/b.txt", 2, "+"),
-    //             ],
-    //         },
-    //     ];
-
-    //     for case in cases {
-    //         let temp_l = tempdir().unwrap();
-    //         let temp_r = tempdir().unwrap();
-
-    //         setup_fs(temp_l.path(), &case.left_structure);
-    //         setup_fs(temp_r.path(), &case.right_structure);
-
-    //         let view_l = create_view(temp_l.path(), &case.left_collapsed);
-    //         let view_r = create_view(temp_r.path(), &case.right_collapsed);
-
-    //         let left_tree_actual = view_l
-    //             .build_collapsed_rows(view_l.file_system.get_root_node_id(), 0)
-    //             .into_iter()
-    //             .map(|row| {
-    //                 (
-    //                     get_rel(&view_l.file_system, temp_l.path(), row.path),
-    //                     row.depth,
-    //                 )
-    //             })
-    //             .collect::<Vec<_>>();
-    //         let right_tree_actual = view_r
-    //             .build_collapsed_rows(view_r.file_system.get_root_node_id(), 0)
-    //             .into_iter()
-    //             .map(|row| {
-    //                 (
-    //                     get_rel(&view_r.file_system, temp_r.path(), row.path),
-    //                     row.depth,
-    //                 )
-    //             })
-    //             .collect::<Vec<_>>();
-
-    //         let out = FileSystemView::build_two_folder_diff_rows(
-    //             Some(&view_l),
-    //             Some(&view_r),
-    //             &PathComparissonMethod::Byte,
-    //         )
-    //         .unwrap();
-
-    //         let actual_diff: Vec<(String, FsNodeDepth, String)> = out
-    //             .into_iter()
-    //             .map(|row| {
-    //                 let rel = get_rel_from_diff_state(
-    //                     &view_l.file_system,
-    //                     &view_r.file_system,
-    //                     temp_l.path(),
-    //                     temp_r.path(),
-    //                     &row.diff_state,
-    //                 );
-    //                 let marker = match row.diff_state {
-    //                     DiffState::OnlyInFirst(_) => "-",
-    //                     DiffState::OnlyInSecond(_) => "+",
-    //                     DiffState::Different(_, _) => "~",
-    //                     DiffState::Same(_, _) => "=",
-    //                     _ => "?",
-    //                 };
-    //                 (rel, row.depth, marker.to_string())
-    //             })
-    //             .collect();
-
-    //         let expected_diff: Vec<(String, FsNodeDepth, String)> = case
-    //             .expected
-    //             .iter()
-    //             .map(|(p, d, m)| (p.to_string(), *d, m.to_string()))
-    //             .collect();
-
-    //         let expected_output =
-    //             format_diff_tree_two(&left_tree_actual, &right_tree_actual, &expected_diff);
-    //         if actual_diff != expected_diff {
-    //             let actual_output =
-    //                 format_diff_tree_two(&left_tree_actual, &right_tree_actual, &actual_diff);
-
-    //             panic!(
-    //                 "\nCase Failed!: {}\n\nEXPECTED STATE:\n{}\nACTUAL STATE:\n{}",
-    //                 case.name, expected_output, actual_output
-    //             );
-    //         } else {
-    //             println!(
-    //                 "\nPASS: {}\n\nACTUAL STATE:\n{}",
-    //                 case.name, expected_output
-    //             );
-    //         }
-    //     }
-    // }
-
-    fn setup_fs(root: &Path, structure: &[(&str, bool)]) {
-        for (rel_path, is_dir) in structure {
-            let full_path = root.join(rel_path);
-            if *is_dir {
-                fs::create_dir_all(&full_path).unwrap();
-            } else {
-                if let Some(parent) = full_path.parent() {
-                    fs::create_dir_all(parent).unwrap();
-                }
-                File::create(&full_path).unwrap();
-            }
-        }
-    }
-
-    fn create_view(root: &Path, collapsed_paths: &[&str]) -> FileSystemView {
-        let model = FileSystemModel::new(root).expect("Failed to create FileSystemModel");
-        let mut collapsed = HashMap::new();
-        for path in collapsed_paths {
-            let id = find_id_by_rel_path(&model, root, path);
-            collapsed.insert(id, true);
-        }
-        FileSystemView {
-            file_system: Arc::new(model),
-            collapsed,
-            selected: HashMap::new(),
-        }
-    }
-
-    fn find_id_by_rel_path(fs: &FileSystemModel, root: &Path, rel: &str) -> FsNodeId {
-        let target = root.join(rel);
-        for (id, node, _) in fs.iter_tree() {
-            if node.as_path().as_ref() == target {
-                return id;
-            }
-        }
-        panic!("Test setup error: path {:?} not found in model", target);
     }
 }

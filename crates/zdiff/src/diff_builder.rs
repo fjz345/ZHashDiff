@@ -313,10 +313,7 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        diff_ir::{self},
-        lexer::{LexerDefault, RawToken},
-    };
+    use crate::lexer::{LexerDefault, RawToken};
 
     struct DiffTestHarness<'a> {
         s1: &'a str,
