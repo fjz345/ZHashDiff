@@ -674,10 +674,12 @@ impl<'a> ZApp {
                 response.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     if let Ok(mut line_number) = goto_input.parse::<usize>() {
-                        line_number += 1; // zero indexed
                         log::info!("Goto to line: {}", line_number);
                         *goto_open = false;
-                        *scroll_to_rows = goto_input.parse::<usize>().ok().map(|f| (f, None));
+                        *scroll_to_rows = goto_input
+                            .parse::<usize>()
+                            .ok()
+                            .map(|f| (f.saturating_sub(1), None));
                         goto_input.clear();
                     }
                 }
