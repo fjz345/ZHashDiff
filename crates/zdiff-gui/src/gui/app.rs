@@ -604,6 +604,19 @@ impl<'a> ZApp {
                         *diff_ctx = None;
                         *diff_ctx_invalidated = true;
                     }
+                    #[cfg(debug_assertions)]
+                    if ui.button("Load $D").clicked() {
+                        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
+                        *file_path_1 = Some(
+                            base.join("../../test/test_ignore_whitespace_extreme_simple/1.txt"),
+                        );
+                        *file_path_2 = Some(
+                            base.join("../../test/test_ignore_whitespace_extreme_simple/2.txt"),
+                        );
+
+                        *diff_ctx = None;
+                        *diff_ctx_invalidated = true;
+                    }
                 });
             });
         });

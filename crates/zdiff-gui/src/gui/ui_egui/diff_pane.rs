@@ -213,53 +213,52 @@ impl FileDiffPane {
                                     });
 
                                     row.col(|ui| {
+                                        let has_op = |tokens: &[(DiffResult, _)], op| {
+                                            tokens
+                                                .iter()
+                                                .any(|f| !f.0.hide_in_diff && f.0.operation == op)
+                                        };
+
+                                        let symbol =
+                                            |contains_delete: bool, contains_insert: bool| match (
+                                                contains_delete,
+                                                contains_insert,
+                                            ) {
+                                                (true, true) => "≠",
+                                                (true, false) => "-",
+                                                (false, true) => "+",
+                                                (false, false) => " ",
+                                            };
+
                                         let text = match (&diff_row.left, &diff_row.right) {
-                                            (LineContent::Void, _) => "+",
-                                            (_, LineContent::Void) => "-",
                                             (
-                                                LineContent::Code {
-                                                    tokens: tokens_1, ..
-                                                },
-                                                LineContent::Code {
-                                                    tokens: tokens_2, ..
-                                                },
+                                                LineContent::Void,
+                                                LineContent::Code { tokens, .. },
+                                            ) => symbol(
+                                                has_op(tokens, DiffOp::Delete),
+                                                has_op(tokens, DiffOp::Insert),
+                                            ),
+
+                                            (
+                                                LineContent::Code { tokens, .. },
+                                                LineContent::Void,
+                                            ) => symbol(
+                                                has_op(tokens, DiffOp::Delete),
+                                                has_op(tokens, DiffOp::Insert),
+                                            ),
+
+                                            (
+                                                LineContent::Code { tokens: t1, .. },
+                                                LineContent::Code { tokens: t2, .. },
                                             ) => {
-                                                let tokens_1_contains_delete =
-                                                    tokens_1.iter().any(|f| {
-                                                        !f.0.hide_in_diff
-                                                            && f.0.operation == DiffOp::Delete
-                                                    });
-                                                let tokens_1_contains_insert =
-                                                    tokens_1.iter().any(|f| {
-                                                        !f.0.hide_in_diff
-                                                            && f.0.operation == DiffOp::Insert
-                                                    });
-                                                let tokens_2_contains_insert =
-                                                    tokens_2.iter().any(|f| {
-                                                        !f.0.hide_in_diff
-                                                            && f.0.operation == DiffOp::Insert
-                                                    });
-                                                let tokens_2_contains_delete =
-                                                    tokens_2.iter().any(|f| {
-                                                        !f.0.hide_in_diff
-                                                            && f.0.operation == DiffOp::Delete
-                                                    });
+                                                let contains_delete = has_op(t1, DiffOp::Delete)
+                                                    || has_op(t2, DiffOp::Delete);
+                                                let contains_insert = has_op(t1, DiffOp::Insert)
+                                                    || has_op(t2, DiffOp::Insert);
 
-                                                let contains_delete = tokens_1_contains_delete
-                                                    || tokens_2_contains_delete;
-                                                let contains_insert = tokens_1_contains_insert
-                                                    || tokens_2_contains_insert;
-
-                                                let char = match (contains_delete, contains_insert)
-                                                {
-                                                    (true, true) => "≠",
-                                                    (true, false) => "-",
-                                                    (false, true) => "+",
-                                                    (false, false) => " ",
-                                                };
-
-                                                char
+                                                symbol(contains_delete, contains_insert)
                                             }
+
                                             _ => " ",
                                         };
                                         ui.centered_and_justified(|ui| {
