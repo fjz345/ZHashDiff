@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPane};
 use eframe::egui::{self, Layout, UiBuilder, scroll_area::ScrollBarVisibility};
@@ -22,6 +22,8 @@ pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
     pub scroll_to_row_span: &'a Option<(usize, Option<usize>)>,
     pub active_highlights: &'a Vec<usize>,
     pub conflict_cursor: &'a mut ClampedCursor,
+    pub load_file_1_request: &'a mut Option<PathBuf>,
+    pub load_file_2_request: &'a mut Option<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -157,6 +159,8 @@ impl FileDiffPane {
         let footer_height = 30.0;
         let table_height = (ui.available_height() - footer_height).max(0.0);
 
+        let mut left_rect = egui::Rect::NOTHING;
+        let mut right_rect = egui::Rect::NOTHING;
         ui.vertical(|ui| {
             ui.set_min_width(available_width);
             ui.allocate_ui(egui::vec2(ui.available_width(), table_height), |ui| {
@@ -228,6 +232,7 @@ impl FileDiffPane {
                                                     is_highlighted,
                                                 );
                                             });
+                                        left_rect = left_rect.union(ui.max_rect());
                                     });
 
                                     row.col(|ui| {
@@ -305,6 +310,7 @@ impl FileDiffPane {
                                                     is_highlighted,
                                                 );
                                             });
+                                        right_rect = right_rect.union(ui.max_rect());
                                     });
                                 });
                             });
@@ -323,6 +329,14 @@ impl FileDiffPane {
                 });
             });
         });
+
+        handle_drops(
+            ui,
+            &mut ctx.load_file_1_request,
+            &mut ctx.load_file_2_request,
+            left_rect,
+            right_rect,
+        );
 
         egui_tiles::UiResponse::None
     }
@@ -440,4 +454,47 @@ impl FileDiffPane {
             }
         }
     }
+}
+
+fn handle_drops(
+    ui: &egui::Ui,
+    load_file_1_request: &mut Option<PathBuf>,
+    load_file_2_request: &mut Option<PathBuf>,
+    rect1: egui::Rect,
+    rect2: egui::Rect,
+) -> bool {
+    assert!(
+        load_file_1_request.is_none() && load_file_2_request.is_none(),
+        "File load requests should be None when handling drops"
+    );
+
+    // let mut should_draw = false;
+    let did_drop = ui.input(|i| {
+        if let Some(drop_pos) = i.pointer.hover_pos() {
+            // should_draw = true;
+            for dropped_file in &i.raw.dropped_files {
+                if let Some(path) = &dropped_file.path {
+                    if rect1.contains(drop_pos) {
+                        *load_file_1_request = Some(path.clone());
+                        log::info!("File dropped on left pane: {:?}", path);
+                        return true;
+                    } else if rect2.contains(drop_pos) {
+                        *load_file_2_request = Some(path.clone());
+                        log::info!("File dropped on right pane: {:?}", path);
+                        return true;
+                    }
+                    break;
+                }
+            }
+        }
+        return false;
+    });
+    // if should_draw {
+    //     ui.painter()
+    //         .debug_rect(rect1, egui::Color32::RED, "Left Drop Zone");
+    //     ui.painter()
+    //         .debug_rect(rect2, egui::Color32::BLUE, "Right Drop Zone");
+    // }
+
+    return did_drop;
 }

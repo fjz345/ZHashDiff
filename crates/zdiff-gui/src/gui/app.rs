@@ -754,12 +754,21 @@ impl<'a> ZApp {
                     scroll_to_row_span: &scroll_to_rows,
                     active_highlights: &diff_ctx_active_highlights,
                     conflict_cursor: diff_ctx_conflict_cursor,
+                    load_file_1_request: &mut None,
+                    load_file_2_request: &mut None,
                 },
             };
 
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 self.tree.ui(&mut behavior, ui);
             });
+
+            if let Some(file_path) = behavior.ctx_file_diff.load_file_1_request.take() {
+                app_ctx.file_path_1 = Some(file_path);
+            }
+            if let Some(file_path) = behavior.ctx_file_diff.load_file_2_request.take() {
+                app_ctx.file_path_2 = Some(file_path);
+            }
 
             drop(behavior);
 
