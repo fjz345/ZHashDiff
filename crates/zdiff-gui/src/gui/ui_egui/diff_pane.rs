@@ -1,7 +1,9 @@
 use std::{path::PathBuf, sync::Arc};
 
 use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPane};
-use eframe::egui::{self, Layout, UiBuilder, scroll_area::ScrollBarVisibility};
+use eframe::egui::{
+    self, Layout, Slider, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility,
+};
 use serde::{Deserialize, Serialize};
 use zdiff::{
     cached_file::CachedFile,
@@ -150,7 +152,10 @@ impl FileDiffPane {
                     .0
                     .and_then(|f| Some(f.to_string()))
                     .unwrap_or_default();
-                if ui.text_edit_singleline(&mut text).changed() {
+                if ui
+                    .add(TextEdit::singleline(&mut text).desired_width(25.0))
+                    .changed()
+                {
                     let usize_parse = text.parse::<usize>();
                     if let Ok(as_usize) = usize_parse {
                         ctx.pivot.0 = Some(as_usize);
@@ -163,7 +168,10 @@ impl FileDiffPane {
                     .1
                     .and_then(|f| Some(f.to_string()))
                     .unwrap_or_default();
-                if ui.text_edit_singleline(&mut text).changed() {
+                if ui
+                    .add(TextEdit::singleline(&mut text).desired_width(25.0))
+                    .changed()
+                {
                     let usize_parse = text.parse::<usize>();
                     if let Ok(as_usize) = usize_parse {
                         ctx.pivot.1 = Some(as_usize);
