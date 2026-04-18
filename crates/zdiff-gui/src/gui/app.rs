@@ -26,9 +26,12 @@ use eframe::{
 };
 use egui_tiles::Tile;
 
-use crate::ui_egui::{
-    diff_pane::{FileDiffPane, FileDiffPaneCtx},
-    panes::{Pane, TreeBehavior},
+use crate::{
+    clamped_cursor::ClampedCursor,
+    ui_egui::{
+        diff_pane::{FileDiffPane, FileDiffPaneCtx},
+        panes::{Pane, TreeBehavior},
+    },
 };
 
 #[derive(Debug, Default)]
@@ -87,9 +90,7 @@ pub struct AppStateCtx {
     pub find_input: String,
 
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub diff_ctx_conflict_cursor: usize,
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub diff_ctx_conflict_input: bool,
+    pub diff_ctx_conflict_cursor: ClampedCursor,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub diff_ctx_active_highlights: Vec<usize>,
 }
@@ -116,7 +117,6 @@ impl Default for AppStateCtx {
             rx_file_path_1: Default::default(),
             rx_file_path_2: Default::default(),
             diff_ctx_conflict_cursor: Default::default(),
-            diff_ctx_conflict_input: Default::default(),
             diff_ctx_active_highlights: Default::default(),
         }
     }
@@ -644,7 +644,6 @@ impl<'a> ZApp {
                 rx_file_path_1,
                 rx_file_path_2,
                 diff_ctx_conflict_cursor,
-                diff_ctx_conflict_input,
                 diff_ctx_active_highlights,
             } = app_ctx;
             let diff_options_before = diff_options.clone();
@@ -770,12 +769,15 @@ impl<'a> ZApp {
                     file_target: file_2.clone(),
                     scroll_to_row_span: &scroll_to_rows,
                     active_highlights: &diff_ctx_active_highlights,
+                    conflict_cursor: diff_ctx_conflict_cursor,
                 },
             };
 
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 self.tree.ui(&mut behavior, ui);
             });
+
+            drop(behavior);
 
             *scroll_to_rows = None;
 
@@ -863,25 +865,17 @@ impl<'a> ZApp {
                     .as_mut()
                     .expect("State was not valid while processing inputs")
                     .ctx_mut();
-                let max_idx = ctx
-                    .diff_ctx
-                    .as_ref()
-                    .and_then(|f| Some(f.precomputed_diffs.len()))
-                    .unwrap_or_default()
-                    .saturating_sub(1);
                 if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num1))
                     || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowDown))
                 {
-                    ctx.diff_ctx_conflict_cursor = ctx.diff_ctx_conflict_cursor.saturating_sub(1);
-                    ctx.diff_ctx_conflict_input = true;
-                    log::info!("Conflict-- @{}", ctx.diff_ctx_conflict_cursor);
+                    ctx.diff_ctx_conflict_cursor.dec();
+                    log::info!("ConflictCursor-- @{}", ctx.diff_ctx_conflict_cursor.get());
                 }
                 if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num2))
                     || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowUp))
                 {
-                    ctx.diff_ctx_conflict_cursor = (ctx.diff_ctx_conflict_cursor + 1).min(max_idx);
-                    ctx.diff_ctx_conflict_input = true;
-                    log::info!("Conflict++ @{}", ctx.diff_ctx_conflict_cursor);
+                    ctx.diff_ctx_conflict_cursor.inc();
+                    log::info!("ConflictCursor++ @{}", ctx.diff_ctx_conflict_cursor.get());
                 }
             });
         }
@@ -904,6 +898,22 @@ impl eframe::App for ZApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Update conflict cursor before input processing
+        {
+            let app_ctx = self
+                .state
+                .as_mut()
+                .expect("State was not valid while processing inputs")
+                .ctx_mut();
+            let conflict_max = app_ctx
+                .diff_ctx
+                .as_ref()
+                .and_then(|f| Some(f.precomputed_diffs.len()))
+                .unwrap_or_default()
+                .saturating_sub(1);
+            app_ctx.diff_ctx_conflict_cursor.set_max(conflict_max);
+        }
+
         self.process_ctx_inputs(ctx, frame);
 
         let current_state = self
@@ -1020,18 +1030,16 @@ impl eframe::App for ZApp {
                     }
                 }
 
-                if state.diff_ctx_conflict_input {
+                if state.diff_ctx_conflict_cursor.has_changed() {
                     if let Some(diff_ctx) = state.diff_ctx.as_ref() {
                         let conflict_idx_span =
-                            diff_ctx.precomputed_diffs[state.diff_ctx_conflict_cursor];
+                            diff_ctx.precomputed_diffs[state.diff_ctx_conflict_cursor.get()];
                         state.scroll_to_rows =
                             Some((conflict_idx_span.0, Some(conflict_idx_span.1)));
                     }
                 }
 
                 self.ui(ctx, frame, &mut state);
-
-                state.diff_ctx_conflict_input = false;
 
                 AppState::Idle(state)
             }

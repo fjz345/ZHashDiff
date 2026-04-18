@@ -1,7 +1,7 @@
 use std::{fmt::Debug, path::PathBuf, sync::Arc};
 
-use crate::{app::DiffCtx, ui_egui::panes::ZAppPane};
-use eframe::egui::{self, UiBuilder, scroll_area::ScrollBarVisibility};
+use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPane};
+use eframe::egui::{self, Layout, Sense, UiBuilder, Vec2, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
 use zdiff::{
     diff_builder::{CachedFile, DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
@@ -20,6 +20,7 @@ pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
 
     pub scroll_to_row_span: &'a Option<(usize, Option<usize>)>,
     pub active_highlights: &'a Vec<usize>,
+    pub conflict_cursor: &'a mut ClampedCursor,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -57,45 +58,61 @@ impl FileDiffPane {
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
 
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            let button_size = egui::vec2(24.0, 24.0);
+            ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let button_size = egui::vec2(24.0, 24.0);
 
-            let ws_btn = egui::Button::new(egui::RichText::new("W").strong())
-                .selected(ctx.diff_options.ignore_whitespace);
-            if ui
-                .add_sized(button_size, ws_btn)
-                .on_hover_text("Ignore Whitespace")
-                .clicked()
-            {
-                ctx.diff_options.ignore_whitespace = !ctx.diff_options.ignore_whitespace;
-            }
-            let hl_btn = egui::Button::new(egui::RichText::new("H").strong())
-                .selected(ctx.diff_options.highlight_rows);
-            if ui
-                .add_sized(button_size, hl_btn)
-                .on_hover_text("Highlight Rows")
-                .clicked()
-            {
-                ctx.diff_options.highlight_rows = !ctx.diff_options.highlight_rows;
-            }
-            let gst_btn = egui::Button::new("👻") // Emoji works because of egui's emoji font
-                .selected(ctx.diff_options.ghost_rows);
-            if ui
-                .add_sized(button_size, gst_btn)
-                .on_hover_text("Ghost Rows")
-                .clicked()
-            {
-                ctx.diff_options.ghost_rows = !ctx.diff_options.ghost_rows;
-            }
-            let kw_btn = egui::Button::new(egui::RichText::new("K").strong())
-                .selected(ctx.diff_options.keyword_highlight);
-            if ui
-                .add_sized(button_size, kw_btn)
-                .on_hover_text("Keyword Highlight")
-                .clicked()
-            {
-                ctx.diff_options.keyword_highlight = !ctx.diff_options.keyword_highlight;
-            }
+                let toggle_btn = |ui: &mut egui::Ui,
+                                  value: &mut bool,
+                                  label: egui::WidgetText,
+                                  tooltip: &str| {
+                    let btn = egui::Button::new(label).selected(*value);
+
+                    if ui
+                        .add_sized(button_size, btn)
+                        .on_hover_text(tooltip)
+                        .clicked()
+                    {
+                        *value = !*value;
+                    }
+                };
+                toggle_btn(
+                    ui,
+                    &mut ctx.diff_options.ignore_whitespace,
+                    egui::RichText::new("W").strong().into(),
+                    "Ignore Whitespace",
+                );
+                toggle_btn(
+                    ui,
+                    &mut ctx.diff_options.highlight_rows,
+                    egui::RichText::new("H").strong().into(),
+                    "Highlight Rows",
+                );
+                toggle_btn(
+                    ui,
+                    &mut ctx.diff_options.ghost_rows,
+                    "👻".into(),
+                    "Ghost Rows",
+                );
+                toggle_btn(
+                    ui,
+                    &mut ctx.diff_options.keyword_highlight,
+                    egui::RichText::new("K").strong().into(),
+                    "Keyword Highlight",
+                );
+            });
+            ui.separator();
+
+            ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if ui.button("<").clicked() {
+                    ctx.conflict_cursor.dec();
+                }
+                if ui.button(ctx.conflict_cursor.get().to_string()).clicked() {}
+                if ui.button(">").clicked() {
+                    ctx.conflict_cursor.inc();
+                }
+            });
         });
 
         let diff_rows = ctx.diff_ctx.as_ref().and_then(|f| Some(&f.diff_rows));

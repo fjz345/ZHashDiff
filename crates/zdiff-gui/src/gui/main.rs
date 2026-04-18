@@ -6,6 +6,7 @@ use zdiff::lexer::RawToken;
 use crate::app::ZApp;
 
 mod app;
+mod clamped_cursor;
 pub mod ui_egui;
 
 fn main() -> eframe::Result {
