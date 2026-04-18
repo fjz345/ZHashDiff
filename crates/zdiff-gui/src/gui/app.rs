@@ -850,13 +850,13 @@ impl<'a> ZApp {
                     .expect("State was not valid while processing inputs")
                     .ctx_mut();
                 if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num1))
-                    || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowDown))
+                    || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowUp))
                 {
                     ctx.diff_ctx_conflict_cursor.dec();
                     log::info!("ConflictCursor-- @{}", ctx.diff_ctx_conflict_cursor.get());
                 }
                 if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num2))
-                    || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowUp))
+                    || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowDown))
                 {
                     ctx.diff_ctx_conflict_cursor.inc();
                     log::info!("ConflictCursor++ @{}", ctx.diff_ctx_conflict_cursor.get());
