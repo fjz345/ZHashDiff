@@ -9,8 +9,6 @@ GUI for zdiff crate
 * Powerful diffing view
 
 ## Todo
-* add drag and drop for source & target (same as zhashdiff)
-
 * Ctrl+F Search (show number hits, allow go to next hit)
 * Line Pivot
 
