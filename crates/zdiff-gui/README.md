@@ -9,7 +9,6 @@ GUI for zdiff crate
 * Powerful diffing view
 
 ## Todo
-* Ctrl+F Search (show number hits, allow go to next hit)
 * Line Pivot
 
 * user defined comparison per file format
