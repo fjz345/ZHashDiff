@@ -1,3 +1,5 @@
+use std::usize::MAX;
+
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ClampedCursor {
@@ -38,6 +40,14 @@ impl ClampedCursor {
     pub fn set(&mut self, new_cursor: usize) {
         self.prev_cursor = self.cursor;
         self.cursor = new_cursor;
+    }
+    pub fn invalidate_ack(&mut self) {
+        assert_ne!(
+            self.cursor,
+            usize::MAX,
+            "Cursor should not be MAX when invalidating"
+        );
+        self.prev_cursor = usize::MAX;
     }
     pub fn set_max(&mut self, new_max: usize) {
         self.max = new_max;

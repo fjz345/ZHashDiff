@@ -41,7 +41,7 @@ pub struct DiffCtx {
     pub one_sided_diff_is_left: Option<bool>,
     pub diff_option: DiffBuilderOptions,
     pub precomputed_diffs: Vec<(usize, usize)>, // list indicies of diff_rows of DiffOp != Equal from diff_rows
-    pub precomputed_file_rows: (Vec<usize>, Vec<usize>), // list indicies of diff_rows of DiffOp != Equal from diff_rows
+    pub precomputed_file_rows: (Vec<usize>, Vec<usize>), // line mapping from DiffRow index to DiffRow line number
     // Myers
     pub diff_rows: Vec<DiffRow>,
     pub num_add_deletes: (u32, u32),
@@ -85,6 +85,12 @@ pub struct AppStateCtx {
     pub find_open: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub find_input: String,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub find_cursor: ClampedCursor,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub find_found_lines_1: Vec<usize>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub find_found_lines_2: Vec<usize>,
 
     #[cfg_attr(feature = "serde", serde(skip))]
     pub diff_ctx_conflict_cursor: ClampedCursor,
@@ -116,6 +122,9 @@ impl Default for AppStateCtx {
             diff_ctx_conflict_cursor: Default::default(),
             diff_ctx_active_highlights: Default::default(),
             diff_lexer_mode: LEXER_MODE_DEFAULT,
+            find_cursor: Default::default(),
+            find_found_lines_1: Default::default(),
+            find_found_lines_2: Default::default(),
         }
     }
 }
@@ -626,6 +635,9 @@ impl<'a> ZApp {
                 diff_ctx_in_progress: _,
                 rx: _,
                 diff_lexer_mode: lexer_mode,
+                find_cursor,
+                find_found_lines_1,
+                find_found_lines_2,
             } = app_ctx;
             let diff_options_before = diff_options.clone();
             self.show_menu(
@@ -679,51 +691,31 @@ impl<'a> ZApp {
                 response.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     log::info!("Finding line: {}", find_input);
-                    *find_open = false;
+                    *find_found_lines_1 = file_1
+                        .as_ref()
+                        .map(|f| f.content_search(&find_input))
+                        .unwrap_or_default();
+                    *find_found_lines_2 = file_2
+                        .as_ref()
+                        .map(|f| f.content_search(&find_input))
+                        .unwrap_or_default();
 
-                    if let Some(diff) = diff_ctx.as_ref() {
-                        if let Some(found_in_file_1) =
-                            file_1.as_ref().map(|f| f.content_search(&find_input))
-                        {
-                            if let Some(&first_line) = found_in_file_1.first() {
-                                // Safe lookup with .get()
-                                let start_row = diff
-                                    .precomputed_file_rows
-                                    .0
-                                    .get(first_line)
-                                    .copied()
-                                    .unwrap_or(0);
-                                let end_row = found_in_file_1
-                                    .last()
-                                    .and_then(|&l| diff.precomputed_file_rows.0.get(l))
-                                    .copied();
+                    log::info!("Found (in #1): {:?}", find_found_lines_1);
+                    log::info!("Found (in #2): {:?}", find_found_lines_2);
 
-                                *scroll_to_rows = Some((start_row, end_row));
-                            }
-                        } else if let Some(found_in_file_2) =
-                            file_2.as_ref().map(|f| f.content_search(&find_input))
-                        {
-                            if let Some(&first_line) = found_in_file_2.first() {
-                                // Safe lookup with .get()
-                                let start_row = diff
-                                    .precomputed_file_rows
-                                    .1
-                                    .get(first_line)
-                                    .copied()
-                                    .unwrap_or(0);
-                                let end_row = found_in_file_2
-                                    .last()
-                                    .and_then(|&l| diff.precomputed_file_rows.1.get(l))
-                                    .copied();
-
-                                *scroll_to_rows = Some((start_row, end_row));
-                            }
-                        }
+                    if find_found_lines_1.len() > 0 || find_found_lines_2.len() > 0 {
+                        find_cursor.set_max(
+                            find_found_lines_1
+                                .len()
+                                .max(find_found_lines_2.len())
+                                .saturating_sub(1),
+                        );
+                        find_cursor.set(0);
+                        find_cursor.invalidate_ack();
                     }
-                    if let Some(scroll_to) = &scroll_to_rows {
-                        log::info!("Navigating to line: {:?}", scroll_to);
-                    }
+
                     find_input.clear();
+                    *find_open = false;
                 }
             });
             if !find_window_open {
@@ -819,6 +811,11 @@ impl<'a> ZApp {
     }
 
     fn process_ctx_inputs(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let app_state_ctx = self
+            .state
+            .as_mut()
+            .expect("State was not valid while processing inputs")
+            .ctx_mut();
         let mut user_quit: bool = false;
         {
             let _input_ctx = ctx.input(|r| {
@@ -840,35 +837,44 @@ impl<'a> ZApp {
                 }
 
                 if r.modifiers.ctrl && r.key_down(egui::Key::G) {
-                    self.state
-                        .as_mut()
-                        .expect("State was not valid while processing inputs")
-                        .ctx_mut()
-                        .goto_open = true;
+                    app_state_ctx.goto_open = true;
                 }
                 if r.modifiers.ctrl && r.key_down(egui::Key::F) {
-                    self.state
-                        .as_mut()
-                        .expect("State was not valid while processing inputs")
-                        .ctx_mut()
-                        .find_open = true;
+                    app_state_ctx.find_open = true;
                 }
-                let ctx = self
-                    .state
-                    .as_mut()
-                    .expect("State was not valid while processing inputs")
-                    .ctx_mut();
                 if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num1))
                     || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowUp))
                 {
-                    ctx.diff_ctx_conflict_cursor.dec();
-                    log::info!("ConflictCursor-- @{}", ctx.diff_ctx_conflict_cursor.get());
+                    app_state_ctx.diff_ctx_conflict_cursor.dec();
+                    log::info!(
+                        "ConflictCursor-- @{}",
+                        app_state_ctx.diff_ctx_conflict_cursor.get()
+                    );
                 }
                 if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num2))
                     || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowDown))
                 {
-                    ctx.diff_ctx_conflict_cursor.inc();
-                    log::info!("ConflictCursor++ @{}", ctx.diff_ctx_conflict_cursor.get());
+                    app_state_ctx.diff_ctx_conflict_cursor.inc();
+                    log::info!(
+                        "ConflictCursor++ @{}",
+                        app_state_ctx.diff_ctx_conflict_cursor.get()
+                    );
+                }
+
+                if r.modifiers.shift && r.key_pressed(egui::Key::Enter) {
+                    if app_state_ctx.find_found_lines_1.len() > 0
+                        || app_state_ctx.find_found_lines_2.len() > 0
+                    {
+                        app_state_ctx.find_cursor.dec();
+                        log::info!("FindCursor-- @{}", app_state_ctx.find_cursor.get());
+                    }
+                } else if r.key_pressed(egui::Key::Enter) {
+                    if app_state_ctx.find_found_lines_1.len() > 0
+                        || app_state_ctx.find_found_lines_2.len() > 0
+                    {
+                        app_state_ctx.find_cursor.inc();
+                        log::info!("FindCursor++ @{}", app_state_ctx.find_cursor.get());
+                    }
                 }
             });
         }
@@ -1035,6 +1041,27 @@ impl eframe::App for ZApp {
                             state.diff_ctx_active_highlights.clear();
                         }
                     }
+                }
+
+                // FIND
+                if state.find_cursor.has_changed() {
+                    state.find_cursor.ack_change();
+                    let find_idx_1 = state
+                        .find_found_lines_1
+                        .get(state.find_cursor.get())
+                        .cloned();
+                    let find_idx_2 = state
+                        .find_found_lines_2
+                        .get(state.find_cursor.get())
+                        .cloned();
+
+                    // TODO: Improve so that user can decide which 1/2 file search operates on
+                    state.scroll_to_rows =
+                        Some((find_idx_1.unwrap_or(find_idx_2.unwrap_or_default()), None));
+                }
+
+                if let Some(scroll_to) = &state.scroll_to_rows {
+                    log::info!("Navigating to line: {:?}", scroll_to);
                 }
 
                 self.ui(ctx, frame, &mut state);
