@@ -13,7 +13,7 @@ use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
-    lexer::{LexerDefault, RawToken},
+    lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_TOKENIZE, LexerDefault, RawToken},
     myers::{myers_backtrack, myers_count_add_deletes, myers_diff_trace},
 };
 
@@ -189,111 +189,51 @@ impl AppStateCtx {
         file_2: Option<Arc<CachedFile<RawToken>>>,
         options: &DiffBuilderOptions,
     ) -> DiffCtx {
-        match (&file_1, &file_2) {
-            (Some(c1), Some(c2)) => {
-                let t1 = &c1.tokens;
-                let t2 = &c2.tokens;
-                let lex1 = LexerDefault::new(&c1.contents);
-                let lex2 = LexerDefault::new(&c2.contents);
+        let (c1, c2, one_sided_diff_is_left) = match (&file_1, &file_2) {
+            (Some(c1), Some(c2)) => (c1, c2, None),
+            (Some(c1), None) => (c1, c1, Some(true)),
+            (None, Some(c2)) => (c2, c2, Some(false)),
+            (None, None) => panic!("Only call this function with one of two files valid"),
+        };
 
-                let cmp = |a: &RawToken, b: &RawToken| {
-                    a.as_ref().kind == b.as_ref().kind && lex1.token_value(a) == lex2.token_value(b)
-                };
+        let t1 = &c1.tokens;
+        let t2 = &c2.tokens;
 
-                let trace = myers_diff_trace(t1, t2, cmp);
-                let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
-                let diff_ir = DiffIR::new(&path);
+        let lex1 = LexerDefault::new(&c1.contents);
+        let lex2 = LexerDefault::new(&c2.contents);
 
-                let c1_hash = hash_file(&c1.path).expect("Hash failed");
-                let c2_hash = hash_file(&c2.path).expect("Hash failed");
+        let cmp = |a: &RawToken, b: &RawToken| {
+            a.as_ref().kind == b.as_ref().kind && lex1.token_value(a) == lex2.token_value(b)
+        };
 
-                let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
-                let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
-                let line_count_1 = c1.metadata.line_starts.len();
-                let line_count_2 = c2.metadata.line_starts.len();
-                let precomputed_file_rows =
-                    Self::precompute_file_rows(&diff_rows, line_count_1, line_count_2);
+        let trace = myers_diff_trace(t1, t2, cmp);
+        let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
+        let diff_ir = DiffIR::new(&path);
 
-                DiffCtx {
-                    file_1_hash: c1_hash,
-                    file_2_hash: c2_hash,
-                    diff_option: options.clone(),
-                    diff_rows,
-                    num_add_deletes: myers_count_add_deletes(&path),
-                    one_sided_diff_is_left: None,
-                    precomputed_diffs,
-                    precomputed_file_rows,
-                }
-            }
-            (Some(c1), None) => {
-                let c2 = c1;
-                let t1 = &c1.tokens;
-                let t2 = &c2.tokens;
-                let lex1 = LexerDefault::new(&c1.contents);
-                let lex2 = LexerDefault::new(&c2.contents);
+        let hash1 = hash_file(&c1.path).expect("Hash failed");
+        let hash2 = match one_sided_diff_is_left {
+            None => hash_file(&c2.path).expect("Hash failed"),
+            Some(_) => hash1.clone(),
+        };
 
-                let cmp = |a: &RawToken, b: &RawToken| {
-                    a.as_ref().kind == b.as_ref().kind && lex1.token_value(a) == lex2.token_value(b)
-                };
+        let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
+        let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
 
-                let trace = myers_diff_trace(t1, t2, cmp);
-                let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
-                let diff_ir = DiffIR::new(&path);
+        let line_count_1 = c1.metadata.line_starts.len();
+        let line_count_2 = c2.metadata.line_starts.len();
 
-                let c1_hash = hash_file(&c1.path).expect("Hash failed");
-                let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
-                let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
-                let line_count_1 = c1.metadata.line_starts.len();
-                let line_count_2 = c2.metadata.line_starts.len();
-                let precomputed_file_rows =
-                    Self::precompute_file_rows(&diff_rows, line_count_1, line_count_2);
-                DiffCtx {
-                    file_1_hash: c1_hash.clone(),
-                    file_2_hash: c1_hash,
-                    diff_option: options.clone(),
-                    diff_rows,
-                    num_add_deletes: myers_count_add_deletes(&path),
-                    one_sided_diff_is_left: Some(true),
-                    precomputed_diffs,
-                    precomputed_file_rows,
-                }
-            }
-            (None, Some(c2)) => {
-                let c1 = c2;
-                let t1 = &c1.tokens;
-                let t2 = &c2.tokens;
-                let lex1 = LexerDefault::new(&c1.contents);
-                let lex2 = LexerDefault::new(&c2.contents);
+        let precomputed_file_rows =
+            Self::precompute_file_rows(&diff_rows, line_count_1, line_count_2);
 
-                let cmp = |a: &RawToken, b: &RawToken| {
-                    a.as_ref().kind == b.as_ref().kind && lex1.token_value(a) == lex2.token_value(b)
-                };
-
-                let trace = myers_diff_trace(t1, t2, cmp);
-                let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
-                let diff_ir = DiffIR::new(&path);
-
-                let c2_hash = hash_file(&c2.path).expect("Hash failed");
-                let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
-                let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
-                let line_count_1 = c1.metadata.line_starts.len();
-                let line_count_2 = c2.metadata.line_starts.len();
-                let precomputed_file_rows =
-                    Self::precompute_file_rows(&diff_rows, line_count_1, line_count_2);
-                DiffCtx {
-                    file_1_hash: c2_hash.clone(),
-                    file_2_hash: c2_hash,
-                    diff_option: options.clone(),
-                    diff_rows,
-                    num_add_deletes: myers_count_add_deletes(&path),
-                    one_sided_diff_is_left: Some(false),
-                    precomputed_diffs,
-                    precomputed_file_rows,
-                }
-            }
-            (None, None) => {
-                panic!("Only call this function with one of two files valid")
-            }
+        DiffCtx {
+            file_1_hash: hash1,
+            file_2_hash: hash2,
+            diff_option: options.clone(),
+            diff_rows,
+            num_add_deletes: myers_count_add_deletes(&path),
+            one_sided_diff_is_left,
+            precomputed_diffs,
+            precomputed_file_rows,
         }
     }
 }
@@ -546,6 +486,15 @@ impl<'a> ZApp {
                     if ui.button("Goto").clicked() {
                         *goto_open = true;
                     }
+                });
+
+                ui.menu_button("Options", |ui| {
+                    let mut lexer_mode = 0;
+                    ui.menu_button("Lexer", |ui| {
+                        ui.radio_value(&mut lexer_mode, LEXER_MODE_DEFAULT, "LexerDefault");
+                        ui.radio_value(&mut lexer_mode, LEXER_MODE_GREEDY, "LexerGreedy");
+                        ui.radio_value(&mut lexer_mode, LEXER_MODE_TOKENIZE, "LexerTokenize");
+                    });
                 });
 
                 ui.menu_button("Debug", |ui| {
