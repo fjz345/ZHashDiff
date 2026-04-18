@@ -147,6 +147,7 @@ impl FileSystemModel {
         let parent_id = self.get_parent_id(node_id)?;
         self.get_node(parent_id)
     }
+    #[allow(dead_code)]
     fn get_parent_mut(&mut self, node_id: FsNodeId) -> Option<&mut FsNode> {
         let parent_id = self.get_parent_id(node_id)?;
         self.get_node_mut(parent_id)

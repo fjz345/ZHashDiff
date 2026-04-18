@@ -20,12 +20,12 @@ pub struct DiffIR {
     pub entries: Vec<DiffResult>,
     pub distance: i32,
 }
-type DiffIR_NoWS = DiffIR;
+type DiffIRNoWs = DiffIR;
 pub fn diff_ir_to_no_ws<T: RawTokenTrait>(
     mut diff_ir: DiffIR,
     tokens_source: Option<&'_ [T]>,
     tokens_target: Option<&'_ [T]>,
-) -> DiffIR_NoWS {
+) -> DiffIRNoWs {
     for entry in &mut diff_ir.entries {
         let should_hide = |token: &T| -> bool {
             if token.as_ref().kind.is_whitespace() {
@@ -65,7 +65,7 @@ pub fn diff_ir_to_no_ws<T: RawTokenTrait>(
         }
     }
 
-    DiffIR_NoWS {
+    DiffIRNoWs {
         entries: diff_ir.entries,
         distance: diff_ir.distance,
     }

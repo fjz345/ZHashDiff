@@ -1,7 +1,6 @@
 use std::env;
 
 use eframe::egui;
-use zdiff::lexer::RawToken;
 
 use crate::app::ZApp;
 

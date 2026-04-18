@@ -1,13 +1,13 @@
-use std::{fmt::Debug, path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPane};
-use eframe::egui::{self, Layout, Sense, UiBuilder, Vec2, scroll_area::ScrollBarVisibility};
+use eframe::egui::{self, Layout, UiBuilder, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
 use zdiff::{
     cached_file::CachedFile,
-    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
+    diff_builder::{DiffBuilderOptions, LineContent},
     diff_ir::{DiffOp, DiffResult},
-    lexer::{Lexer, RawToken, RawTokenTrait},
+    lexer::RawTokenTrait,
 };
 
 pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {

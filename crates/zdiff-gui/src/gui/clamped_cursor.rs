@@ -1,8 +1,4 @@
 #[derive(Debug)]
-#[cfg_attr(
-    feature = "serde",
-    // serde(bound(serialize = "", deserialize = "T: RawToken"))
-)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ClampedCursor {
     #[cfg_attr(feature = "serde", serde(skip))]

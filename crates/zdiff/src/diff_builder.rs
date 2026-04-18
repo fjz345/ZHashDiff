@@ -1,15 +1,7 @@
-use std::{
-    io,
-    ops::Range,
-    path::{Path, PathBuf},
-};
-
 use crate::{
     diff_ir::{DiffIR, DiffOp, DiffResult, diff_ir_to_no_ws},
-    lexer::{Lexer, LexerDefault, RawTokenTrait, TokenKind},
-    read_file_contents,
+    lexer::{RawTokenTrait, TokenKind},
 };
-use zcommon::hash::hash_file;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Color32(pub [u8; 4]);

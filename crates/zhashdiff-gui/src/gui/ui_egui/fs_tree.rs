@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
     io,
-    path::Path,
     sync::Arc,
 };
 
@@ -12,7 +11,7 @@ use zcommon::hash::HashService;
 use zhashdiff::{
     comparison::{PathComparissonMethod, compare_paths},
     external_diff_tool::{DiffToolConfig, open_diff_tool},
-    fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, FsNodeKind, TreeIter},
+    fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, TreeIter},
 };
 
 use zcommon::ui_egui::common::{
@@ -847,10 +846,7 @@ fn render_row_folder_tree_diff_column(
     let is_collapsed_2 = state2.and_then(|f| Some(f.0)).unwrap_or(false);
     let is_parent_collapsed_2 = state2.and_then(|f| Some(f.1)).unwrap_or(false);
     // If both parets are collapsed or invalid, hide the whole row (skip index)
-    let hide_row =
-        (is_parent_collapsed_1 || state1.is_none()) && (is_parent_collapsed_2 || state2.is_none());
     // --- Left Column (Folder 1) ---
-    // if !hide_row Need to set total_rows if we hide
     {
         if !is_parent_collapsed_1 {
             row.col(|ui| {

@@ -1,11 +1,9 @@
-use std::sync::Arc;
-
 use eframe::egui::{self, ScrollArea};
 use serde::{Deserialize, Serialize};
-use zhashdiff::{external_diff_tool::DiffToolConfig, fs::FileSystemModel};
+use zhashdiff::external_diff_tool::DiffToolConfig;
 
 use crate::ui_egui::{
-    fs_tree::{DiffState, FileSystemView, draw_ui_two_folder_tree_with_diff},
+    fs_tree::{DiffState, draw_ui_two_folder_tree_with_diff},
     panes::{PathDiffView, ZAppPane},
 };
 
@@ -50,11 +48,17 @@ impl PathDiffPane {
             ];
 
             let is_anything_collapsed = views.iter().flatten().any(|v| {
-                v.file_system.get_root().children()
+                v.file_system
+                    .get_root()
+                    .children()
                     .map_or(false, |children| v.is_anything_collapsed_slice(children))
             });
 
-            let button_text = if is_anything_collapsed { "Expand All" } else { "Collapse All" };
+            let button_text = if is_anything_collapsed {
+                "Expand All"
+            } else {
+                "Collapse All"
+            };
 
             if ui.button(button_text).clicked() {
                 for v in views.into_iter().flatten() {
@@ -63,7 +67,7 @@ impl PathDiffPane {
                     }
                 }
             }
-            
+
             if ui.button("Expand Diffs Only").clicked() {
                 let views = [
                     ctx.path_diff_view.file_system_1_view.as_mut(),
@@ -110,15 +114,13 @@ impl PathDiffPane {
         if self.open_dir_window_1 {
             self.open_dir_window_1 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                *ctx.path_diff_view.file_system_1_root_path =
-                    Some(path);
+                *ctx.path_diff_view.file_system_1_root_path = Some(path);
             }
         }
         if self.open_dir_window_2 {
             self.open_dir_window_2 = false;
             if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                *ctx.path_diff_view.file_system_2_root_path =
-                    Some(path);
+                *ctx.path_diff_view.file_system_2_root_path = Some(path);
             }
         }
 

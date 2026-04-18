@@ -1,24 +1,20 @@
 use eframe::egui::{self, Layout, PointerButton};
 use serde::{Deserialize, Serialize};
 use std::{
-    default, env, io,
-    ops::Range,
-    path::{Path, PathBuf},
-    result,
+    env,
+    path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc,
         mpsc::{self, Receiver, channel},
     },
-    thread::Thread,
 };
 use zcommon::{hash::hash_file, ui_egui::common::show_custom_popup};
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
-    lexer::{Lexer, LexerDefault, RawToken, TokenKind},
+    lexer::{LexerDefault, RawToken},
     myers::{myers_backtrack, myers_count_add_deletes, myers_diff_trace},
-    read_file_contents,
 };
 
 use eframe::{
@@ -49,10 +45,6 @@ pub struct DiffCtx {
 }
 
 #[derive(Debug)]
-#[cfg_attr(
-    feature = "serde",
-    // serde(bound(serialize = "", deserialize = "T: RawToken"))
-)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AppStateCtx {
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -574,49 +566,69 @@ impl<'a> ZApp {
                         *diff_ctx_invalidated = true;
                     }
                     #[cfg(debug_assertions)]
-                    if ui.button("Load $A").clicked() {
-                        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
-                        *file_path_1 =
-                            Some(base.join("../../test/rust_files_diff_1/advanced_rust.rs"));
-                        *file_path_2 =
-                            Some(base.join("../../test/rust_files_diff_1/advanced_rust_2.rs"));
+                    {
+                        let load_btn = |ui: &mut egui::Ui,
+                                        label: &str,
+                                        file_path_1: &mut Option<std::path::PathBuf>,
+                                        file_path_2: &mut Option<std::path::PathBuf>,
+                                        diff_ctx: &mut Option<_>,
+                                        diff_ctx_invalidated: &mut bool,
+                                        p1: &str,
+                                        p2: &str| {
+                            if ui.button(label).clicked() {
+                                let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
-                        *diff_ctx = None;
-                        *diff_ctx_invalidated = true;
-                    }
-                    #[cfg(debug_assertions)]
-                    if ui.button("Load $B").clicked() {
-                        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
-                        *file_path_1 =
-                            Some(base.join("../../test/rust_files_diff_1/imgui.1.91.1.h"));
-                        *file_path_2 = Some(base.join("../../test/rust_files_diff_1/imgui.h"));
+                                *file_path_1 = Some(base.join(p1));
+                                *file_path_2 = Some(base.join(p2));
 
-                        *diff_ctx = None;
-                        *diff_ctx_invalidated = true;
-                    }
-                    #[cfg(debug_assertions)]
-                    if ui.button("Load $C").clicked() {
-                        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
-                        *file_path_1 =
-                            Some(base.join("../../test/test_ignore_whitespace_simple/1.txt"));
-                        *file_path_2 =
-                            Some(base.join("../../test/test_ignore_whitespace_simple/2.txt"));
+                                *diff_ctx = None;
+                                *diff_ctx_invalidated = true;
+                            }
+                        };
 
-                        *diff_ctx = None;
-                        *diff_ctx_invalidated = true;
-                    }
-                    #[cfg(debug_assertions)]
-                    if ui.button("Load $D").clicked() {
-                        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
-                        *file_path_1 = Some(
-                            base.join("../../test/test_ignore_whitespace_extreme_simple/1.txt"),
-                        );
-                        *file_path_2 = Some(
-                            base.join("../../test/test_ignore_whitespace_extreme_simple/2.txt"),
+                        load_btn(
+                            ui,
+                            "Load $A",
+                            file_path_1,
+                            file_path_2,
+                            diff_ctx,
+                            diff_ctx_invalidated,
+                            "../../test/rust_files_diff_1/advanced_rust.rs",
+                            "../../test/rust_files_diff_1/advanced_rust_2.rs",
                         );
 
-                        *diff_ctx = None;
-                        *diff_ctx_invalidated = true;
+                        load_btn(
+                            ui,
+                            "Load $B",
+                            file_path_1,
+                            file_path_2,
+                            diff_ctx,
+                            diff_ctx_invalidated,
+                            "../../test/rust_files_diff_1/imgui.1.91.1.h",
+                            "../../test/rust_files_diff_1/imgui.h",
+                        );
+
+                        load_btn(
+                            ui,
+                            "Load $C",
+                            file_path_1,
+                            file_path_2,
+                            diff_ctx,
+                            diff_ctx_invalidated,
+                            "../../test/test_ignore_whitespace_simple/1.txt",
+                            "../../test/test_ignore_whitespace_simple/2.txt",
+                        );
+
+                        load_btn(
+                            ui,
+                            "Load $D",
+                            file_path_1,
+                            file_path_2,
+                            diff_ctx,
+                            diff_ctx_invalidated,
+                            "../../test/test_ignore_whitespace_extreme_simple/1.txt",
+                            "../../test/test_ignore_whitespace_extreme_simple/2.txt",
+                        );
                     }
                 });
             });
@@ -634,8 +646,6 @@ impl<'a> ZApp {
                 diff_options,
                 file_1,
                 file_2,
-                rx,
-                diff_ctx_in_progress,
                 diff_ctx_invalidated,
                 scroll_to_rows,
                 goto_open,
@@ -646,6 +656,8 @@ impl<'a> ZApp {
                 rx_file_path_2,
                 diff_ctx_conflict_cursor,
                 diff_ctx_active_highlights,
+                diff_ctx_in_progress: _,
+                rx: _,
             } = app_ctx;
             let diff_options_before = diff_options.clone();
             self.show_menu(
@@ -674,7 +686,7 @@ impl<'a> ZApp {
                 );
                 response.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    if let Ok(mut line_number) = goto_input.parse::<usize>() {
+                    if let Ok(line_number) = goto_input.parse::<usize>() {
                         log::info!("Goto to line: {}", line_number);
                         *goto_open = false;
                         *scroll_to_rows = goto_input
