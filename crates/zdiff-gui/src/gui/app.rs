@@ -13,7 +13,8 @@ use std::{
 };
 use zcommon::{hash::hash_file, ui_egui::common::show_custom_popup};
 use zdiff::{
-    diff_builder::{CachedFile, DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
+    cached_file::CachedFile,
+    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
     lexer::{Lexer, LexerDefault, RawToken, TokenKind},
     myers::{myers_backtrack, myers_count_add_deletes, myers_diff_trace},

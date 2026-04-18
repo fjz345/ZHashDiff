@@ -4,7 +4,8 @@ use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPan
 use eframe::egui::{self, Layout, Sense, UiBuilder, Vec2, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
 use zdiff::{
-    diff_builder::{CachedFile, DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
+    cached_file::CachedFile,
+    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffOp, DiffResult},
     lexer::{Lexer, RawToken, RawTokenTrait},
 };
