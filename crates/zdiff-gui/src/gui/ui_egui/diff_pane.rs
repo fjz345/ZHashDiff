@@ -25,6 +25,7 @@ pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
     pub find_cursor: &'a mut ClampedCursor,
     pub load_file_1_request: &'a mut Option<PathBuf>,
     pub load_file_2_request: &'a mut Option<PathBuf>,
+    pub pivot: &'a mut (Option<usize>, Option<usize>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -139,6 +140,36 @@ impl FileDiffPane {
                 {}
                 if ui.button(">").clicked() {
                     ctx.find_cursor.inc();
+                }
+            });
+            ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label("Pivot");
+                let mut text = ctx
+                    .pivot
+                    .0
+                    .and_then(|f| Some(f.to_string()))
+                    .unwrap_or_default();
+                if ui.text_edit_singleline(&mut text).changed() {
+                    let usize_parse = text.parse::<usize>();
+                    if let Ok(as_usize) = usize_parse {
+                        ctx.pivot.0 = Some(as_usize);
+                    } else {
+                        ctx.pivot.0 = None;
+                    }
+                }
+                let mut text = ctx
+                    .pivot
+                    .1
+                    .and_then(|f| Some(f.to_string()))
+                    .unwrap_or_default();
+                if ui.text_edit_singleline(&mut text).changed() {
+                    let usize_parse = text.parse::<usize>();
+                    if let Ok(as_usize) = usize_parse {
+                        ctx.pivot.1 = Some(as_usize);
+                    } else {
+                        ctx.pivot.1 = None;
+                    }
                 }
             });
         });

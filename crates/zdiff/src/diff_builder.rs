@@ -42,6 +42,7 @@ pub struct DiffBuilderOptions {
     pub highlight_rows: bool,
     pub ghost_rows: bool,
     pub keyword_highlight: bool,
+    pub pivot_lines: Option<(usize, usize)>,
 }
 impl Default for DiffBuilderOptions {
     fn default() -> Self {
@@ -50,7 +51,23 @@ impl Default for DiffBuilderOptions {
             highlight_rows: true,
             ghost_rows: true,
             keyword_highlight: true,
+            pivot_lines: None,
         }
+    }
+}
+
+impl DiffBuilderOptions {
+    pub fn need_invalidation(old: &Self, new: &Self) -> bool {
+        let mut ret = old.ghost_rows != new.ghost_rows
+            || old.highlight_rows != new.highlight_rows
+            || old.ignore_whitespace != new.ignore_whitespace
+            || old.keyword_highlight != new.keyword_highlight;
+        if !ret {
+            ret = matches!(new.pivot_lines, Some((p1, p2)) if p1 > 0 && p2 > 0)
+                && old.pivot_lines != new.pivot_lines;
+        }
+
+        ret
     }
 }
 

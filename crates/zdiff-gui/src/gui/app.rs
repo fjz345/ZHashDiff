@@ -11,7 +11,7 @@ use std::{
 use zcommon::{hash::hash_file, ui_egui::common::show_custom_popup};
 use zdiff::{
     cached_file::CachedFile,
-    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
+    diff_builder::{Color32, DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
     lexer::{
         LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_TOKENIZE, LexerDefault, LexerGreedy,
@@ -96,6 +96,8 @@ pub struct AppStateCtx {
     pub diff_ctx_conflict_cursor: ClampedCursor,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub diff_ctx_active_highlights: Vec<usize>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub diff_ctx_pivot: (Option<usize>, Option<usize>),
 }
 
 impl Default for AppStateCtx {
@@ -125,6 +127,7 @@ impl Default for AppStateCtx {
             find_cursor: Default::default(),
             find_found_lines_1: Default::default(),
             find_found_lines_2: Default::default(),
+            diff_ctx_pivot: Default::default(),
         }
     }
 }
@@ -198,6 +201,67 @@ impl AppStateCtx {
         (file_1_to_diff, file_2_to_diff)
     }
 
+    fn apply_pivot(
+        diff_rows: &mut Vec<DiffRow>,
+        pivot_lines: (usize, usize),
+        precomputed_file_rows: &(Vec<usize>, Vec<usize>),
+    ) {
+        log::debug!("pivot: {:?}", pivot_lines);
+        let found_diff_row_pivot_index_1 =
+            precomputed_file_rows.0.get(pivot_lines.0.saturating_sub(1));
+        let found_diff_row_pivot_index_2 =
+            precomputed_file_rows.1.get(pivot_lines.1.saturating_sub(1));
+        log::debug!(
+            "found_diff_row_pivot_index_1: {:?}",
+            found_diff_row_pivot_index_1
+        );
+        log::debug!(
+            "found_diff_row_pivot_index_2: {:?}",
+            found_diff_row_pivot_index_2
+        );
+        if let (Some(pivot_1), Some(pivot_2)) =
+            (found_diff_row_pivot_index_1, found_diff_row_pivot_index_2)
+        {
+            // +: pad right side
+            // -: pad left side
+            let diff = if pivot_1 > pivot_2 {
+                (pivot_1 - pivot_2) as isize
+            } else {
+                -((pivot_2 - pivot_1) as isize)
+            };
+            let offset = diff.abs() as usize;
+            log::debug!("pivot diff: {}", diff);
+
+            let dummy_diff_row = DiffRow {
+                left: LineContent::Void,
+                right: LineContent::Void,
+            };
+            diff_rows.splice(0..0, std::iter::repeat(dummy_diff_row).take(offset));
+
+            if diff > 0 {
+                // Move LEFT side "up" (Left pivot was further down)
+                for i in 0..diff_rows.len() {
+                    if i + offset < diff_rows.len() {
+                        // Take the 'left' from a later row and bring it here
+                        diff_rows[i].left = diff_rows[i + offset].left.clone();
+                    } else {
+                        // No more data to pull from, fill with Void
+                        diff_rows[i].left = LineContent::Void;
+                    }
+                }
+            } else if diff < 0 {
+                // Move RIGHT side "up" (Right pivot was further down)
+                for i in 0..diff_rows.len() {
+                    if i + offset < diff_rows.len() {
+                        diff_rows[i].right = diff_rows[i + offset].right.clone();
+                    } else {
+                        diff_rows[i].right = LineContent::Void;
+                    }
+                }
+            }
+        }
+    }
+
     fn update_diff_rows(
         file_1: Option<Arc<CachedFile<RawToken>>>,
         file_2: Option<Arc<CachedFile<RawToken>>>,
@@ -227,12 +291,20 @@ impl AppStateCtx {
             Some(_) => hash1.clone(),
         };
 
-        let diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
-        let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
+        let mut diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
 
         let line_count_1 = c1.metadata.line_starts.len();
         let line_count_2 = c2.metadata.line_starts.len();
 
+        if let Some(pivot_lines) = options.pivot_lines {
+            if pivot_lines.0 > 0 && pivot_lines.1 > 0 {
+                let precomputed_file_rows =
+                    Self::precompute_file_rows(&diff_rows, line_count_1, line_count_2);
+                Self::apply_pivot(&mut diff_rows, pivot_lines, &precomputed_file_rows);
+            }
+        }
+
+        let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
         let precomputed_file_rows =
             Self::precompute_file_rows(&diff_rows, line_count_1, line_count_2);
 
@@ -638,8 +710,8 @@ impl<'a> ZApp {
                 find_cursor,
                 find_found_lines_1,
                 find_found_lines_2,
+                diff_ctx_pivot,
             } = app_ctx;
-            let diff_options_before = diff_options.clone();
             self.show_menu(
                 ui,
                 rx_file_path_1,
@@ -761,12 +833,22 @@ impl<'a> ZApp {
                     load_file_1_request: &mut None,
                     load_file_2_request: &mut None,
                     find_cursor,
+                    pivot: diff_ctx_pivot,
                 },
             };
 
             ui.with_layout(Layout::left_to_right(egui::Align::Min), |ui| {
                 self.tree.ui(&mut behavior, ui);
             });
+
+            if let (Some(pivot_1), Some(pivot_2)) = (
+                behavior.ctx_file_diff.pivot.0,
+                behavior.ctx_file_diff.pivot.1,
+            ) {
+                if pivot_1 > 0 && pivot_2 > 0 {
+                    behavior.ctx_file_diff.diff_options.pivot_lines = Some((pivot_1, pivot_2));
+                }
+            }
 
             if let Some(file_path) = behavior.ctx_file_diff.load_file_1_request.take() {
                 app_ctx.file_path_1 = Some(file_path);
@@ -778,11 +860,6 @@ impl<'a> ZApp {
             drop(behavior);
 
             *scroll_to_rows = None;
-
-            // Invalidate diff if options changed
-            if diff_options_before != *diff_options {
-                app_ctx.diff_ctx_invalidated = true;
-            }
 
             for (_tile_id, tile) in self.tree.tiles.iter() {
                 if let Tile::Pane(Pane::FileDiff(..)) = tile {
