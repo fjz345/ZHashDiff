@@ -493,7 +493,7 @@ mod integration_tests {
     use super::*;
     use crate::cached_file::CachedFile;
     use crate::diff_ir::DiffIR;
-    use crate::lexer::RawToken;
+    use crate::lexer::{LexerDefault, RawToken};
     use crate::myers::{myers_backtrack, myers_diff_trace};
     use std::fs::File;
     use std::io::Write;
@@ -507,8 +507,10 @@ mod integration_tests {
         File::create(&p1).unwrap().write_all(s1.as_bytes()).unwrap();
         File::create(&p2).unwrap().write_all(s2.as_bytes()).unwrap();
 
-        let f1 = CachedFile::<RawToken>::new(&p1).unwrap();
-        let f2 = CachedFile::<RawToken>::new(&p2).unwrap();
+        let f1 = CachedFile::<RawToken>::new(&p1, |contents| LexerDefault::new(contents).parse())
+            .unwrap();
+        let f2 = CachedFile::<RawToken>::new(&p2, |contents| LexerDefault::new(contents).parse())
+            .unwrap();
 
         let cmp = |t1: &RawToken, t2: &RawToken| {
             f1.contents[t1.as_ref().span.clone()] == f2.contents[t2.as_ref().span.clone()]

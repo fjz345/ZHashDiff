@@ -87,8 +87,7 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'a, LEXER_MODE, T> {
     }
 
     pub fn parse(&mut self) -> Vec<T> {
-        self.map(T::from) // Convert RawToken -> T
-            .collect()
+        self.map(T::from).collect()
     }
 
     pub fn token_value(&self, token: &T) -> &str {

@@ -6,10 +6,7 @@ use std::{
 
 use zcommon::hash::hash_file;
 
-use crate::{
-    lexer::{LexerDefault, RawTokenTrait},
-    read_file_contents,
-};
+use crate::{lexer::RawTokenTrait, read_file_contents};
 
 #[derive(Debug, Default)]
 pub struct FileMetadata {
@@ -59,10 +56,13 @@ impl<T: RawTokenTrait> CachedFile<T> {
 }
 
 impl<T: RawTokenTrait> CachedFile<T> {
-    pub fn new(path: impl AsRef<Path>) -> io::Result<Self> {
+    pub fn new(
+        path: impl AsRef<Path>,
+        lexer_parse_fn: impl FnOnce(&str) -> Vec<T>,
+    ) -> io::Result<Self> {
         let contents = read_file_contents(&path)?;
         let hash = hash_file(&path)?;
-        let tokens = LexerDefault::<T>::new(&contents).map(T::from).collect();
+        let tokens = lexer_parse_fn(&contents);
         let path = path.as_ref().to_path_buf();
         let metadata = FileMetadata::new(&contents);
         Ok(Self {

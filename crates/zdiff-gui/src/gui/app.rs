@@ -13,7 +13,10 @@ use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
-    lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_TOKENIZE, LexerDefault, RawToken},
+    lexer::{
+        LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_TOKENIZE, LexerDefault, LexerGreedy,
+        LexerTokenize, RawToken,
+    },
     myers::{myers_backtrack, myers_count_add_deletes, myers_diff_trace},
 };
 
@@ -59,6 +62,7 @@ pub struct AppStateCtx {
     #[cfg_attr(feature = "serde", serde(skip))]
     file_2: Option<Arc<CachedFile<RawToken>>>,
 
+    pub diff_lexer_mode: u8,
     pub diff_options: DiffBuilderOptions,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub diff_ctx: Option<DiffCtx>,
@@ -111,6 +115,7 @@ impl Default for AppStateCtx {
             rx_file_path_2: Default::default(),
             diff_ctx_conflict_cursor: Default::default(),
             diff_ctx_active_highlights: Default::default(),
+            diff_lexer_mode: LEXER_MODE_DEFAULT,
         }
     }
 }
@@ -198,17 +203,14 @@ impl AppStateCtx {
 
         let t1 = &c1.tokens;
         let t2 = &c2.tokens;
-
-        let lex1 = LexerDefault::new(&c1.contents);
-        let lex2 = LexerDefault::new(&c2.contents);
-
         let cmp = |a: &RawToken, b: &RawToken| {
-            a.as_ref().kind == b.as_ref().kind && lex1.token_value(a) == lex2.token_value(b)
+            a.as_ref().kind == b.as_ref().kind
+                && c1.read_content_span(a.span.clone()) == c2.read_content_span(b.span.clone())
         };
+        let myers_trace = myers_diff_trace(t1, t2, cmp);
 
-        let trace = myers_diff_trace(t1, t2, cmp);
-        let path = myers_backtrack(trace, t1.len() as i32, t2.len() as i32);
-        let diff_ir = DiffIR::new(&path);
+        let myers_path = myers_backtrack(myers_trace, t1.len() as i32, t2.len() as i32);
+        let diff_ir = DiffIR::new(&myers_path);
 
         let hash1 = hash_file(&c1.path).expect("Hash failed");
         let hash2 = match one_sided_diff_is_left {
@@ -230,7 +232,7 @@ impl AppStateCtx {
             file_2_hash: hash2,
             diff_option: options.clone(),
             diff_rows,
-            num_add_deletes: myers_count_add_deletes(&path),
+            num_add_deletes: myers_count_add_deletes(&myers_path),
             one_sided_diff_is_left,
             precomputed_diffs,
             precomputed_file_rows,
@@ -304,7 +306,12 @@ impl<'a> ZApp {
                 || app_ctx.file_1.as_ref().unwrap().path != *path
                 || app_ctx.file_1.as_ref().unwrap().hash != hash_file(path).expect("failed to hash")
             {
-                match CachedFile::new(path) {
+                let lexer_parse_fn = match app_ctx.diff_lexer_mode {
+                    LEXER_MODE_GREEDY => |contents: &str| LexerGreedy::new(contents).parse(),
+                    LEXER_MODE_TOKENIZE => |contents: &str| LexerTokenize::new(contents).parse(),
+                    _ => |contents: &str| LexerDefault::new(contents).parse(),
+                };
+                match CachedFile::new(path, lexer_parse_fn) {
                     Ok(r) => {
                         app_ctx.file_1 = Some(Arc::new(r));
                         changed |= app_ctx.file_1.is_some();
@@ -319,7 +326,12 @@ impl<'a> ZApp {
                 || app_ctx.file_2.as_ref().unwrap().path != *path
                 || app_ctx.file_2.as_ref().unwrap().hash != hash_file(path).expect("failed to hash")
             {
-                match CachedFile::new(path) {
+                let lexer_parse_fn = match app_ctx.diff_lexer_mode {
+                    LEXER_MODE_GREEDY => |contents: &str| LexerGreedy::new(contents).parse(),
+                    LEXER_MODE_TOKENIZE => |contents: &str| LexerTokenize::new(contents).parse(),
+                    _ => |contents: &str| LexerDefault::new(contents).parse(),
+                };
+                match CachedFile::new(path, lexer_parse_fn) {
                     Ok(r) => {
                         app_ctx.file_2 = Some(Arc::new(r));
                         changed |= app_ctx.file_2.is_some()
@@ -351,9 +363,16 @@ impl<'a> ZApp {
                     let p1 = args.get(1).cloned();
                     let p2 = args.get(2).cloned();
 
+                    let lexer_parse_fn = match ctx.diff_lexer_mode {
+                        LEXER_MODE_GREEDY => |contents: &str| LexerGreedy::new(contents).parse(),
+                        LEXER_MODE_TOKENIZE => {
+                            |contents: &str| LexerTokenize::new(contents).parse()
+                        }
+                        _ => |contents: &str| LexerDefault::new(contents).parse(),
+                    };
                     if let (Some(p1), Some(p2)) = (p1, p2) {
-                        let new_file_1 = CachedFile::new(p1);
-                        let new_file_2 = CachedFile::new(p2);
+                        let new_file_1 = CachedFile::new(p1, lexer_parse_fn);
+                        let new_file_2 = CachedFile::new(p2, lexer_parse_fn);
                         match new_file_1 {
                             Ok(c) => {
                                 ctx.file_1 = Some(Arc::new(c));
@@ -434,6 +453,7 @@ impl<'a> ZApp {
         goto_open: &mut bool,
         scroll_left: &mut f32,
         scroll_right: &mut f32,
+        lexer_mode: &mut u8,
     ) {
         let check_file_rx = |rx_opt: &mut Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
                              target: &mut Option<std::path::PathBuf>| {
@@ -489,11 +509,9 @@ impl<'a> ZApp {
                 });
 
                 ui.menu_button("Options", |ui| {
-                    let mut lexer_mode = 0;
                     ui.menu_button("Lexer", |ui| {
-                        ui.radio_value(&mut lexer_mode, LEXER_MODE_DEFAULT, "LexerDefault");
-                        ui.radio_value(&mut lexer_mode, LEXER_MODE_GREEDY, "LexerGreedy");
-                        ui.radio_value(&mut lexer_mode, LEXER_MODE_TOKENIZE, "LexerTokenize");
+                        ui.radio_value(lexer_mode, LEXER_MODE_GREEDY, "LexerGreedy");
+                        ui.radio_value(lexer_mode, LEXER_MODE_TOKENIZE, "LexerTokenize");
                     });
                 });
 
@@ -607,6 +625,7 @@ impl<'a> ZApp {
                 diff_ctx_active_highlights,
                 diff_ctx_in_progress: _,
                 rx: _,
+                diff_lexer_mode: lexer_mode,
             } = app_ctx;
             let diff_options_before = diff_options.clone();
             self.show_menu(
@@ -623,6 +642,7 @@ impl<'a> ZApp {
                 goto_open,
                 scroll_left,
                 scroll_right,
+                lexer_mode,
             );
 
             let mut goto_window_open = *goto_open;
