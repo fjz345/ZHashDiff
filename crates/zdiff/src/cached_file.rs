@@ -16,12 +16,17 @@ pub struct FileMetadata {
 impl FileMetadata {
     pub fn new(contents: &str) -> Self {
         let line_starts = std::iter::once(0)
-            .chain(contents.match_indices('\n').map(|(i, _)| i + 1))
+            .chain(contents.match_indices('\n').map(|(i, _)| i))
             .collect();
         Self { line_starts }
     }
 
     pub fn get_line_index(&self, byte_offset: usize) -> usize {
+        log::trace!(
+            "get_line_index(byte_offset: {})\n{:?}",
+            byte_offset,
+            &self.line_starts
+        );
         match self.line_starts.binary_search(&byte_offset) {
             Ok(line) => line,
             Err(line) => line - 1,
@@ -45,6 +50,7 @@ impl<T: RawTokenTrait> CachedFile<T> {
 
     // returns vec of lines that match
     pub fn content_search(&self, query: &str) -> Vec<usize> {
+        log::trace!("content_search: {}", query);
         if query.is_empty() {
             return vec![];
         }

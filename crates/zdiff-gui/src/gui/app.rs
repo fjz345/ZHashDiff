@@ -691,14 +691,27 @@ impl<'a> ZApp {
                 response.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     log::info!("Finding line: {}", find_input);
-                    *find_found_lines_1 = file_1
-                        .as_ref()
-                        .map(|f| f.content_search(&find_input))
-                        .unwrap_or_default();
-                    *find_found_lines_2 = file_2
-                        .as_ref()
-                        .map(|f| f.content_search(&find_input))
-                        .unwrap_or_default();
+                    if let Some(diff) = diff_ctx {
+                        *find_found_lines_1 = file_1
+                            .as_ref()
+                            .map(|f| {
+                                f.content_search(&find_input)
+                                    .into_iter()
+                                    .map(|f| diff.precomputed_file_rows.0[f])
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
+                        *find_found_lines_2 = file_2
+                            .as_ref()
+                            .map(|f| {
+                                f.content_search(&find_input)
+                                    .into_iter()
+                                    .map(|f| diff.precomputed_file_rows.1[f])
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                    }
 
                     log::info!("Found (in #1): {:?}", find_found_lines_1);
                     log::info!("Found (in #2): {:?}", find_found_lines_2);
