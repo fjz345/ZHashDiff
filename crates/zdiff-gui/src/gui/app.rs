@@ -909,8 +909,7 @@ impl eframe::App for ZApp {
                 .diff_ctx
                 .as_ref()
                 .and_then(|f| Some(f.precomputed_diffs.len()))
-                .unwrap_or_default()
-                .saturating_sub(1);
+                .unwrap_or_default();
             app_ctx.diff_ctx_conflict_cursor.set_max(conflict_max);
         }
 
@@ -1031,11 +1030,17 @@ impl eframe::App for ZApp {
                 }
 
                 if state.diff_ctx_conflict_cursor.has_changed() {
+                    state.diff_ctx_conflict_cursor.ack_change();
                     if let Some(diff_ctx) = state.diff_ctx.as_ref() {
-                        let conflict_idx_span =
-                            diff_ctx.precomputed_diffs[state.diff_ctx_conflict_cursor.get()];
-                        state.scroll_to_rows =
-                            Some((conflict_idx_span.0, Some(conflict_idx_span.1)));
+                        if state.diff_ctx_conflict_cursor.get() > 0 {
+                            let conflict_idx_span = diff_ctx.precomputed_diffs
+                                [state.diff_ctx_conflict_cursor.get().saturating_sub(1)];
+                            state.scroll_to_rows =
+                                Some((conflict_idx_span.0, Some(conflict_idx_span.1)));
+                        } else {
+                            state.scroll_to_rows = None;
+                            state.diff_ctx_active_highlights.clear();
+                        }
                     }
                 }
 

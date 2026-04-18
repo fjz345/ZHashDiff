@@ -62,4 +62,7 @@ impl ClampedCursor {
     pub fn has_changed(&self) -> bool {
         self.diff() != 0
     }
+    pub fn ack_change(&mut self) {
+        self.prev_cursor = self.cursor;
+    }
 }
