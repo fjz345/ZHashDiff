@@ -53,7 +53,7 @@ impl<const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'_, LEXER_MODE, T> {
     }
 }
 
-pub const LEXER_MODE_DEFAULT: u8 = 0;
+pub const LEXER_MODE_DEFAULT: u8 = LEXER_MODE_GREEDY;
 pub const LEXER_MODE_GREEDY: u8 = 1; // longest possible token lengths to reduce number of tokens
 pub const LEXER_MODE_TOKENIZE: u8 = 2; // Try to tokenize as much as possible
 pub type LexerDefault<'a, T> = Lexer<'a, LEXER_MODE_DEFAULT, T>;
