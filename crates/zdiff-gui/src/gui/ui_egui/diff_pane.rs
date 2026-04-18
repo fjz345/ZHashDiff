@@ -337,6 +337,8 @@ impl FileDiffPane {
         let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
 
         let (rect, _) = ui.allocate_at_least(egui::vec2(width, row_h), egui::Sense::hover());
+        let mut extended_rect = rect.clone();
+        extended_rect.extend_with_x(9999999.0);
 
         match content {
             LineContent::Code {
@@ -345,14 +347,14 @@ impl FileDiffPane {
                 bg,
             } => {
                 ui.painter().rect_filled(
-                    rect,
+                    extended_rect,
                     0.0,
                     egui::Color32::from_rgba_unmultiplied(bg.0[0], bg.0[1], bg.0[2], bg.0[3]),
                 );
 
                 if is_highlighted {
                     ui.painter().rect_filled(
-                        rect,
+                        extended_rect,
                         0.0,
                         egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40), // Faint yellow
                     );
@@ -433,7 +435,7 @@ impl FileDiffPane {
                 } else {
                     egui::Color32::from_gray(30)
                 };
-                ui.painter().rect_filled(rect, 0.0, fill);
+                ui.painter().rect_filled(extended_rect, 0.0, fill);
             }
         }
     }
