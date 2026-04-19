@@ -3,13 +3,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Serialize};
-
 pub type FsNodeId = usize;
 pub type FsNodeDepth = u16;
 pub type FsIsDir = bool;
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FsNodeKind {
     File {
         path: PathBuf,
@@ -40,7 +39,8 @@ impl FsNodeKind {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FsNode {
     pub parent: Option<FsNodeId>,
     pub kind: FsNodeKind,
@@ -122,7 +122,8 @@ impl<'a> Iterator for TreeIter<'a> {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FileSystemModel {
     root_path: PathBuf,
     root_id: FsNodeId,

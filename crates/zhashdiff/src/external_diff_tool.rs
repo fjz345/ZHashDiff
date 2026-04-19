@@ -4,9 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DiffToolDefaultArgs {
     pub default_args: Vec<String>,
 }
@@ -28,7 +27,8 @@ impl DiffToolDefaultArgs {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DiffToolConfig {
     pub exe_path: PathBuf,
     pub prefix_args: DiffToolDefaultArgs,
