@@ -183,9 +183,9 @@ impl FileDiffPane {
         });
 
         let diff_rows = ctx.diff_ctx.as_ref().and_then(|f| Some(&f.diff_rows));
-        let dummy_1: Option<bool> = Some(false);
-        let dummy_2: Option<bool> = Some(false);
-        match (&diff_rows, dummy_1, dummy_2) {
+        let source_path = ctx.file_source.as_ref().and_then(|f| Some(&f.path));
+        let target_path = ctx.file_target.as_ref().and_then(|f| Some(&f.path));
+        match (&diff_rows, source_path, target_path) {
             (Some(_), None, None) | (None, None, None) => {
                 ui.centered_and_justified(|ui| {
                     ui.label("Load Source & Target files to see diff.");
