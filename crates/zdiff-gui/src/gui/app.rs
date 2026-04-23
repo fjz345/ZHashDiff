@@ -11,7 +11,7 @@ use std::{
 use zcommon::{hash::hash_file, ui_egui::common::show_custom_popup};
 use zdiff::{
     cached_file::CachedFile,
-    diff_builder::{Color32, DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
+    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
     lexer::{
         LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_TOKENIZE, LexerDefault, LexerGreedy,

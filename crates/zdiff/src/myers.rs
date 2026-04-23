@@ -86,15 +86,15 @@ where
 
             if current_x >= source_len && current_y >= target_len {
                 // Slicing and pushing
-                let start = (diagonal_offset - edit_distance as usize);
-                let end = (diagonal_offset + edit_distance as usize);
+                let start = diagonal_offset - edit_distance as usize;
+                let end = diagonal_offset + edit_distance as usize;
                 trace.push(&furthest_x_on_diagonal[start..=end]);
                 return trace;
             }
         }
 
-        let start = (diagonal_offset - edit_distance as usize);
-        let end = (diagonal_offset + edit_distance as usize);
+        let start = diagonal_offset - edit_distance as usize;
+        let end = diagonal_offset + edit_distance as usize;
         trace.push(&furthest_x_on_diagonal[start..=end]);
     }
     trace

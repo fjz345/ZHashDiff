@@ -108,10 +108,6 @@ impl SideState {
         }
     }
 
-    fn new() -> Self {
-        Self::with_capacity(32)
-    }
-
     fn push(&mut self, val: DiffResult, color: Color32) {
         self.buf.push((val, color));
     }

@@ -1,9 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPane};
-use eframe::egui::{
-    self, Layout, Slider, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility,
-};
+use eframe::egui::{self, Layout, TextEdit, UiBuilder, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
 use zdiff::{
     cached_file::CachedFile,
