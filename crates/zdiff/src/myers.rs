@@ -53,32 +53,27 @@ where
     let target_len = target.len() as i32;
     let max_possible_edits = source_len + target_len;
 
-    // We use +2 to allow safe boundary checks for (diagonal + 1) and (diagonal - 1)
-    // even at the extreme edges of the search space.
     let mut furthest_x_on_diagonal = vec![0; (2 * max_possible_edits + 2) as usize];
     let mut trace = MyersTrace::new(max_possible_edits as usize + 1);
     let diagonal_offset = max_possible_edits as usize;
 
-    // Initialization: the virtual starting point for the D=0 iteration
     furthest_x_on_diagonal[diagonal_offset + 1] = 0;
 
     for edit_distance in 0..=max_possible_edits {
         for diagonal in (-edit_distance..=edit_distance).step_by(2) {
             let v_index = (diagonal + max_possible_edits) as usize;
 
-            // Determine move direction based on the furthest reaching previous diagonals
             let mut current_x = if diagonal == -edit_distance
                 || (diagonal != edit_distance
                     && furthest_x_on_diagonal[v_index - 1] < furthest_x_on_diagonal[v_index + 1])
             {
-                furthest_x_on_diagonal[v_index + 1] // Move Down
+                furthest_x_on_diagonal[v_index + 1]
             } else {
-                furthest_x_on_diagonal[v_index - 1] + 1 // Move Right
+                furthest_x_on_diagonal[v_index - 1] + 1
             };
 
             let mut current_y = current_x - diagonal;
 
-            // Slide down the "snake" (diagonal matches)
             while current_x < source_len
                 && current_y < target_len
                 && cmp(&source[current_x as usize], &target[current_y as usize])
@@ -89,25 +84,21 @@ where
 
             furthest_x_on_diagonal[v_index] = current_x;
 
-            // If we've reached the end of both sequences, we're done
             if current_x >= source_len && current_y >= target_len {
-                trace.push(
-                    &furthest_x_on_diagonal[(diagonal_offset - edit_distance as usize)
-                        ..=(diagonal_offset + edit_distance as usize)],
-                );
+                // Slicing and pushing
+                let start = (diagonal_offset - edit_distance as usize);
+                let end = (diagonal_offset + edit_distance as usize);
+                trace.push(&furthest_x_on_diagonal[start..=end]);
                 return trace;
             }
         }
 
-        // Save the furthest X for every diagonal at this edit distance
-        trace.push(
-            &furthest_x_on_diagonal[(diagonal_offset - edit_distance as usize)
-                ..=(diagonal_offset + edit_distance as usize)],
-        );
+        let start = (diagonal_offset - edit_distance as usize);
+        let end = (diagonal_offset + edit_distance as usize);
+        trace.push(&furthest_x_on_diagonal[start..=end]);
     }
     trace
 }
-
 pub fn myers_backtrack(trace: MyersTrace, source_len: i32, target_len: i32) -> Vec<(i32, i32)> {
     let mut path = Vec::with_capacity((source_len + target_len) as usize + 1);
     let mut current_x = source_len;

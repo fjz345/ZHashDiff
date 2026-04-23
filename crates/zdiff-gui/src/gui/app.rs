@@ -300,8 +300,15 @@ impl AppStateCtx {
             None => hash_file(&c2.path).expect("Hash failed"),
             Some(_) => hash1.clone(),
         };
-
-        let mut diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
+        #[cfg(feature = "debug_alloc")]
+        println!("Allocations hash_file: {:?}", reg.change_and_reset());
+        let mut diff_rows = build_diff_rows(
+            diff_ir,
+            Some(&t1),
+            Some(&t2),
+            &options,
+            c1.metadata.num_lines().max(c2.metadata.num_lines()),
+        );
         #[cfg(feature = "debug_alloc")]
         println!("Allocations build_diff_rows: {:?}", reg.change_and_reset());
 

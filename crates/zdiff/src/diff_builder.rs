@@ -153,8 +153,8 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             options,
             theme: DiffTheme::default(),
             rows: Vec::with_capacity(capacity),
-            left: SideState::with_capacity(capacity / 2),
-            right: SideState::with_capacity(capacity / 2),
+            left: SideState::with_capacity(64),
+            right: SideState::with_capacity(64),
         }
     }
 
@@ -163,7 +163,9 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         tokens_target: Option<&'a [T]>,
         options: &'b DiffBuilderOptions,
     ) -> Self {
-        let capacity = tokens_source.map_or(0, |s| s.len()) + tokens_target.map_or(0, |t| t.len());
+        let num_tokens =
+            tokens_source.map_or(0, |s| s.len()) + tokens_target.map_or(0, |t| t.len());
+        let capacity = num_tokens / 10;
         Self::with_capacity(tokens_source, tokens_target, options, capacity)
     }
 
@@ -324,13 +326,14 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
     tokens_source: Option<&'a [T]>,
     tokens_target: Option<&'a [T]>,
     options: &DiffBuilderOptions,
+    estimated_num_rows: usize,
 ) -> Vec<DiffRow> {
     if options.ignore_whitespace {
         diff_ir = diff_ir_to_no_ws(diff_ir, tokens_source, tokens_target);
     }
 
     let mut builder =
-        DiffBuilder::with_capacity(tokens_source, tokens_target, options, diff_ir.entries.len());
+        DiffBuilder::with_capacity(tokens_source, tokens_target, options, estimated_num_rows);
     for diff_result in diff_ir.entries {
         match &diff_result.operation {
             DiffOp::Equal => builder.handle_match(diff_result),
@@ -361,11 +364,12 @@ mod tests {
             s2: &'a str,
             path: Vec<(i32, i32)>,
             options: DiffBuilderOptions,
+            estimated_num_rows: usize,
         ) -> Self {
             let t1: Vec<RawToken> = LexerDefault::<RawToken>::new(s1).collect();
             let t2: Vec<RawToken> = LexerDefault::<RawToken>::new(s2).collect();
             let diff_ir = DiffIR::new(&path);
-            let rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
+            let rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options, estimated_num_rows);
 
             Self {
                 s1,
@@ -513,6 +517,7 @@ mod tests {
                 ghost_rows: false,
                 ..Default::default()
             },
+            4,
         );
 
         harness.assert_row(0, 1, 1, "\t#define hello_there\n", "\t#define world_here\n");
@@ -560,6 +565,7 @@ mod integration_tests {
                 ghost_rows: false,
                 ..Default::default()
             },
+            f1.metadata.num_lines().max(f2.metadata.num_lines()),
         );
 
         let mut left_res = String::new();

@@ -32,6 +32,10 @@ impl FileMetadata {
             Err(line) => line - 1,
         }
     }
+
+    pub fn num_lines(&self) -> usize {
+        self.line_starts.len()
+    }
 }
 
 #[derive(Debug, Default)]
