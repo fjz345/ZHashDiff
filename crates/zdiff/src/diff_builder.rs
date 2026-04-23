@@ -100,12 +100,16 @@ struct SideState {
 }
 
 impl SideState {
-    fn new() -> Self {
+    fn with_capacity(capacity: usize) -> Self {
         Self {
-            buf: Vec::new(),
+            buf: Vec::with_capacity(capacity),
             line_num: 1,
             active_diff: false,
         }
+    }
+
+    fn new() -> Self {
+        Self::with_capacity(32)
     }
 
     fn push(&mut self, val: DiffResult, color: Color32) {
@@ -137,20 +141,30 @@ pub struct DiffBuilder<'a, 'b, T: RawTokenTrait> {
 }
 
 impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
-    pub fn new(
+    pub fn with_capacity(
         tokens_source: Option<&'a [T]>,
         tokens_target: Option<&'a [T]>,
         options: &'b DiffBuilderOptions,
+        capacity: usize,
     ) -> Self {
         Self {
             tokens_source,
             tokens_target,
             options,
             theme: DiffTheme::default(),
-            rows: Vec::new(),
-            left: SideState::new(),
-            right: SideState::new(),
+            rows: Vec::with_capacity(capacity),
+            left: SideState::with_capacity(capacity / 2),
+            right: SideState::with_capacity(capacity / 2),
         }
+    }
+
+    pub fn new(
+        tokens_source: Option<&'a [T]>,
+        tokens_target: Option<&'a [T]>,
+        options: &'b DiffBuilderOptions,
+    ) -> Self {
+        let capacity = tokens_source.map_or(0, |s| s.len()) + tokens_target.map_or(0, |t| t.len());
+        Self::with_capacity(tokens_source, tokens_target, options, capacity)
     }
 
     fn get_color(&self, is_keyword: bool) -> Color32 {
@@ -315,7 +329,8 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
         diff_ir = diff_ir_to_no_ws(diff_ir, tokens_source, tokens_target);
     }
 
-    let mut builder = DiffBuilder::new(tokens_source, tokens_target, options);
+    let mut builder =
+        DiffBuilder::with_capacity(tokens_source, tokens_target, options, diff_ir.entries.len());
     for diff_result in diff_ir.entries {
         match &diff_result.operation {
             DiffOp::Equal => builder.handle_match(diff_result),

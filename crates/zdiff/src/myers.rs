@@ -1,35 +1,32 @@
-use std::ops::Index;
-
 pub struct MyersTrace {
     data: Vec<i32>,
-    rows: usize,
+    num_rows: usize,
 }
 
 impl MyersTrace {
     fn new(edit_capacity: usize) -> Self {
         Self {
-            // Total elements for D edits is (D+1)^2
-            data: Vec::with_capacity((edit_capacity + 1).pow(2)),
-            rows: 0,
+            data: Vec::with_capacity(edit_capacity * 64),
+            num_rows: 0,
         }
     }
 
     fn push(&mut self, row: &[i32]) {
         self.data.extend_from_slice(row);
-        self.rows += 1;
+        self.num_rows += 1;
     }
 
     pub fn len(&self) -> usize {
-        self.rows
+        self.num_rows
     }
 }
 
-impl Index<usize> for MyersTrace {
+impl std::ops::Index<usize> for MyersTrace {
     type Output = [i32];
 
-    fn index(&self, index: usize) -> &Self::Output {
-        let start = index * index;
-        let end = (index + 1) * (index + 1);
+    fn index(&self, d: usize) -> &Self::Output {
+        let start = d * d;
+        let end = (d + 1) * (d + 1);
         &self.data[start..end]
     }
 }

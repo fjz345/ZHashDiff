@@ -77,7 +77,7 @@ impl DiffIR {
 
     // path from myers backtracking
     fn generate_ir(path: &[(i32, i32)]) -> DiffIR {
-        let mut entries = Vec::new();
+        let mut entries = Vec::with_capacity(path.len() * 2); // Worst case: all inserts or deletes
         let mut distance = 0;
 
         for window in path.windows(2) {

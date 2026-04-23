@@ -268,10 +268,7 @@ impl AppStateCtx {
         options: &DiffBuilderOptions,
     ) -> DiffCtx {
         #[cfg(feature = "debug_alloc")]
-        let reg = stats_alloc::Region::new(&crate::STATS_ALLOC);
-
-        #[cfg(feature = "debug_alloc")]
-        println!("Allocations update_diff_rows: {:?}", reg.change());
+        let mut reg = stats_alloc::Region::new(&crate::STATS_ALLOC);
 
         let (c1, c2, one_sided_diff_is_left) = match (&file_1, &file_2) {
             (Some(c1), Some(c2)) => (c1, c2, None),
@@ -286,15 +283,17 @@ impl AppStateCtx {
             a.as_ref().kind == b.as_ref().kind
                 && c1.read_content_span(a.span.clone()) == c2.read_content_span(b.span.clone())
         };
+        #[cfg(feature = "debug_alloc")]
+        println!("Allocations update_diff_rows: {:?}", reg.change_and_reset());
         let myers_trace = myers_diff_trace(t1, t2, cmp);
         #[cfg(feature = "debug_alloc")]
-        println!("Allocations myers_diff_trace: {:?}", reg.change());
+        println!("Allocations myers_diff_trace: {:?}", reg.change_and_reset());
         let myers_path = myers_backtrack(myers_trace, t1.len() as i32, t2.len() as i32);
         #[cfg(feature = "debug_alloc")]
-        println!("Allocations myers_backtrack: {:?}", reg.change());
+        println!("Allocations myers_backtrack: {:?}", reg.change_and_reset());
         let diff_ir = DiffIR::new(&myers_path);
         #[cfg(feature = "debug_alloc")]
-        println!("Allocations DiffIR::new(): {:?}", reg.change());
+        println!("Allocations DiffIR::new(): {:?}", reg.change_and_reset());
 
         let hash1 = hash_file(&c1.path).expect("Hash failed");
         let hash2 = match one_sided_diff_is_left {
@@ -304,7 +303,7 @@ impl AppStateCtx {
 
         let mut diff_rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options);
         #[cfg(feature = "debug_alloc")]
-        println!("Allocations build_diff_rows: {:?}", reg.change());
+        println!("Allocations build_diff_rows: {:?}", reg.change_and_reset());
 
         let line_count_1 = c1.metadata.line_starts.len();
         let line_count_2 = c2.metadata.line_starts.len();
