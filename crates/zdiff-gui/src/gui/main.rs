@@ -8,6 +8,16 @@ mod app;
 mod clamped_cursor;
 pub mod ui_egui;
 
+#[cfg(feature = "debug_alloc")]
+use stats_alloc::INSTRUMENTED_SYSTEM;
+#[cfg(feature = "debug_alloc")]
+use stats_alloc::StatsAlloc;
+#[cfg(feature = "debug_alloc")]
+use std::alloc::System;
+#[cfg(feature = "debug_alloc")]
+#[global_allocator]
+pub static STATS_ALLOC: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
+
 fn main() -> eframe::Result {
     unsafe { env::set_var("RUST_LOG", "debug") }; // or "info" or "debug"
     #[cfg(feature = "pretty-backtrace")]

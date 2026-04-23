@@ -1,3 +1,39 @@
+use std::ops::Index;
+
+pub struct MyersTrace {
+    data: Vec<i32>,
+    rows: usize,
+}
+
+impl MyersTrace {
+    fn new(edit_capacity: usize) -> Self {
+        Self {
+            // Total elements for D edits is (D+1)^2
+            data: Vec::with_capacity((edit_capacity + 1).pow(2)),
+            rows: 0,
+        }
+    }
+
+    fn push(&mut self, row: &[i32]) {
+        self.data.extend_from_slice(row);
+        self.rows += 1;
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows
+    }
+}
+
+impl Index<usize> for MyersTrace {
+    type Output = [i32];
+
+    fn index(&self, index: usize) -> &Self::Output {
+        let start = index * index;
+        let end = (index + 1) * (index + 1);
+        &self.data[start..end]
+    }
+}
+
 /*
 returns "cost" between source/target comparing each entry
 */
@@ -12,7 +48,7 @@ where
 /*
 returns the path of lowest cost (edits) to get from source to target
 */
-pub fn myers_diff_trace<T, F>(source: &[T], target: &[T], mut cmp: F) -> Vec<Vec<i32>>
+pub fn myers_diff_trace<T, F>(source: &[T], target: &[T], mut cmp: F) -> MyersTrace
 where
     F: FnMut(&T, &T) -> bool,
 {
@@ -23,7 +59,7 @@ where
     // We use +2 to allow safe boundary checks for (diagonal + 1) and (diagonal - 1)
     // even at the extreme edges of the search space.
     let mut furthest_x_on_diagonal = vec![0; (2 * max_possible_edits + 2) as usize];
-    let mut trace = Vec::with_capacity(max_possible_edits as usize + 1);
+    let mut trace = MyersTrace::new(max_possible_edits as usize + 1);
     let diagonal_offset = max_possible_edits as usize;
 
     // Initialization: the virtual starting point for the D=0 iteration
@@ -59,9 +95,8 @@ where
             // If we've reached the end of both sequences, we're done
             if current_x >= source_len && current_y >= target_len {
                 trace.push(
-                    furthest_x_on_diagonal[(diagonal_offset - edit_distance as usize)
-                        ..=(diagonal_offset + edit_distance as usize)]
-                        .to_vec(),
+                    &furthest_x_on_diagonal[(diagonal_offset - edit_distance as usize)
+                        ..=(diagonal_offset + edit_distance as usize)],
                 );
                 return trace;
             }
@@ -69,16 +104,15 @@ where
 
         // Save the furthest X for every diagonal at this edit distance
         trace.push(
-            furthest_x_on_diagonal[(diagonal_offset - edit_distance as usize)
-                ..=(diagonal_offset + edit_distance as usize)]
-                .to_vec(),
+            &furthest_x_on_diagonal[(diagonal_offset - edit_distance as usize)
+                ..=(diagonal_offset + edit_distance as usize)],
         );
     }
     trace
 }
 
-pub fn myers_backtrack(trace: Vec<Vec<i32>>, source_len: i32, target_len: i32) -> Vec<(i32, i32)> {
-    let mut path = Vec::new();
+pub fn myers_backtrack(trace: MyersTrace, source_len: i32, target_len: i32) -> Vec<(i32, i32)> {
+    let mut path = Vec::with_capacity((source_len + target_len) as usize + 1);
     let mut current_x = source_len;
     let mut current_y = target_len;
 

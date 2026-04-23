@@ -14,6 +14,7 @@ serde = ["zdiff/serde", "dep:serde", "dep:serde_json"]
 gui = ["zcommon/gui", "dep:eframe", "dep:egui_tiles"]
 pretty-backtrace = ["dep:color-backtrace"]
 accesskit = []
+debug_alloc = ["dep:stats_alloc"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.33.3", features = ["wayland", "x11"], optional = true }
@@ -38,3 +39,4 @@ color-backtrace = { version = "0.7.2", optional = true }
 blake3 = { version = "1.8.2", features = ["rayon", "mmap"] }
 env_logger = "0.11.9"
 pollster = "0.4.0"
+stats_alloc = { version = "0.1", optional = true }

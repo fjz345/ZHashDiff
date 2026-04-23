@@ -9,6 +9,9 @@ GUI for zdiff crate
 * Powerful diffing view
 
 ## Todo
+* Fix clearer start screen for new users
+* Fix memory consumption for big diffs (maybe start new diff when at the diagonal?)
+
 * Line Pivot
 
 * user defined comparison per file format
