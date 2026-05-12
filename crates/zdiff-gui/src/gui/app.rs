@@ -731,6 +731,7 @@ impl<'a> ZApp {
                 ui.ctx(),
                 &mut self.open_shortcuts_window,
                 "Option - Shortcuts",
+                true,
                 |ui| {
                     ui_keybindings(ui, keybindings);
                 },
@@ -787,7 +788,7 @@ impl<'a> ZApp {
             );
 
             let mut goto_window_open = *goto_open;
-            show_custom_popup(ctx, &mut goto_window_open, "Goto", |ui| {
+            show_custom_popup(ctx, &mut goto_window_open, "Goto", true, |ui| {
                 goto_input.retain(|c| c.is_ascii_digit());
                 let response = ui.add(
                     egui::TextEdit::singleline(goto_input)
@@ -811,7 +812,7 @@ impl<'a> ZApp {
                 *goto_open = goto_window_open;
             }
             let mut find_window_open = *find_open;
-            show_custom_popup(ctx, &mut find_window_open, "Find", |ui| {
+            show_custom_popup(ctx, &mut find_window_open, "Find", true, |ui| {
                 let response = ui.add(
                     egui::TextEdit::singleline(find_input)
                         .desired_width(40.0)

@@ -36,8 +36,8 @@ impl Shortcut {
 pub struct Keybindings {
     pub open_file_source: Option<Shortcut>,
     pub open_file_target: Option<Shortcut>,
-    pub refresh_diff: Option<Shortcut>,
     pub refresh_diff_rows_only: Option<Shortcut>,
+    pub refresh_diff: Option<Shortcut>, // Implies refresh_diff_rows_only
     pub open_options_keybindings: Option<Shortcut>,
 }
 
@@ -45,7 +45,7 @@ impl Default for Keybindings {
     fn default() -> Self {
         Self {
             open_file_source: Some(Shortcut {
-                key: Key::Num1,
+                key: Key::F1,
                 modifiers: Modifiers {
                     ctrl: true,
                     command: true,
@@ -53,7 +53,7 @@ impl Default for Keybindings {
                 },
             }),
             open_file_target: Some(Shortcut {
-                key: Key::Num2,
+                key: Key::F2,
                 modifiers: Modifiers {
                     ctrl: true,
                     command: true,
@@ -65,6 +65,7 @@ impl Default for Keybindings {
                 modifiers: Modifiers {
                     ctrl: true,
                     command: true,
+                    shift: true,
                     ..Default::default()
                 },
             }),
@@ -73,7 +74,6 @@ impl Default for Keybindings {
                 modifiers: Modifiers {
                     ctrl: true,
                     command: true,
-                    shift: true,
                     ..Default::default()
                 },
             }),
@@ -93,6 +93,7 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
     if ui.button("Reset to defaults").clicked() {
         *keybindings = Keybindings::default();
     }
+    ui.separator();
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         let mut ui_shortcut_row = |label: &str, shortcut: &mut Option<Shortcut>| {

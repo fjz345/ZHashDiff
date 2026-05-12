@@ -218,18 +218,27 @@ pub fn draw_persistent_hint_text_edit(
     output.response
 }
 
-pub fn show_custom_popup<F>(ctx: &egui::Context, open: &mut bool, title: &str, add_contents: F)
-where
+pub fn show_custom_popup<F>(
+    ctx: &egui::Context,
+    open: &mut bool,
+    title: &str,
+    auto_size: bool,
+    add_contents: F,
+) where
     F: FnOnce(&mut egui::Ui),
 {
-    egui::Window::new(title)
+    let mut window = egui::Window::new(title)
         .open(open)
         .resizable(true)
         .collapsible(false)
-        .default_size([300.0, 150.0])
-        .show(ctx, |ui| {
-            add_contents(ui);
-        });
+        .default_size([300.0, 150.0]);
+    if auto_size {
+        window = window.auto_sized();
+    }
+
+    window.show(ctx, |ui| {
+        add_contents(ui);
+    });
 }
 
 // Want to only change the title bar background color, but could not manage how to...

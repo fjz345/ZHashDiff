@@ -205,6 +205,7 @@ impl ZApp {
                 ui.ctx(),
                 &mut self.open_external_diff_window,
                 "Option - External Diff Tool",
+                true,
                 |ui| {
                     ui.label("Defaults: ");
                     ui.vertical(|ui| {

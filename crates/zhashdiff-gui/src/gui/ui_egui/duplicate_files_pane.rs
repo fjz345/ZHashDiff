@@ -186,129 +186,141 @@ impl DuplicateFilesPane {
             let total_conflicts = conflicts.len();
             let resolved_count = ctx.conflict_map_resolved.len();
 
-            show_custom_popup(ui.ctx(), &mut temp_show_diff_popup, "Conflicts", |ui| {
-                ui.vertical(|ui| {
-                    ui.label(format!(
-                        "Conflicts: ({}/{})",
-                        resolved_count, total_conflicts
-                    ));
-                    ui.separator();
+            show_custom_popup(
+                ui.ctx(),
+                &mut temp_show_diff_popup,
+                "Conflicts",
+                true,
+                |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(format!(
+                            "Conflicts: ({}/{})",
+                            resolved_count, total_conflicts
+                        ));
+                        ui.separator();
 
-                    let row_height = 24.0;
-                    let header_height = 30.0;
-                    let table_height = ui.available_height() - 100.0;
+                        let row_height = 24.0;
+                        let header_height = 30.0;
+                        let table_height = ui.available_height() - 100.0;
 
-                    egui::Frame::new()
-                        .fill(egui::Color32::from_gray(25))
-                        .show(ui, |ui| {
-                            use egui_extras::{Column, TableBuilder};
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_gray(25))
+                            .show(ui, |ui| {
+                                use egui_extras::{Column, TableBuilder};
 
-                            TableBuilder::new(ui)
-                                .striped(true)
-                                .resizable(false)
-                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                                .column(Column::exact(32.0)) // Checkbox
-                                .column(Column::exact(80.0)) // Hash (Short)
-                                .column(Column::remainder())
-                                .min_scrolled_height(100.0)
-                                .max_scroll_height(table_height)
-                                .header(header_height, |mut header| {
-                                    header.col(|ui| {
-                                        ui.centered_and_justified(|ui| {
-                                            ui.label("✔");
+                                TableBuilder::new(ui)
+                                    .striped(true)
+                                    .resizable(false)
+                                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                    .column(Column::exact(32.0)) // Checkbox
+                                    .column(Column::exact(80.0)) // Hash (Short)
+                                    .column(Column::remainder())
+                                    .min_scrolled_height(100.0)
+                                    .max_scroll_height(table_height)
+                                    .header(header_height, |mut header| {
+                                        header.col(|ui| {
+                                            ui.centered_and_justified(|ui| {
+                                                ui.label("✔");
+                                            });
+                                        });
+                                        header.col(|ui| {
+                                            ui.label("Hash ID");
+                                        });
+                                        header.col(|ui| {
+                                            ui.label("Occurrences");
+                                        });
+                                    })
+                                    .body(|body| {
+                                        body.rows(row_height, total_conflicts, |mut row| {
+                                            let index = row.index();
+                                            let (hash, paths, is_resolved) = &conflicts[index];
+
+                                            // Checkbox Column
+                                            row.col(|ui| {
+                                                let state = if *is_resolved {
+                                                    CheckboxSelectState::Checked
+                                                } else {
+                                                    CheckboxSelectState::Unchecked
+                                                };
+
+                                                if ui_custom_checkbox(ui, state).clicked() {
+                                                    deferred_hash_toggle = Some(hash.clone());
+                                                }
+                                            });
+
+                                            // Hash Column
+                                            row.col(|ui| {
+                                                let color = hash_to_color(hash);
+                                                let rect = egui::Frame::new()
+                                                    .fill(color)
+                                                    .corner_radius(4.0)
+                                                    .inner_margin(2.0)
+                                                    .show(ui, |ui| {
+                                                        ui.label(
+                                                            egui::RichText::new(&hash[0..8])
+                                                                .color(egui::Color32::BLACK)
+                                                                .strong(),
+                                                        );
+                                                    })
+                                                    .response
+                                                    .rect;
+
+                                                if ui
+                                                    .interact(
+                                                        rect.expand(4.0),
+                                                        ui.id().with(hash),
+                                                        egui::Sense::click(),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    deferred_hash_toggle = Some(hash.clone());
+                                                }
+                                            });
+
+                                            // Occurrences Column
+                                            row.col(|ui| {
+                                                let label_text = format!("{} files", paths.len());
+                                                if ui.selectable_label(false, label_text).clicked()
+                                                {
+                                                    deferred_hash_toggle = Some(hash.clone());
+                                                }
+                                            });
                                         });
                                     });
-                                    header.col(|ui| {
-                                        ui.label("Hash ID");
-                                    });
-                                    header.col(|ui| {
-                                        ui.label("Occurrences");
-                                    });
-                                })
-                                .body(|body| {
-                                    body.rows(row_height, total_conflicts, |mut row| {
-                                        let index = row.index();
-                                        let (hash, paths, is_resolved) = &conflicts[index];
+                            });
 
-                                        // Checkbox Column
-                                        row.col(|ui| {
-                                            let state = if *is_resolved {
-                                                CheckboxSelectState::Checked
-                                            } else {
-                                                CheckboxSelectState::Unchecked
-                                            };
+                        ui.separator();
 
-                                            if ui_custom_checkbox(ui, state).clicked() {
-                                                deferred_hash_toggle = Some(hash.clone());
-                                            }
-                                        });
+                        // Resolution Button
+                        ui.add_enabled_ui(resolved_count > 0, |ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.button("Resolve All Selected").clicked() {
+                                        let resolution_input = ResolveConflictsInput {
+                                            conflict_map: ctx.conflict_map.clone(),
+                                            conflict_map_resolved: ctx
+                                                .conflict_map_resolved
+                                                .clone(),
+                                        };
 
-                                        // Hash Column
-                                        row.col(|ui| {
-                                            let color = hash_to_color(hash);
-                                            let rect = egui::Frame::new()
-                                                .fill(color)
-                                                .corner_radius(4.0)
-                                                .inner_margin(2.0)
-                                                .show(ui, |ui| {
-                                                    ui.label(
-                                                        egui::RichText::new(&hash[0..8])
-                                                            .color(egui::Color32::BLACK)
-                                                            .strong(),
-                                                    );
-                                                })
-                                                .response
-                                                .rect;
+                                        let removed_files =
+                                            execute_resolution(&resolution_input).removed_files;
+                                        for path in removed_files {
+                                            ctx.hash_service.remove(&path);
+                                        }
 
-                                            if ui
-                                                .interact(
-                                                    rect.expand(4.0),
-                                                    ui.id().with(hash),
-                                                    egui::Sense::click(),
-                                                )
-                                                .clicked()
-                                            {
-                                                deferred_hash_toggle = Some(hash.clone());
-                                            }
-                                        });
-
-                                        // Occurrences Column
-                                        row.col(|ui| {
-                                            let label_text = format!("{} files", paths.len());
-                                            if ui.selectable_label(false, label_text).clicked() {
-                                                deferred_hash_toggle = Some(hash.clone());
-                                            }
-                                        });
-                                    });
-                                });
-                        });
-
-                    ui.separator();
-
-                    // Resolution Button
-                    ui.add_enabled_ui(resolved_count > 0, |ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("Resolve All Selected").clicked() {
-                                let resolution_input = ResolveConflictsInput {
-                                    conflict_map: ctx.conflict_map.clone(),
-                                    conflict_map_resolved: ctx.conflict_map_resolved.clone(),
-                                };
-
-                                let removed_files =
-                                    execute_resolution(&resolution_input).removed_files;
-                                for path in removed_files {
-                                    ctx.hash_service.remove(&path);
-                                }
-
-                                ctx.conflict_map.clear();
-                                ctx.conflict_map_resolved.clear();
-                                *ctx.active_conflict_hash = None;
-                                did_resolve = true;
-                            }
+                                        ctx.conflict_map.clear();
+                                        ctx.conflict_map_resolved.clear();
+                                        *ctx.active_conflict_hash = None;
+                                        did_resolve = true;
+                                    }
+                                },
+                            );
                         });
                     });
-                });
-            });
+                },
+            );
 
             if let Some(hash) = deferred_hash_toggle {
                 if ctx.conflict_map_resolved.contains_key(&hash) {
