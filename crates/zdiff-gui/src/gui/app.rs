@@ -394,6 +394,9 @@ pub struct ZApp {
 
     #[serde(skip)]
     open_shortcuts_window: bool,
+
+    #[serde(skip)]
+    open_universal_path_window: bool,
 }
 
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
@@ -515,6 +518,7 @@ impl<'a> ZApp {
             state: Some(AppState::default()),
             tree: Self::create_tree(),
             open_shortcuts_window: false,
+            open_universal_path_window: false,
         }
     }
 
@@ -612,10 +616,28 @@ impl<'a> ZApp {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 ui.menu_button("File", |ui| {
-                    if ui.button("Open Source").clicked() {
+                    if ui
+                        .button(format!(
+                            "[{}]Open Source",
+                            keybindings
+                                .open_file_source
+                                .as_ref()
+                                .map_or_else(|| "None".to_string(), Shortcut::format)
+                        ))
+                        .clicked()
+                    {
                         Self::open_file_picker(rx_file_path_1);
                     }
-                    if ui.button("Open Target").clicked() {
+                    if ui
+                        .button(format!(
+                            "[{}]Open Target",
+                            keybindings
+                                .open_file_target
+                                .as_ref()
+                                .map_or_else(|| "None".to_string(), Shortcut::format)
+                        ))
+                        .clicked()
+                    {
                         Self::open_file_picker(rx_file_path_2);
                     }
                     if ui.button("Swap Source/Target").clicked() {
@@ -626,10 +648,28 @@ impl<'a> ZApp {
                         *diff_ctx = None;
                         *diff_ctx_invalidated = true;
                     }
-                    if ui.button("Find").clicked() {
+                    if ui
+                        .button(format!(
+                            "[{}]Find",
+                            keybindings
+                                .find
+                                .as_ref()
+                                .map_or_else(|| "None".to_string(), Shortcut::format)
+                        ))
+                        .clicked()
+                    {
                         *find_open = true;
                     }
-                    if ui.button("Goto").clicked() {
+                    if ui
+                        .button(format!(
+                            "[{}]Goto",
+                            keybindings
+                                .goto
+                                .as_ref()
+                                .map_or_else(|| "None".to_string(), Shortcut::format)
+                        ))
+                        .clicked()
+                    {
                         *goto_open = true;
                     }
                 });
@@ -639,7 +679,28 @@ impl<'a> ZApp {
                         ui.radio_value(lexer_mode, LEXER_MODE_GREEDY, "LexerGreedy");
                         ui.radio_value(lexer_mode, LEXER_MODE_TOKENIZE, "LexerTokenize");
                     });
-                    if ui.button("Keyboard Shortcuts").clicked() {
+                    if ui
+                        .button(format!(
+                            "[{}]Universal Path",
+                            keybindings
+                                .open_universal_path
+                                .as_ref()
+                                .map_or_else(|| "None".to_string(), Shortcut::format)
+                        ))
+                        .clicked()
+                    {
+                        self.open_universal_path_window = true;
+                    }
+                    if ui
+                        .button(format!(
+                            "[{}]Keyboard Shortcuts",
+                            keybindings
+                                .open_options_keybindings
+                                .as_ref()
+                                .map_or_else(|| "None".to_string(), Shortcut::format)
+                        ))
+                        .clicked()
+                    {
                         self.open_shortcuts_window = true;
                     }
                 });
@@ -651,10 +712,28 @@ impl<'a> ZApp {
                         *diff_ctx = None;
                         *diff_ctx_invalidated = true;
                     }
-                    if ui.button("Clear Cached Files").clicked() {
+                    if ui
+                        .button(format!(
+                            "[{}]Clear Cached Files",
+                            keybindings
+                                .refresh_diff
+                                .as_ref()
+                                .map_or_else(|| "None".to_string(), Shortcut::format)
+                        ))
+                        .clicked()
+                    {
                         Self::refresh_file_contents(file_1, file_2, diff_ctx, diff_ctx_invalidated);
                     }
-                    if ui.button("Clear Diff Rows").clicked() {
+                    if ui
+                        .button(format!(
+                            "[{}]Clear Diff Rows",
+                            keybindings
+                                .refresh_diff_rows_only
+                                .as_ref()
+                                .map_or_else(|| "None".to_string(), Shortcut::format)
+                        ))
+                        .clicked()
+                    {
                         Self::refresh_diff_rows(diff_ctx, diff_ctx_invalidated);
                     }
                     #[cfg(debug_assertions)]
@@ -734,6 +813,17 @@ impl<'a> ZApp {
                 true,
                 |ui| {
                     ui_keybindings(ui, keybindings);
+                },
+            );
+        }
+        if self.open_universal_path_window {
+            show_custom_popup(
+                ui.ctx(),
+                &mut self.open_universal_path_window,
+                "Option - Universal Path",
+                true,
+                |ui| {
+                    // Implementation for universal path popup
                 },
             );
         }
@@ -977,19 +1067,11 @@ impl<'a> ZApp {
                     let mouse_pos = r.pointer.interact_pos().unwrap();
                     log::info!("double click @({},{})", mouse_pos.x, mouse_pos.y);
                 }
-
                 if r.pointer.button_clicked(PointerButton::Middle) {
                     let mouse_pos: Pos2 = r.pointer.interact_pos().unwrap();
-
                     log::info!("middle click @({},{})", mouse_pos.x, mouse_pos.y);
                 }
 
-                if r.modifiers.ctrl && r.key_down(egui::Key::G) {
-                    app_state_ctx.goto_open = true;
-                }
-                if r.modifiers.ctrl && r.key_down(egui::Key::F) {
-                    app_state_ctx.find_open = true;
-                }
                 if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num1))
                     || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowUp))
                 {
@@ -1026,9 +1108,10 @@ impl<'a> ZApp {
                 }
 
                 // ### KEYBINDINGS ###
-                let mut handle_kb = |opt: &Option<Shortcut>, func: &mut dyn FnMut(Shortcut)| {
+                let handle_kb = |opt: &Option<Shortcut>, func: &mut dyn FnMut(Shortcut)| {
                     if let Some(kb) = opt {
                         if kb.matches(r) {
+                            log::info!("Shortcut triggered: {}", kb.format());
                             func(*kb);
                         }
                     }
@@ -1060,6 +1143,12 @@ impl<'a> ZApp {
                     &app_state_ctx.keybindings.open_options_keybindings,
                     &mut |_kb| self.open_shortcuts_window = true,
                 );
+                handle_kb(&app_state_ctx.keybindings.find, &mut |_kb| {
+                    app_state_ctx.find_open = true
+                });
+                handle_kb(&app_state_ctx.keybindings.goto, &mut |_kb| {
+                    app_state_ctx.goto_open = true
+                });
             });
         }
 

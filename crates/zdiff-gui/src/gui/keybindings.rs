@@ -39,6 +39,13 @@ pub struct Keybindings {
     pub refresh_diff_rows_only: Option<Shortcut>,
     pub refresh_diff: Option<Shortcut>, // Implies refresh_diff_rows_only
     pub open_options_keybindings: Option<Shortcut>,
+    pub open_universal_path: Option<Shortcut>,
+    pub find: Option<Shortcut>,
+    pub goto: Option<Shortcut>,
+    pub next_conflict: Option<Shortcut>,
+    pub prev_conflict: Option<Shortcut>,
+    pub next_find: Option<Shortcut>,
+    pub prev_find: Option<Shortcut>,
 }
 
 impl Default for Keybindings {
@@ -85,6 +92,61 @@ impl Default for Keybindings {
                     ..Default::default()
                 },
             }),
+            open_universal_path: Some(Shortcut {
+                key: Key::U,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
+            }),
+            find: Some(Shortcut {
+                key: Key::F,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
+            }),
+            goto: Some(Shortcut {
+                key: Key::G,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
+            }),
+            next_conflict: Some(Shortcut {
+                key: Key::Num2,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
+            }),
+            prev_conflict: Some(Shortcut {
+                key: Key::Num1,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            }),
+            next_find: Some(Shortcut {
+                key: Key::Enter,
+                modifiers: Modifiers {
+                    ..Default::default()
+                },
+            }),
+            prev_find: Some(Shortcut {
+                key: Key::Enter,
+                modifiers: Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            }),
+            ..Default::default()
         }
     }
 }
@@ -168,5 +230,12 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
             "Open Keybindings Options",
             &mut keybindings.open_options_keybindings,
         );
+        ui_shortcut_row("Open Universal Path", &mut keybindings.open_universal_path);
+        ui_shortcut_row("Find", &mut keybindings.find);
+        ui_shortcut_row("Goto", &mut keybindings.goto);
+        ui_shortcut_row("Next Conflict", &mut keybindings.next_conflict);
+        ui_shortcut_row("Previous Conflict", &mut keybindings.prev_conflict);
+        ui_shortcut_row("Next Find Result", &mut keybindings.next_find);
+        ui_shortcut_row("Previous Find Result", &mut keybindings.prev_find);
     });
 }
