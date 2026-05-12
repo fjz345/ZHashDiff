@@ -31,7 +31,7 @@ impl Shortcut {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Keybindings {
     pub open_file_source: Option<Shortcut>,
@@ -41,7 +41,59 @@ pub struct Keybindings {
     pub open_options_keybindings: Option<Shortcut>,
 }
 
+impl Default for Keybindings {
+    fn default() -> Self {
+        Self {
+            open_file_source: Some(Shortcut {
+                key: Key::Num1,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
+            }),
+            open_file_target: Some(Shortcut {
+                key: Key::Num2,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
+            }),
+            refresh_diff: Some(Shortcut {
+                key: Key::R,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
+            }),
+            refresh_diff_rows_only: Some(Shortcut {
+                key: Key::R,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            }),
+            open_options_keybindings: Some(Shortcut {
+                key: Key::O,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    command: true,
+                    ..Default::default()
+                },
+            }),
+        }
+    }
+}
+
 pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
+    if ui.button("Reset to defaults").clicked() {
+        *keybindings = Keybindings::default();
+    }
+
     egui::ScrollArea::vertical().show(ui, |ui| {
         let mut ui_shortcut_row = |label: &str, shortcut: &mut Option<Shortcut>| {
             ui.horizontal(|ui| {
@@ -96,6 +148,7 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                     });
 
                     if should_surrender {
+                        log::info!("Setting shortcut for {}: {:?}", label, next_shortcut);
                         *shortcut = next_shortcut;
                         ui.memory_mut(|mem| mem.surrender_focus(id));
                     }
