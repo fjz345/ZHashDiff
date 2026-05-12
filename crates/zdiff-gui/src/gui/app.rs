@@ -560,6 +560,23 @@ impl<'a> ZApp {
         });
     }
 
+    fn refresh_file_contents(
+        file_1: &mut Option<Arc<CachedFile<RawToken>>>,
+        file_2: &mut Option<Arc<CachedFile<RawToken>>>,
+        diff_ctx: &mut Option<DiffCtx>,
+        diff_ctx_invalidated: &mut bool,
+    ) {
+        *file_1 = None;
+        *file_2 = None;
+        *diff_ctx = None;
+        *diff_ctx_invalidated = true;
+    }
+
+    fn refresh_diff_rows(diff_ctx: &mut Option<DiffCtx>, diff_ctx_invalidated: &mut bool) {
+        *diff_ctx = None;
+        *diff_ctx_invalidated = true;
+    }
+
     fn show_menu(
         &mut self,
         ui: &mut egui::Ui,
@@ -635,14 +652,10 @@ impl<'a> ZApp {
                         *diff_ctx_invalidated = true;
                     }
                     if ui.button("Clear Cached Files").clicked() {
-                        *file_1 = None;
-                        *file_2 = None;
-                        *diff_ctx = None;
-                        *diff_ctx_invalidated = true;
+                        Self::refresh_file_contents(file_1, file_2, diff_ctx, diff_ctx_invalidated);
                     }
                     if ui.button("Clear Diff Rows").clicked() {
-                        *diff_ctx = None;
-                        *diff_ctx_invalidated = true;
+                        Self::refresh_diff_rows(diff_ctx, diff_ctx_invalidated);
                     }
                     #[cfg(debug_assertions)]
                     {
@@ -1026,8 +1039,26 @@ impl<'a> ZApp {
                     Self::open_file_picker(&mut app_state_ctx.rx_file_path_2);
                 });
                 handle_kb(&app_state_ctx.keybindings.refresh_diff, &mut |_kb| {
-                    // Handle refresh_diff keybinding
+                    Self::refresh_file_contents(
+                        &mut app_state_ctx.file_1,
+                        &mut app_state_ctx.file_2,
+                        &mut app_state_ctx.diff_ctx,
+                        &mut app_state_ctx.diff_ctx_invalidated,
+                    );
                 });
+                handle_kb(
+                    &app_state_ctx.keybindings.refresh_diff_rows_only,
+                    &mut |_kb| {
+                        Self::refresh_diff_rows(
+                            &mut app_state_ctx.diff_ctx,
+                            &mut app_state_ctx.diff_ctx_invalidated,
+                        );
+                    },
+                );
+                handle_kb(
+                    &app_state_ctx.keybindings.open_options_keybindings,
+                    &mut |_kb| self.open_shortcuts_window = true,
+                );
             });
         }
 
