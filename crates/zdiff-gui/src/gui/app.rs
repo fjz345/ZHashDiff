@@ -28,7 +28,7 @@ use egui_tiles::Tile;
 
 use crate::{
     clamped_cursor::ClampedCursor,
-    keybindings::{self, Keybindings, ui_keybindings},
+    keybindings::{self, Keybindings, Shortcut, ui_keybindings},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},
@@ -547,6 +547,19 @@ impl<'a> ZApp {
         egui_tiles::Tree::new("my_tree", root, tiles)
     }
 
+    fn open_file_picker(rx_storage: &mut Option<mpsc::Receiver<PathBuf>>) {
+        let (tx, rx) = mpsc::channel();
+        *rx_storage = Some(rx);
+
+        std::thread::spawn(move || {
+            if let Some(path) = pollster::block_on(rfd::AsyncFileDialog::new().pick_file()) {
+                if let Err(e) = tx.send(path.path().to_path_buf()) {
+                    log::error!("Failed to send path: {e}");
+                }
+            }
+        });
+    }
+
     fn show_menu(
         &mut self,
         ui: &mut egui::Ui,
@@ -583,24 +596,10 @@ impl<'a> ZApp {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 ui.menu_button("File", |ui| {
                     if ui.button("Open Source").clicked() {
-                        let (tx, rx) = mpsc::channel();
-                        *rx_file_path_1 = Some(rx);
-                        std::thread::spawn(move || {
-                            if let Some(path) =
-                                pollster::block_on(rfd::AsyncFileDialog::new().pick_file())
-                            {
-                                println!("File picker: {:?}", path.path());
-                                match tx.send(path.path().to_path_buf()) {
-                                    Ok(_) => {}
-                                    Err(e) => log::error!("{e}"),
-                                }
-                            }
-                        });
+                        Self::open_file_picker(rx_file_path_1);
                     }
                     if ui.button("Open Target").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_file() {
-                            *file_path_2 = Some(path.clone());
-                        }
+                        Self::open_file_picker(rx_file_path_2);
                     }
                     if ui.button("Swap Source/Target").clicked() {
                         std::mem::swap(file_1, file_2);
@@ -1011,6 +1010,24 @@ impl<'a> ZApp {
                         log::info!("FindCursor++ @{}", app_state_ctx.find_cursor.get());
                     }
                 }
+
+                // ### KEYBINDINGS ###
+                let mut handle_kb = |opt: &Option<Shortcut>, func: &mut dyn FnMut(Shortcut)| {
+                    if let Some(kb) = opt {
+                        if kb.matches(r) {
+                            func(*kb);
+                        }
+                    }
+                };
+                handle_kb(&app_state_ctx.keybindings.open_file_source, &mut |_kb| {
+                    Self::open_file_picker(&mut app_state_ctx.rx_file_path_1);
+                });
+                handle_kb(&app_state_ctx.keybindings.open_file_target, &mut |_kb| {
+                    Self::open_file_picker(&mut app_state_ctx.rx_file_path_2);
+                });
+                handle_kb(&app_state_ctx.keybindings.refresh_diff, &mut |_kb| {
+                    // Handle refresh_diff keybinding
+                });
             });
         }
 
