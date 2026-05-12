@@ -69,6 +69,9 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                 ui.input(|i| {
                     if i.key_pressed(Key::Escape) {
                         should_surrender = true;
+                    } else if i.pointer.secondary_clicked() {
+                        next_shortcut = None;
+                        should_surrender = true;
                     } else {
                         for event in &i.events {
                             if let egui::Event::Key {
@@ -90,9 +93,7 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                 });
 
                 if should_surrender {
-                    if let Some(new_s) = next_shortcut {
-                        *shortcut = Some(new_s);
-                    }
+                    *shortcut = next_shortcut;
                     ui.memory_mut(|mem| mem.surrender_focus(id));
                 }
             }
