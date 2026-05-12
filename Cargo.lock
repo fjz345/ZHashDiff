@@ -4801,6 +4801,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stats_alloc",
+ "tempfile",
  "zcommon",
  "zdiff",
 ]

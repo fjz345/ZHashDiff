@@ -40,3 +40,4 @@ blake3 = { version = "1.8.2", features = ["rayon", "mmap"] }
 env_logger = "0.11.9"
 pollster = "0.4.0"
 stats_alloc = { version = "0.1", optional = true }
+tempfile = "3.27.0"
