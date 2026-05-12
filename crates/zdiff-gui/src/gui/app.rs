@@ -28,6 +28,7 @@ use egui_tiles::Tile;
 
 use crate::{
     clamped_cursor::ClampedCursor,
+    keybindings::{self, Keybindings, ui_keybindings},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},
@@ -98,6 +99,9 @@ pub struct AppStateCtx {
     pub diff_ctx_active_highlights: Vec<usize>,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub diff_ctx_pivot: (Option<usize>, Option<usize>),
+
+    // ### Keybindings
+    pub keybindings: Keybindings,
 }
 
 impl Default for AppStateCtx {
@@ -128,6 +132,7 @@ impl Default for AppStateCtx {
             find_found_lines_1: Default::default(),
             find_found_lines_2: Default::default(),
             diff_ctx_pivot: Default::default(),
+            keybindings: Default::default(),
         }
     }
 }
@@ -386,6 +391,9 @@ pub struct ZApp {
     // Option > Hack to avoid cloning state when matching &mut self.state in update loop
     state: Option<AppState>,
     tree: egui_tiles::Tree<Pane>,
+
+    #[serde(skip)]
+    open_shortcuts_window: bool,
 }
 
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
@@ -506,6 +514,7 @@ impl<'a> ZApp {
             native_pixel_per_point: native_pixel_per_point,
             state: Some(AppState::default()),
             tree: Self::create_tree(),
+            open_shortcuts_window: false,
         }
     }
 
@@ -539,7 +548,7 @@ impl<'a> ZApp {
     }
 
     fn show_menu(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         rx_file_path_1: &mut Option<mpsc::Receiver<PathBuf>>,
         rx_file_path_2: &mut Option<mpsc::Receiver<PathBuf>>,
@@ -554,6 +563,7 @@ impl<'a> ZApp {
         scroll_left: &mut f32,
         scroll_right: &mut f32,
         lexer_mode: &mut u8,
+        keybindings: &mut Keybindings,
     ) {
         let check_file_rx = |rx_opt: &mut Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
                              target: &mut Option<std::path::PathBuf>| {
@@ -613,6 +623,9 @@ impl<'a> ZApp {
                         ui.radio_value(lexer_mode, LEXER_MODE_GREEDY, "LexerGreedy");
                         ui.radio_value(lexer_mode, LEXER_MODE_TOKENIZE, "LexerTokenize");
                     });
+                    if ui.button("Keyboard Shortcuts").clicked() {
+                        self.open_shortcuts_window = true;
+                    }
                 });
 
                 ui.menu_button("Debug", |ui| {
@@ -700,6 +713,17 @@ impl<'a> ZApp {
                 });
             });
         });
+
+        if self.open_shortcuts_window {
+            show_custom_popup(
+                ui.ctx(),
+                &mut self.open_shortcuts_window,
+                "Option - Shortcuts",
+                |ui| {
+                    ui_keybindings(ui, keybindings);
+                },
+            );
+        }
     }
 
     fn ui(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
@@ -730,6 +754,7 @@ impl<'a> ZApp {
                 find_found_lines_1,
                 find_found_lines_2,
                 diff_ctx_pivot,
+                keybindings,
             } = app_ctx;
             self.show_menu(
                 ui,
@@ -746,6 +771,7 @@ impl<'a> ZApp {
                 scroll_left,
                 scroll_right,
                 lexer_mode,
+                keybindings,
             );
 
             let mut goto_window_open = *goto_open;
@@ -930,7 +956,7 @@ impl<'a> ZApp {
             let _input_ctx = ctx.input(|r| {
                 // Esc
                 if r.key_down(egui::Key::Escape) {
-                    user_quit = true;
+                    // user_quit = true;
                 }
 
                 // DoubleLeftClick

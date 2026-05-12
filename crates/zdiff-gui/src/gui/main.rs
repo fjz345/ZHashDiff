@@ -6,6 +6,7 @@ use crate::app::ZApp;
 
 mod app;
 mod clamped_cursor;
+mod keybindings;
 pub mod ui_egui;
 
 #[cfg(feature = "debug_alloc")]

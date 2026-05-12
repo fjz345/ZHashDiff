@@ -9,11 +9,9 @@ Library diffing file contents.
 * Powerful diffing view
 
 ## Todo
-* Fix building diff rows bugs
-* go to prev/next diff buttons
+* Regex filter text contents
 * toggle filter only diffs rows
 * image file diff
-* String <-> String token diff (eg: foo -> foobar should diff only on bar)
 
 * Myers linear diff algo
 * hex diff/binary diff

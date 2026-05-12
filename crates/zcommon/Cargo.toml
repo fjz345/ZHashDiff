@@ -9,7 +9,7 @@ name = "zcommon"
 [features]
 default = []
 gui = ["dep:eframe", "dep:egui_tiles", "dep:egui_extras"]
-serde = []
+serde = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 eframe = { version = "0.33.3", default-features = false, features = [
@@ -25,3 +25,5 @@ blake3 = { version = "1.8.2", features = ["rayon", "mmap"] }
 log = "0.4.27"
 env_logger = "0.11.9"
 tempfile = "3.27.0"
+serde = { version = "1.0.48", features = ["derive"], optional = true}
+serde_json = { version = "1.0.48", optional = true }

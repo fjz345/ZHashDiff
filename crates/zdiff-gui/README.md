@@ -7,12 +7,13 @@ GUI for zdiff crate
 # Featuers
 * Myers diffing
 * Powerful diffing view
+* Line Pivot
 
 ## Todo
-* Fix clearer start screen for new users
-* Fix memory consumption for big diffs (maybe start new diff when at the diagonal?)
+* Fix memory consumption for big diffs ('binary search' and/or maybe start new diff when at the diagonal?)
 
-* Line Pivot
+* P4 integration for paths
+* Quick diff tool (+keyboard shortcut)
 
 * user defined comparison per file format
 * better horizontal scrolling
