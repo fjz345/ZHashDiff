@@ -29,7 +29,7 @@ use egui_tiles::Tile;
 use crate::{
     clamped_cursor::ClampedCursor,
     keybindings::{self, Keybindings, Shortcut, ui_keybindings},
-    quick_diff::{UniversalPathConfig, ui_universal_path},
+    quick_diff::{UniversalPath, UniversalPathConfig, quick_diff_process_paths, ui_universal_path},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},
@@ -431,7 +431,10 @@ impl<'a> ZApp {
                         app_ctx.file_1 = Some(Arc::new(r));
                         changed |= app_ctx.file_1.is_some();
                     }
-                    Err(e) => log::error!("Cannot find file {}, Error: {e}", path.display()),
+                    Err(e) => {
+                        log::error!("Cannot find file {}, Error: {e}", path.display());
+                        app_ctx.file_path_1 = None;
+                    }
                 }
             }
         }
@@ -451,7 +454,10 @@ impl<'a> ZApp {
                         app_ctx.file_2 = Some(Arc::new(r));
                         changed |= app_ctx.file_2.is_some()
                     }
-                    Err(e) => log::error!("Cannot find file {}, Error: {e}", path.display()),
+                    Err(e) => {
+                        log::error!("Cannot find file {}, Error: {e}", path.display());
+                        app_ctx.file_path_2 = None;
+                    }
                 }
             }
         }
@@ -1159,6 +1165,32 @@ impl<'a> ZApp {
                 handle_kb(&app_state_ctx.keybindings.goto, &mut |_kb| {
                     app_state_ctx.goto_open = true
                 });
+
+                for (i, (kb, path)) in app_state_ctx
+                    .keybindings
+                    .user_quick_diffs
+                    .iter()
+                    .enumerate()
+                {
+                    handle_kb(kb, &mut |kb| {
+                        log::info!(
+                            "User Quick Diff Shortcut [{}] triggered: {}",
+                            i + 1,
+                            kb.format()
+                        );
+                        if let Some(path_source) = &app_state_ctx.file_path_1 {
+                            let universal_source = UniversalPath::new(path_source);
+                            let universal_target = UniversalPath::new(path);
+                            let (translated_source, translated_target) =
+                                quick_diff_process_paths(&universal_source, &universal_target);
+
+                            app_state_ctx.file_path_1 = Some(translated_source);
+                            app_state_ctx.file_path_2 = Some(translated_target);
+                        } else {
+                            log::info!("No source file currently loaded, quick diff failed");
+                        }
+                    });
+                }
             });
         }
 

@@ -107,7 +107,7 @@ pub fn quick_diff_process_paths(
             UniversalPath::Depot(_depot_str) => {
                 let mut tmp = NamedTempFile::new().expect("Failed to create tmp file");
 
-                // Here you would actually call 'p4 print' or similar
+                // could call 'p4 print' or similar
                 tmp.write_all(b"Contents of depot file")
                     .expect("Write failed");
 

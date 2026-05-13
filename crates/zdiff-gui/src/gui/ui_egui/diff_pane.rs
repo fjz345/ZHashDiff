@@ -472,7 +472,7 @@ impl FileDiffPane {
                                 }
                                 zdiff::diff_ir::DiffOp::Insert => {
                                     let token =
-                                        &file_target.clone().expect("Source was None").tokens
+                                        &file_target.clone().expect("Target was None").tokens
                                             [diff_result.token_target_idx.unwrap() as usize];
                                     file_target
                                         .as_ref()
