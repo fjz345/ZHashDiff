@@ -158,84 +158,88 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
     ui.separator();
 
     egui::ScrollArea::vertical().show(ui, |ui| {
-        let mut ui_shortcut_row = |label: &str, shortcut: &mut Option<Shortcut>| {
-            ui.horizontal(|ui| {
-                ui.label(label);
+        egui::Grid::new("p4_settings_grid")
+            .num_columns(2)
+            .spacing([40.0, 8.0])
+            .show(ui, |ui| {
+                let mut ui_shortcut_row = |label: &str, shortcut: &mut Option<Shortcut>| {
+                    ui.label(label);
 
-                let id = ui.next_auto_id();
-                let is_listening = ui.memory(|mem| mem.has_focus(id));
+                    let id = ui.next_auto_id();
+                    let is_listening = ui.memory(|mem| mem.has_focus(id));
 
-                let button_text = if is_listening {
-                    "Press any key...".to_string()
-                } else {
-                    shortcut
-                        .as_ref()
-                        .map_or_else(|| "None".to_string(), Shortcut::format)
-                };
+                    let button_text = if is_listening {
+                        "Press any key...".to_string()
+                    } else {
+                        shortcut
+                            .as_ref()
+                            .map_or_else(|| "None".to_string(), Shortcut::format)
+                    };
 
-                // do not know how to make this work, can not create button with explicit id
-                // ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(Button::new(button_text)).clicked() {
-                    ui.memory_mut(|mem| mem.request_focus(id));
-                }
-                // });
+                    // do not know how to make this work, can not create button with explicit id
+                    // ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(Button::new(button_text)).clicked() {
+                        ui.memory_mut(|mem| mem.request_focus(id));
+                    }
+                    // });
 
-                if is_listening {
-                    let mut next_shortcut = None;
-                    let mut should_surrender = false;
+                    if is_listening {
+                        let mut next_shortcut = None;
+                        let mut should_surrender = false;
 
-                    ui.input(|i| {
-                        if i.key_pressed(Key::Escape) {
-                            should_surrender = true;
-                        } else if i.pointer.secondary_clicked() {
-                            next_shortcut = None;
-                            should_surrender = true;
-                        } else {
-                            for event in &i.events {
-                                if let egui::Event::Key {
-                                    key,
-                                    pressed: true,
-                                    modifiers,
-                                    ..
-                                } = event
-                                {
-                                    next_shortcut = Some(Shortcut {
-                                        key: *key,
-                                        modifiers: *modifiers,
-                                    });
-                                    should_surrender = true;
-                                    break;
+                        ui.input(|i| {
+                            if i.key_pressed(Key::Escape) {
+                                should_surrender = true;
+                            } else if i.pointer.secondary_clicked() {
+                                next_shortcut = None;
+                                should_surrender = true;
+                            } else {
+                                for event in &i.events {
+                                    if let egui::Event::Key {
+                                        key,
+                                        pressed: true,
+                                        modifiers,
+                                        ..
+                                    } = event
+                                    {
+                                        next_shortcut = Some(Shortcut {
+                                            key: *key,
+                                            modifiers: *modifiers,
+                                        });
+                                        should_surrender = true;
+                                        break;
+                                    }
                                 }
                             }
+                        });
+
+                        if should_surrender {
+                            log::info!("Setting shortcut for {}: {:?}", label, next_shortcut);
+                            *shortcut = next_shortcut;
+                            ui.memory_mut(|mem| mem.surrender_focus(id));
                         }
-                    });
-
-                    if should_surrender {
-                        log::info!("Setting shortcut for {}: {:?}", label, next_shortcut);
-                        *shortcut = next_shortcut;
-                        ui.memory_mut(|mem| mem.surrender_focus(id));
                     }
-                }
-            });
-        };
+                    ui.end_row();
+                };
 
-        ui_shortcut_row("Open Source File", &mut keybindings.open_file_source);
-        ui_shortcut_row("Open Target File", &mut keybindings.open_file_target);
-        ui_shortcut_row("Refresh Diff", &mut keybindings.refresh_diff);
-        ui_shortcut_row(
-            "Refresh Diff Rows Only",
-            &mut keybindings.refresh_diff_rows_only,
-        );
-        ui_shortcut_row(
-            "Open Keybindings Options",
-            &mut keybindings.open_options_keybindings,
-        );
-        ui_shortcut_row("Open Universal Path", &mut keybindings.open_universal_path);
-        ui_shortcut_row("Find", &mut keybindings.find);
-        ui_shortcut_row("Goto", &mut keybindings.goto);
-        ui_shortcut_row("Next Conflict", &mut keybindings.next_conflict);
-        ui_shortcut_row("Previous Conflict", &mut keybindings.prev_conflict);
-        ui_shortcut_row("Next Find Result", &mut keybindings.next_find);
-        ui_shortcut_row("Previous Find Result", &mut keybindings.prev_find);
+                ui_shortcut_row("Open Source File", &mut keybindings.open_file_source);
+                ui_shortcut_row("Open Target File", &mut keybindings.open_file_target);
+                ui_shortcut_row("Refresh Diff", &mut keybindings.refresh_diff);
+                ui_shortcut_row(
+                    "Refresh Diff Rows Only",
+                    &mut keybindings.refresh_diff_rows_only,
+                );
+                ui_shortcut_row(
+                    "Open Keybindings Options",
+                    &mut keybindings.open_options_keybindings,
+                );
+                ui_shortcut_row("Open Universal Path", &mut keybindings.open_universal_path);
+                ui_shortcut_row("Find", &mut keybindings.find);
+                ui_shortcut_row("Goto", &mut keybindings.goto);
+                ui_shortcut_row("Next Conflict", &mut keybindings.next_conflict);
+                ui_shortcut_row("Previous Conflict", &mut keybindings.prev_conflict);
+                ui_shortcut_row("Next Find Result", &mut keybindings.next_find);
+                ui_shortcut_row("Previous Find Result", &mut keybindings.prev_find);
+            });
     });
 }

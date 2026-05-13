@@ -1150,6 +1150,9 @@ impl<'a> ZApp {
                     &app_state_ctx.keybindings.open_options_keybindings,
                     &mut |_kb| self.open_shortcuts_window = true,
                 );
+                handle_kb(&app_state_ctx.keybindings.open_universal_path, &mut |_kb| {
+                    self.open_universal_path_window = true
+                });
                 handle_kb(&app_state_ctx.keybindings.find, &mut |_kb| {
                     app_state_ctx.find_open = true
                 });
