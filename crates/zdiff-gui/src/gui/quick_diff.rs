@@ -2,6 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use eframe::egui::{self, Response};
 use tempfile::{NamedTempFile, TempPath};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -50,6 +51,21 @@ impl AsRef<OsStr> for UniversalPath {
             Self::Local(p) => p.as_os_str(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct UniversalPathConfig {
+    pub p4_path: String,
+}
+
+pub fn ui_universal_path(
+    ui: &mut egui::Ui,
+    universal_path_config: &mut UniversalPathConfig,
+) -> Response {
+    ui.label("Universal Path Configuration");
+    ui.text_edit_singleline(&mut universal_path_config.p4_path);
+    ui.button("Save")
 }
 
 pub fn quick_diff_process_paths(

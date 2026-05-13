@@ -136,6 +136,7 @@ impl Default for Keybindings {
             next_find: Some(Shortcut {
                 key: Key::Enter,
                 modifiers: Modifiers {
+                    ctrl: false,
                     ..Default::default()
                 },
             }),
@@ -146,7 +147,6 @@ impl Default for Keybindings {
                     ..Default::default()
                 },
             }),
-            ..Default::default()
         }
     }
 }

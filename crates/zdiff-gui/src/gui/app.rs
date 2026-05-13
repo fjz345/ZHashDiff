@@ -29,6 +29,7 @@ use egui_tiles::Tile;
 use crate::{
     clamped_cursor::ClampedCursor,
     keybindings::{self, Keybindings, Shortcut, ui_keybindings},
+    quick_diff::{UniversalPathConfig, ui_universal_path},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},
@@ -102,6 +103,8 @@ pub struct AppStateCtx {
 
     // ### Keybindings
     pub keybindings: Keybindings,
+    // ### Universal Path
+    pub universal_path_config: UniversalPathConfig,
 }
 
 impl Default for AppStateCtx {
@@ -133,6 +136,7 @@ impl Default for AppStateCtx {
             find_found_lines_2: Default::default(),
             diff_ctx_pivot: Default::default(),
             keybindings: Default::default(),
+            universal_path_config: Default::default(),
         }
     }
 }
@@ -598,6 +602,7 @@ impl<'a> ZApp {
         scroll_right: &mut f32,
         lexer_mode: &mut u8,
         keybindings: &mut Keybindings,
+        universal_path_config: &mut UniversalPathConfig,
     ) {
         let check_file_rx = |rx_opt: &mut Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
                              target: &mut Option<std::path::PathBuf>| {
@@ -823,7 +828,7 @@ impl<'a> ZApp {
                 "Option - Universal Path",
                 true,
                 |ui| {
-                    // Implementation for universal path popup
+                    ui_universal_path(ui, universal_path_config);
                 },
             );
         }
@@ -858,6 +863,7 @@ impl<'a> ZApp {
                 find_found_lines_2,
                 diff_ctx_pivot,
                 keybindings,
+                universal_path_config,
             } = app_ctx;
             self.show_menu(
                 ui,
@@ -875,6 +881,7 @@ impl<'a> ZApp {
                 scroll_right,
                 lexer_mode,
                 keybindings,
+                universal_path_config,
             );
 
             let mut goto_window_open = *goto_open;

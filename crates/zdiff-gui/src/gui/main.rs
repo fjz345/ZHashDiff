@@ -7,6 +7,7 @@ use crate::app::ZApp;
 mod app;
 mod clamped_cursor;
 mod keybindings;
+mod p4;
 mod quick_diff;
 pub mod ui_egui;
 
