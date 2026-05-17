@@ -293,22 +293,27 @@ impl AppStateCtx {
                 && c1.read_content_span(a.span.clone()) == c2.read_content_span(b.span.clone())
         };
 
+        #[cfg(feature = "debug_alloc")]
+        println!("Allocations update_diff_rows: {:?}", reg.change_and_reset());
         const MYERS_LINEAR: bool = true;
         let myers_path = if MYERS_LINEAR {
+            let path = myers_diff_linear(&t1, &t2, cmp);
             #[cfg(feature = "debug_alloc")]
-            println!("Allocations myers_diff_trace: {:?}", reg.change_and_reset());
-            myers_diff_linear(&t1, &t2, cmp)
+            println!(
+                "Allocations myers_diff_linear: {:?}",
+                reg.change_and_reset()
+            );
+            path
         } else {
-            #[cfg(feature = "debug_alloc")]
-            println!("Allocations update_diff_rows: {:?}", reg.change_and_reset());
             let myers_trace = myers_diff_trace(t1, t2, cmp);
             #[cfg(feature = "debug_alloc")]
             println!("Allocations myers_diff_trace: {:?}", reg.change_and_reset());
-            myers_backtrack(myers_trace, t1.len() as i32, t2.len() as i32)
+            let backtrack = myers_backtrack(myers_trace, t1.len() as i32, t2.len() as i32);
+            #[cfg(feature = "debug_alloc")]
+            println!("Allocations myers_backtrack: {:?}", reg.change_and_reset());
+            backtrack
         };
 
-        #[cfg(feature = "debug_alloc")]
-        println!("Allocations myers_backtrack: {:?}", reg.change_and_reset());
         let diff_ir = DiffIR::new(&myers_path);
         #[cfg(feature = "debug_alloc")]
         println!("Allocations DiffIR::new(): {:?}", reg.change_and_reset());
