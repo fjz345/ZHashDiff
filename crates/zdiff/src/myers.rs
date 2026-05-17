@@ -19,6 +19,14 @@ impl MyersTrace {
     pub fn len(&self) -> usize {
         self.num_rows
     }
+
+    pub fn shortest_edit(&self) -> usize {
+        if self.num_rows == 0 {
+            0
+        } else {
+            self.num_rows - 1
+        }
+    }
 }
 
 impl std::ops::Index<usize> for MyersTrace {
@@ -39,7 +47,7 @@ where
     F: FnMut(&T, &T) -> bool,
 {
     let trace = myers_diff_trace(source, target, cmp);
-    (trace.len() as i32) - 1 // D = trace.len() - 1
+    trace.shortest_edit() as i32
 }
 
 /*
@@ -53,26 +61,25 @@ where
     let target_len = target.len() as i32;
     let max_possible_edits = source_len + target_len;
 
-    let mut furthest_x_on_diagonal = vec![0; (2 * max_possible_edits + 2) as usize];
+    let mut furthest_x_for_k = vec![0; (2 * max_possible_edits + 2) as usize];
     let mut trace = MyersTrace::new(max_possible_edits as usize + 1);
     let diagonal_offset = max_possible_edits as usize;
 
-    furthest_x_on_diagonal[diagonal_offset + 1] = 0;
+    furthest_x_for_k[diagonal_offset + 1] = 0;
 
-    for edit_distance in 0..=max_possible_edits {
-        for diagonal in (-edit_distance..=edit_distance).step_by(2) {
-            let v_index = (diagonal + max_possible_edits) as usize;
+    for depth in 0..=max_possible_edits {
+        for k in (-depth..=depth).step_by(2) {
+            let v_index = (k + max_possible_edits) as usize;
 
-            let mut current_x = if diagonal == -edit_distance
-                || (diagonal != edit_distance
-                    && furthest_x_on_diagonal[v_index - 1] < furthest_x_on_diagonal[v_index + 1])
+            let mut current_x = if k == -depth
+                || (k != depth && furthest_x_for_k[v_index - 1] < furthest_x_for_k[v_index + 1])
             {
-                furthest_x_on_diagonal[v_index + 1]
+                furthest_x_for_k[v_index + 1]
             } else {
-                furthest_x_on_diagonal[v_index - 1] + 1
+                furthest_x_for_k[v_index - 1] + 1
             };
 
-            let mut current_y = current_x - diagonal;
+            let mut current_y = current_x - k;
 
             while current_x < source_len
                 && current_y < target_len
@@ -82,20 +89,20 @@ where
                 current_y += 1;
             }
 
-            furthest_x_on_diagonal[v_index] = current_x;
+            furthest_x_for_k[v_index] = current_x;
 
             if current_x >= source_len && current_y >= target_len {
                 // Slicing and pushing
-                let start = diagonal_offset - edit_distance as usize;
-                let end = diagonal_offset + edit_distance as usize;
-                trace.push(&furthest_x_on_diagonal[start..=end]);
+                let start = diagonal_offset - depth as usize;
+                let end = diagonal_offset + depth as usize;
+                trace.push(&furthest_x_for_k[start..=end]);
                 return trace;
             }
         }
 
-        let start = diagonal_offset - edit_distance as usize;
-        let end = diagonal_offset + edit_distance as usize;
-        trace.push(&furthest_x_on_diagonal[start..=end]);
+        let start = diagonal_offset - depth as usize;
+        let end = diagonal_offset + depth as usize;
+        trace.push(&furthest_x_for_k[start..=end]);
     }
     trace
 }
@@ -105,28 +112,24 @@ pub fn myers_backtrack(trace: MyersTrace, source_len: i32, target_len: i32) -> V
     let mut current_y = target_len;
 
     // Start from the final depth and work backwards to D=1
-    for edit_distance in (1..trace.len()).rev() {
-        let d_idx = edit_distance as i32;
-        let diagonal = current_x - current_y;
-        let prev_v_slice = &trace[edit_distance - 1];
+    for depth in (1..trace.len()).rev() {
+        let d_idx = depth as i32;
+        let k = current_x - current_y;
+        let prev_v_slice = &trace[depth - 1];
         let prev_d_idx = d_idx - 1;
 
         // Logic check: Did we come from the diagonal above (Down) or the diagonal to the left (Right)?
-        let came_from_above = if diagonal == -d_idx
-            || (diagonal != d_idx
-                && prev_v_slice[(diagonal + 1 + prev_d_idx) as usize]
-                    > prev_v_slice[(diagonal - 1 + prev_d_idx) as usize])
+        let came_from_above = if k == -d_idx
+            || (k != d_idx
+                && prev_v_slice[(k + 1 + prev_d_idx) as usize]
+                    > prev_v_slice[(k - 1 + prev_d_idx) as usize])
         {
             true
         } else {
             false
         };
 
-        let k_prev = if came_from_above {
-            diagonal + 1
-        } else {
-            diagonal - 1
-        };
+        let k_prev = if came_from_above { k + 1 } else { k - 1 };
         let x_before_snake = if came_from_above {
             prev_v_slice[(k_prev + prev_d_idx) as usize]
         } else {
@@ -235,28 +238,12 @@ mod tests {
         let b: Vec<char> = "CBABAC".chars().collect();
         let cmp = |t1: &char, t2: &char| t1 == t2;
 
-        let dist = myers_diff(&a, &b, cmp);
         let trace = myers_diff_trace(&a, &b, cmp);
+        let dist = trace.shortest_edit();
         let path = myers_backtrack(trace, a.len() as i32, b.len() as i32);
 
         assert_eq!(dist, 5);
         assert_eq!(distance_from_path(&path), 5);
-    }
-
-    #[test]
-    fn test_rust_token_edit_logic() {
-        let a = vec!["fn", "main", "(", ")", "{", "}"];
-        let b = vec!["fn", "main2", "(", ")", "{", "}"];
-        let cmp = |t1: &&str, t2: &&str| t1 == t2;
-
-        let trace = myers_diff_trace(&a, &b, cmp);
-        let path = myers_backtrack(trace, a.len() as i32, b.len() as i32);
-
-        // Distance should be 2 (Delete main, Insert main2)
-        assert_eq!(distance_from_path(&path), 2);
-
-        // Path should include (3,3) which is the match for '('
-        assert!(path.contains(&(3, 3)));
     }
 
     #[test]

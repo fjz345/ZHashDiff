@@ -9,9 +9,14 @@ Library diffing file contents.
 * Powerful diffing view
 
 ## Todo
+* Line diff -> inner line diff
+
 * Regex filter text contents
 * toggle filter only diffs rows
 * image file diff
 
 * Myers linear diff algo
 * hex diff/binary diff
+
+## Great blog post
+https://blog.jcoglan.com/2017/02/12/the-myers-diff-algorithm-part-1/
