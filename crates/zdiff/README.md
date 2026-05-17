@@ -15,7 +15,6 @@ Library diffing file contents.
 * toggle filter only diffs rows
 * image file diff
 
-* Myers linear diff algo
 * hex diff/binary diff
 
 ## Great blog post
