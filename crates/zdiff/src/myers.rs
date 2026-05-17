@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 pub struct MyersTrace {
     data: Vec<i32>,
     num_rows: usize,
@@ -59,19 +61,19 @@ where
 {
     let source_len = source.len() as i32;
     let target_len = target.len() as i32;
-    let max_possible_edits = source_len + target_len;
+    let max = source_len + target_len;
 
-    let mut furthest_x_for_k = vec![0; (2 * max_possible_edits + 2) as usize];
-    let mut trace = MyersTrace::new(max_possible_edits as usize + 1);
-    let diagonal_offset = max_possible_edits as usize;
+    let mut furthest_x_for_k = vec![0; (2 * max + 2) as usize];
+    let mut trace = MyersTrace::new(max as usize + 1);
 
-    furthest_x_for_k[diagonal_offset + 1] = 0;
+    let offset = max as usize;
+    furthest_x_for_k[offset] = 0;
 
-    for depth in 0..=max_possible_edits {
+    for depth in 0..=max {
         for k in (-depth..=depth).step_by(2) {
-            let v_index = (k + max_possible_edits) as usize;
+            let v_index = (k + max) as usize;
 
-            let mut current_x = if k == -depth
+            let mut x = if k == -depth
                 || (k != depth && furthest_x_for_k[v_index - 1] < furthest_x_for_k[v_index + 1])
             {
                 furthest_x_for_k[v_index + 1]
@@ -79,33 +81,33 @@ where
                 furthest_x_for_k[v_index - 1] + 1
             };
 
-            let mut current_y = current_x - k;
+            let mut y = x - k;
 
-            while current_x < source_len
-                && current_y < target_len
-                && cmp(&source[current_x as usize], &target[current_y as usize])
+            // Move diagonally
+            while x < source_len && y < target_len && cmp(&source[x as usize], &target[y as usize])
             {
-                current_x += 1;
-                current_y += 1;
+                x += 1;
+                y += 1;
             }
 
-            furthest_x_for_k[v_index] = current_x;
+            furthest_x_for_k[v_index] = x;
 
-            if current_x >= source_len && current_y >= target_len {
-                // Slicing and pushing
-                let start = diagonal_offset - depth as usize;
-                let end = diagonal_offset + depth as usize;
+            if x >= source_len && y >= target_len {
+                let start = offset - depth as usize;
+                let end = offset + depth as usize;
                 trace.push(&furthest_x_for_k[start..=end]);
                 return trace;
             }
         }
 
-        let start = diagonal_offset - depth as usize;
-        let end = diagonal_offset + depth as usize;
+        let start = offset - depth as usize;
+        let end = offset + depth as usize;
         trace.push(&furthest_x_for_k[start..=end]);
     }
+
     trace
 }
+
 pub fn myers_backtrack(trace: MyersTrace, source_len: i32, target_len: i32) -> Vec<(i32, i32)> {
     let mut path = Vec::with_capacity((source_len + target_len) as usize + 1);
     let mut current_x = source_len;
@@ -130,10 +132,12 @@ pub fn myers_backtrack(trace: MyersTrace, source_len: i32, target_len: i32) -> V
         };
 
         let k_prev = if came_from_above { k + 1 } else { k - 1 };
+        let prev_v_idx = (k_prev + prev_d_idx) as usize;
+
         let x_before_snake = if came_from_above {
-            prev_v_slice[(k_prev + prev_d_idx) as usize]
+            prev_v_slice[prev_v_idx]
         } else {
-            prev_v_slice[(k_prev + prev_d_idx) as usize] + 1
+            prev_v_slice[prev_v_idx] + 1
         };
 
         // 1. Backtrack the diagonal snake (matches)
@@ -178,6 +182,225 @@ pub fn myers_count_add_deletes(diff_path: &[(i32, i32)]) -> (u32, u32) {
         }
     }
     (adds, deletes)
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BoxRegion {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+impl BoxRegion {
+    fn width(&self) -> i32 {
+        self.right - self.left
+    }
+    fn height(&self) -> i32 {
+        self.bottom - self.top
+    }
+    fn size(&self) -> i32 {
+        self.width() + self.height()
+    }
+    fn delta(&self) -> i32 {
+        self.width() - self.height()
+    }
+}
+
+fn find_midpoint<T, F>(
+    box_reg: BoxRegion,
+    source: &[T],
+    target: &[T],
+    cmp: &mut F,
+) -> Option<((i32, i32), (i32, i32))>
+where
+    F: FnMut(&T, &T) -> bool,
+{
+    if box_reg.size() == 0 {
+        return None;
+    }
+
+    let mut vf = HashMap::new();
+    let mut vb = HashMap::new();
+
+    vf.insert(1, box_reg.left);
+    vb.insert(1, box_reg.bottom);
+
+    let max_d = (box_reg.size() + 1) / 2;
+
+    for d in 0..=max_d {
+        for k in (-d..=d).step_by(2) {
+            let c = k - box_reg.delta();
+
+            let (prev_x, x) =
+                if k == -d || (k != d && vf.get(&(k - 1)).unwrap() < vf.get(&(k + 1)).unwrap()) {
+                    let px = *vf.get(&(k + 1)).unwrap();
+                    (px, px)
+                } else {
+                    let px = *vf.get(&(k - 1)).unwrap();
+                    (px, px + 1)
+                };
+
+            let mut current_x = x;
+            let mut current_y = (current_x - box_reg.left) - k + box_reg.top;
+
+            let prev_y = if d == 0 || current_x != prev_x {
+                current_y
+            } else {
+                current_y - 1
+            };
+
+            while current_x < box_reg.right
+                && current_y < box_reg.bottom
+                && cmp(&source[current_x as usize], &target[current_y as usize])
+            {
+                current_x += 1;
+                current_y += 1;
+            }
+
+            vf.insert(k, current_x);
+
+            if box_reg.delta() % 2 != 0 && c >= -(d - 1) && c <= d - 1 {
+                if current_y >= *vb.get(&c).unwrap_or(&0) {
+                    return Some(((prev_x, prev_y), (current_x, current_y)));
+                }
+            }
+        }
+
+        for c in (-d..=d).step_by(2) {
+            let k = c + box_reg.delta();
+
+            let (prev_y, y) =
+                if c == -d || (c != d && vb.get(&(c - 1)).unwrap() > vb.get(&(c + 1)).unwrap()) {
+                    let py = *vb.get(&(c + 1)).unwrap();
+                    (py, py)
+                } else {
+                    let py = *vb.get(&(c - 1)).unwrap();
+                    (py, py - 1)
+                };
+
+            let mut current_y = y;
+            let mut current_x = (current_y - box_reg.top) + k + box_reg.left;
+
+            let prev_x = if d == 0 || current_y != prev_y {
+                current_x
+            } else {
+                current_x + 1
+            };
+
+            while current_x > box_reg.left
+                && current_y > box_reg.top
+                && cmp(
+                    &source[(current_x - 1) as usize],
+                    &target[(current_y - 1) as usize],
+                )
+            {
+                current_x -= 1;
+                current_y -= 1;
+            }
+
+            vb.insert(c, current_y);
+
+            if box_reg.delta() % 2 == 0 && k >= -d && k <= d {
+                if current_x <= *vf.get(&k).unwrap_or(&0) {
+                    return Some(((current_x, current_y), (prev_x, prev_y)));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn find_path<T, F>(
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    source: &[T],
+    target: &[T],
+    cmp: &mut F,
+) -> Option<Vec<(i32, i32)>>
+where
+    F: FnMut(&T, &T) -> bool,
+{
+    let box_reg = BoxRegion {
+        left,
+        top,
+        right,
+        bottom,
+    };
+    if box_reg.size() == 0 {
+        return None;
+    }
+
+    if let Some((snake_start, snake_end)) = find_midpoint(box_reg, source, target, cmp) {
+        let head = find_path(
+            box_reg.left,
+            box_reg.top,
+            snake_start.0,
+            snake_start.1,
+            source,
+            target,
+            cmp,
+        )
+        .unwrap_or_else(|| vec![snake_start]);
+        let tail = find_path(
+            snake_end.0,
+            snake_end.1,
+            box_reg.right,
+            box_reg.bottom,
+            source,
+            target,
+            cmp,
+        )
+        .unwrap_or_else(|| vec![snake_end]);
+
+        Some(head.into_iter().chain(tail).collect())
+    } else {
+        None
+    }
+}
+
+pub fn myers_diff_linear<T, F>(source: &[T], target: &[T], mut cmp: F) -> Vec<(i32, i32)>
+where
+    F: FnMut(&T, &T) -> bool,
+{
+    let source_len = source.len() as i32;
+    let target_len = target.len() as i32;
+
+    let mut points =
+        find_path(0, 0, source_len, target_len, source, target, &mut cmp).unwrap_or_else(Vec::new);
+
+    if points.is_empty() || points[0] != (0, 0) {
+        points.insert(0, (0, 0));
+    }
+    if points.last() != Some(&(source_len, target_len)) {
+        points.push((source_len, target_len));
+    }
+
+    let mut path = vec![(0, 0)];
+    for i in 0..points.len() - 1 {
+        let mut x = points[i].0;
+        let mut y = points[i].1;
+        let next_point = points[i + 1];
+
+        while x < next_point.0 || y < next_point.1 {
+            if x < next_point.0 && y < next_point.1 && cmp(&source[x as usize], &target[y as usize])
+            {
+                x += 1;
+                y += 1;
+            } else if next_point.0 - x > next_point.1 - y {
+                x += 1;
+            } else {
+                y += 1;
+            }
+            if path.last() != Some(&(x, y)) {
+                path.push((x, y));
+            }
+        }
+    }
+
+    path
 }
 
 #[cfg(test)]
@@ -254,6 +477,79 @@ mod tests {
 
         let trace = myers_diff_trace(&a, &b, cmp);
         let path = myers_backtrack(trace, a.len() as i32, b.len() as i32);
+
+        // Verify every step in the path is valid (Right, Down, or Diagonal)
+        for w in path.windows(2) {
+            let (x1, y1) = w[0];
+            let (x2, y2) = w[1];
+            let dx = x2 - x1;
+            let dy = y2 - y1;
+
+            // Valid moves: (1,0), (0,1), or (1,1)
+            assert!(
+                (dx == 1 && dy == 0) || (dx == 0 && dy == 1) || (dx == 1 && dy == 1),
+                "Invalid path jump from ({},{}) to ({},{})",
+                x1,
+                y1,
+                x2,
+                y2
+            );
+        }
+    }
+
+    // LINEAR
+    #[test]
+    fn test_linear_identical_sequences() {
+        let a = vec!["a", "b", "c"];
+        let b = vec!["a", "b", "c"];
+        let cmp = |t1: &&str, t2: &&str| t1 == t2;
+
+        let path = myers_diff_linear(&a, &b, cmp);
+
+        assert_eq!(distance_from_path(&path), 0);
+        assert_eq!(path.len(), 4); // (0,0) -> (1,1) -> (2,2) -> (3,3)
+    }
+
+    #[test]
+    fn test_linear_completely_different() {
+        let a = vec!["a", "b"];
+        let b = vec!["c", "d"];
+        let cmp = |t1: &&str, t2: &&str| t1 == t2;
+
+        let path = myers_diff_linear(&a, &b, cmp);
+        assert_eq!(distance_from_path(&path), 4); // 2 deletes, 2 inserts
+    }
+
+    #[test]
+    fn test_linear_empty_sequences() {
+        let a: Vec<&str> = vec![];
+        let b: Vec<&str> = vec!["a", "b"];
+        let cmp = |t1: &&str, t2: &&str| t1 == t2;
+
+        assert_eq!(myers_diff_linear(&a, &b, cmp).len() - 1, 2);
+        assert_eq!(myers_diff_linear(&b, &a, cmp).len() - 1, 2);
+        assert_eq!(myers_diff_linear(&a, &a, cmp).len() - 1, 0);
+    }
+
+    #[test]
+    fn test_linear_complex_interleaving() {
+        let a: Vec<char> = "ABCABBA".chars().collect();
+        let b: Vec<char> = "CBABAC".chars().collect();
+        let cmp = |t1: &char, t2: &char| t1 == t2;
+
+        let path = myers_diff_linear(&a, &b, cmp);
+
+        // assert_eq!(dist, 5);
+        assert_eq!(distance_from_path(&path), 5);
+    }
+
+    #[test]
+    fn test_linear_path_continuity() {
+        let a = vec!["A", "B", "C"];
+        let b = vec!["A", "X", "C"];
+        let cmp = |t1: &&str, t2: &&str| t1 == t2;
+
+        let path = myers_diff_linear(&a, &b, cmp);
 
         // Verify every step in the path is valid (Right, Down, or Diagonal)
         for w in path.windows(2) {
