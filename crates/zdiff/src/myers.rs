@@ -1,4 +1,31 @@
-use std::collections::HashMap;
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MyersDiffAlgorithm {
+    Trace, // N+M^2 memory
+    #[default]
+    Linear, // N+M memory
+    LinearMT, // N+M memory with multi-threading
+}
+
+pub fn myers_diff_path<T, F>(
+    algorithm: MyersDiffAlgorithm,
+    source: &[T],
+    target: &[T],
+    cmp: F,
+) -> Vec<(i32, i32)>
+where
+    T: Sync,
+    F: Fn(&T, &T) -> bool + Sync,
+{
+    match algorithm {
+        MyersDiffAlgorithm::Trace => {
+            let trace = myers_diff_trace(source, target, cmp);
+            myers_backtrack(trace, source.len() as i32, target.len() as i32)
+        }
+        MyersDiffAlgorithm::Linear => myers_diff_linear(source, target, cmp),
+        MyersDiffAlgorithm::LinearMT => myers_diff_linear_mt(source, target, cmp),
+    }
+}
 
 pub struct MyersTrace {
     data: Vec<i32>,

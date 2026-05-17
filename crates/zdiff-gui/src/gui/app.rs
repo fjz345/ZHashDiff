@@ -18,8 +18,8 @@ use zdiff::{
         LexerTokenize, RawToken,
     },
     myers::{
-        myers_backtrack, myers_count_add_deletes, myers_diff_linear, myers_diff_linear_mt,
-        myers_diff_trace,
+        MyersDiffAlgorithm, myers_backtrack, myers_count_add_deletes, myers_diff_linear,
+        myers_diff_linear_mt, myers_diff_path, myers_diff_trace,
     },
 };
 
@@ -69,6 +69,9 @@ pub struct AppStateCtx {
 
     pub diff_lexer_mode: u8,
     pub diff_options: DiffBuilderOptions,
+
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub myers_diff_algorithm: MyersDiffAlgorithm,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub diff_ctx: Option<DiffCtx>,
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -140,6 +143,7 @@ impl Default for AppStateCtx {
             diff_ctx_pivot: Default::default(),
             keybindings: Default::default(),
             universal_path_config: Default::default(),
+            myers_diff_algorithm: Default::default(),
         }
     }
 }
@@ -278,9 +282,12 @@ impl AppStateCtx {
         file_1: Option<Arc<CachedFile<RawToken>>>,
         file_2: Option<Arc<CachedFile<RawToken>>>,
         options: &DiffBuilderOptions,
+        myers_diff_algo: MyersDiffAlgorithm,
     ) -> DiffCtx {
         #[cfg(feature = "debug_alloc")]
         let mut reg = stats_alloc::Region::new(&crate::STATS_ALLOC);
+        #[cfg(feature = "debug_alloc")]
+        log::log!("Allocations update_diff_rows: {:?}", reg.change_and_reset());
 
         let (c1, c2, one_sided_diff_is_left) = match (&file_1, &file_2) {
             (Some(c1), Some(c2)) => (c1, c2, None),
@@ -297,40 +304,17 @@ impl AppStateCtx {
         };
 
         #[cfg(feature = "debug_alloc")]
-        println!("Allocations update_diff_rows: {:?}", reg.change_and_reset());
-        const MYERS_LINEAR: bool = true;
-        let myers_path = if MYERS_LINEAR {
-            const MYERS_LINEAR_MT: bool = false;
-            if MYERS_LINEAR_MT {
-                let path = myers_diff_linear_mt(&t1, &t2, cmp);
-                #[cfg(feature = "debug_alloc")]
-                println!(
-                    "Allocations myers_diff_linear_mt: {:?}",
-                    reg.change_and_reset()
-                );
-                path
-            } else {
-                let path = myers_diff_linear(&t1, &t2, cmp);
-                #[cfg(feature = "debug_alloc")]
-                println!(
-                    "Allocations myers_diff_linear: {:?}",
-                    reg.change_and_reset()
-                );
-                path
-            }
-        } else {
-            let myers_trace = myers_diff_trace(t1, t2, cmp);
-            #[cfg(feature = "debug_alloc")]
-            println!("Allocations myers_diff_trace: {:?}", reg.change_and_reset());
-            let backtrack = myers_backtrack(myers_trace, t1.len() as i32, t2.len() as i32);
-            #[cfg(feature = "debug_alloc")]
-            println!("Allocations myers_backtrack: {:?}", reg.change_and_reset());
-            backtrack
-        };
+        log::log!(
+            "Allocations before myers_diff: {:?}",
+            reg.change_and_reset()
+        );
+        let myers_path = myers_diff_path(myers_diff_algo, t1, t2, cmp);
+        #[cfg(feature = "debug_alloc")]
+        log::log!("Allocations myers_diff: {:?}", reg.change_and_reset());
 
         let diff_ir = DiffIR::new(&myers_path);
         #[cfg(feature = "debug_alloc")]
-        println!("Allocations DiffIR::new(): {:?}", reg.change_and_reset());
+        log::log!("Allocations DiffIR::new(): {:?}", reg.change_and_reset());
 
         let hash1 = hash_file(&c1.path).expect("Hash failed");
         let hash2 = match one_sided_diff_is_left {
@@ -338,7 +322,7 @@ impl AppStateCtx {
             Some(_) => hash1.clone(),
         };
         #[cfg(feature = "debug_alloc")]
-        println!("Allocations hash_file: {:?}", reg.change_and_reset());
+        log::log!("Allocations hash_file: {:?}", reg.change_and_reset());
         let mut diff_rows = build_diff_rows(
             diff_ir,
             Some(&t1),
@@ -347,7 +331,7 @@ impl AppStateCtx {
             c1.metadata.num_lines().max(c2.metadata.num_lines()),
         );
         #[cfg(feature = "debug_alloc")]
-        println!("Allocations build_diff_rows: {:?}", reg.change_and_reset());
+        log::log!("Allocations build_diff_rows: {:?}", reg.change_and_reset());
 
         let line_count_1 = c1.metadata.line_starts.len();
         let line_count_2 = c2.metadata.line_starts.len();
@@ -637,6 +621,7 @@ impl<'a> ZApp {
         lexer_mode: &mut u8,
         keybindings: &mut Keybindings,
         universal_path_config: &mut UniversalPathConfig,
+        myers_diff_algorithm: &mut MyersDiffAlgorithm,
     ) {
         let check_file_rx = |rx_opt: &mut Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
                              target: &mut Option<std::path::PathBuf>| {
@@ -714,6 +699,15 @@ impl<'a> ZApp {
                 });
 
                 ui.menu_button("Options", |ui| {
+                    ui.menu_button("Myers Algo", |ui| {
+                        ui.radio_value(myers_diff_algorithm, MyersDiffAlgorithm::Trace, "Trace");
+                        ui.radio_value(myers_diff_algorithm, MyersDiffAlgorithm::Linear, "Linear");
+                        ui.radio_value(
+                            myers_diff_algorithm,
+                            MyersDiffAlgorithm::LinearMT,
+                            "LinearMT",
+                        );
+                    });
                     ui.menu_button("Lexer", |ui| {
                         ui.radio_value(lexer_mode, LEXER_MODE_GREEDY, "LexerGreedy");
                         ui.radio_value(lexer_mode, LEXER_MODE_TOKENIZE, "LexerTokenize");
@@ -898,6 +892,7 @@ impl<'a> ZApp {
                 diff_ctx_pivot,
                 keybindings,
                 universal_path_config,
+                myers_diff_algorithm,
             } = app_ctx;
             self.show_menu(
                 ui,
@@ -916,6 +911,7 @@ impl<'a> ZApp {
                 lexer_mode,
                 keybindings,
                 universal_path_config,
+                myers_diff_algorithm,
             );
 
             let mut goto_window_open = *goto_open;
@@ -1336,6 +1332,7 @@ impl eframe::App for ZApp {
                         let f1 = state.file_1.clone();
                         let f2 = state.file_2.clone();
                         let opts = state.diff_options.clone();
+                        let myers_diff_algo = state.myers_diff_algorithm.clone();
 
                         std::thread::spawn(move || {
                             log::info!(
@@ -1347,7 +1344,8 @@ impl eframe::App for ZApp {
                                     .and_then(|f| Some(f.path.display().to_string()))
                                     .unwrap_or_default()
                             );
-                            let result = AppStateCtx::update_diff_rows(f1, f2, &opts);
+                            let result =
+                                AppStateCtx::update_diff_rows(f1, f2, &opts, myers_diff_algo);
                             log::info!("Compute for DiffCtx complete!");
                             let _ = tx.send(result);
                         });
