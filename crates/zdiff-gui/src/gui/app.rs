@@ -14,8 +14,8 @@ use zdiff::{
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
     lexer::{
-        LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_TOKENIZE, LexerDefault, LexerGreedy,
-        LexerTokenize, RawToken,
+        LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE,
+        LexerDefault, LexerGreedy, LexerNewLine, LexerTokenize, RawToken,
     },
     myers::{
         MyersDiffAlgorithm, myers_backtrack, myers_count_add_deletes, myers_diff_linear,
@@ -436,6 +436,7 @@ impl<'a> ZApp {
                 let lexer_parse_fn = match app_ctx.diff_lexer_mode {
                     LEXER_MODE_GREEDY => |contents: &str| LexerGreedy::new(contents).parse(),
                     LEXER_MODE_TOKENIZE => |contents: &str| LexerTokenize::new(contents).parse(),
+                    LEXER_MODE_NEWLINE => |contents: &str| LexerNewLine::new(contents).parse(),
                     _ => |contents: &str| LexerDefault::new(contents).parse(),
                 };
                 match CachedFile::new(path, lexer_parse_fn) {
@@ -459,6 +460,7 @@ impl<'a> ZApp {
                 let lexer_parse_fn = match app_ctx.diff_lexer_mode {
                     LEXER_MODE_GREEDY => |contents: &str| LexerGreedy::new(contents).parse(),
                     LEXER_MODE_TOKENIZE => |contents: &str| LexerTokenize::new(contents).parse(),
+                    LEXER_MODE_NEWLINE => |contents: &str| LexerNewLine::new(contents).parse(),
                     _ => |contents: &str| LexerDefault::new(contents).parse(),
                 };
                 match CachedFile::new(path, lexer_parse_fn) {
@@ -711,6 +713,7 @@ impl<'a> ZApp {
                     ui.menu_button("Lexer", |ui| {
                         ui.radio_value(lexer_mode, LEXER_MODE_GREEDY, "LexerGreedy");
                         ui.radio_value(lexer_mode, LEXER_MODE_TOKENIZE, "LexerTokenize");
+                        ui.radio_value(lexer_mode, LEXER_MODE_NEWLINE, "LexerNewLine");
                     });
                     if ui
                         .button(format!(

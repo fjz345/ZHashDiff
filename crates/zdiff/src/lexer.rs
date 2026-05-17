@@ -56,9 +56,11 @@ impl<const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'_, LEXER_MODE, T> {
 pub const LEXER_MODE_DEFAULT: u8 = LEXER_MODE_GREEDY;
 pub const LEXER_MODE_GREEDY: u8 = 1; // longest possible token lengths to reduce number of tokens
 pub const LEXER_MODE_TOKENIZE: u8 = 2; // Try to tokenize as much as possible
+pub const LEXER_MODE_NEWLINE: u8 = 3; // Handle newlines specifically
 pub type LexerDefault<'a, T> = Lexer<'a, LEXER_MODE_DEFAULT, T>;
 pub type LexerGreedy<'a, T> = Lexer<'a, LEXER_MODE_GREEDY, T>;
 pub type LexerTokenize<'a, T> = Lexer<'a, LEXER_MODE_TOKENIZE, T>;
+pub type LexerNewLine<'a, T> = Lexer<'a, LEXER_MODE_NEWLINE, T>;
 
 #[derive(Debug, Clone)]
 pub struct Lexer<'a, const LEXER_MODE: u8, T: RawTokenTrait> {
@@ -171,6 +173,43 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait + From<RawToken>> Iterator
     type Item = RawToken;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let c = self.peek()?;
+        let start = self.cursor;
+        if LEXER_MODE == LEXER_MODE_NEWLINE {
+            match c {
+                '\r' => {
+                    self.consume();
+                    if self.peek() == Some('\n') {
+                        self.consume();
+                    }
+                    return Some(RawToken {
+                        kind: TokenKind::Newline,
+                        span: start..self.cursor,
+                    });
+                }
+                '\n' => {
+                    self.consume();
+                    return Some(RawToken {
+                        kind: TokenKind::Newline,
+                        span: start..self.cursor,
+                    });
+                }
+                _ => {
+                    while self
+                        .peek()
+                        .map_or(false, |next| next != '\n' && next != '\r')
+                    {
+                        self.consume();
+                    }
+                }
+            }
+
+            return Some(RawToken {
+                kind: TokenKind::String,
+                span: start..self.cursor,
+            });
+        }
+
         let c = self.peek()?;
         let start = self.cursor;
 
