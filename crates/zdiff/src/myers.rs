@@ -192,17 +192,55 @@ struct BoxRegion {
     bottom: i32,
 }
 impl BoxRegion {
+    #[inline(always)]
     fn width(&self) -> i32 {
         self.right - self.left
     }
+    #[inline(always)]
     fn height(&self) -> i32 {
         self.bottom - self.top
     }
+    #[inline(always)]
     fn size(&self) -> i32 {
         self.width() + self.height()
     }
+    #[inline(always)]
     fn delta(&self) -> i32 {
         self.width() - self.height()
+    }
+}
+
+struct SearchBuffers {
+    vf: Vec<i32>,
+    vb: Vec<i32>,
+    offset: usize,
+}
+
+impl SearchBuffers {
+    fn new(max_size: usize) -> Self {
+        Self {
+            vf: vec![0; 2 * max_size + 2],
+            vb: vec![0; 2 * max_size + 2],
+            offset: max_size,
+        }
+    }
+
+    #[inline(always)]
+    fn get_f(&self, k: i32) -> i32 {
+        self.vf[(k as usize).wrapping_add(self.offset)]
+    }
+    #[inline(always)]
+    fn set_f(&mut self, k: i32, val: i32) {
+        self.vf[(k as usize).wrapping_add(self.offset)] = val;
+    }
+
+    #[inline(always)]
+    fn get_b(&self, c: i32) -> i32 {
+        self.vb[(c as usize).wrapping_add(self.offset)]
+    }
+    #[inline(always)]
+    fn set_b(&mut self, c: i32, val: i32) {
+        self.vb[(c as usize).wrapping_add(self.offset)] = val;
     }
 }
 
@@ -211,37 +249,36 @@ fn find_midpoint<T, F>(
     source: &[T],
     target: &[T],
     cmp: &mut F,
+    bufs: &mut SearchBuffers,
 ) -> Option<((i32, i32), (i32, i32))>
 where
     F: FnMut(&T, &T) -> bool,
 {
-    if box_reg.size() == 0 {
+    let box_size = box_reg.size();
+    if box_size == 0 {
         return None;
     }
 
-    let mut vf = HashMap::new();
-    let mut vb = HashMap::new();
+    let delta = box_reg.delta();
+    bufs.set_f(1, box_reg.left);
+    bufs.set_b(1, box_reg.bottom);
 
-    vf.insert(1, box_reg.left);
-    vb.insert(1, box_reg.bottom);
-
-    let max_d = (box_reg.size() + 1) / 2;
+    let max_d = (box_size + 1) / 2;
 
     for d in 0..=max_d {
         for k in (-d..=d).step_by(2) {
-            let c = k - box_reg.delta();
+            let c = k - delta;
 
-            let (prev_x, x) =
-                if k == -d || (k != d && vf.get(&(k - 1)).unwrap() < vf.get(&(k + 1)).unwrap()) {
-                    let px = *vf.get(&(k + 1)).unwrap();
-                    (px, px)
-                } else {
-                    let px = *vf.get(&(k - 1)).unwrap();
-                    (px, px + 1)
-                };
+            let (prev_x, x) = if k == -d || (k != d && bufs.get_f(k - 1) < bufs.get_f(k + 1)) {
+                let px = bufs.get_f(k + 1);
+                (px, px)
+            } else {
+                let px = bufs.get_f(k - 1);
+                (px, px + 1)
+            };
 
             let mut current_x = x;
-            let mut current_y = (current_x - box_reg.left) - k + box_reg.top;
+            let mut current_y = current_x - box_reg.left - k + box_reg.top;
 
             let prev_y = if d == 0 || current_x != prev_x {
                 current_y
@@ -257,29 +294,28 @@ where
                 current_y += 1;
             }
 
-            vf.insert(k, current_x);
+            bufs.set_f(k, current_x);
 
-            if box_reg.delta() % 2 != 0 && c >= -(d - 1) && c <= d - 1 {
-                if current_y >= *vb.get(&c).unwrap_or(&0) {
+            if (delta & 1) != 0 && c >= -(d - 1) && c <= d - 1 {
+                if current_y >= bufs.get_b(c) {
                     return Some(((prev_x, prev_y), (current_x, current_y)));
                 }
             }
         }
 
         for c in (-d..=d).step_by(2) {
-            let k = c + box_reg.delta();
+            let k = c + delta;
 
-            let (prev_y, y) =
-                if c == -d || (c != d && vb.get(&(c - 1)).unwrap() > vb.get(&(c + 1)).unwrap()) {
-                    let py = *vb.get(&(c + 1)).unwrap();
-                    (py, py)
-                } else {
-                    let py = *vb.get(&(c - 1)).unwrap();
-                    (py, py - 1)
-                };
+            let (prev_y, y) = if c == -d || (c != d && bufs.get_b(c - 1) > bufs.get_b(c + 1)) {
+                let py = bufs.get_b(c + 1);
+                (py, py)
+            } else {
+                let py = bufs.get_b(c - 1);
+                (py, py - 1)
+            };
 
             let mut current_y = y;
-            let mut current_x = (current_y - box_reg.top) + k + box_reg.left;
+            let mut current_x = current_y - box_reg.top + k + box_reg.left;
 
             let prev_x = if d == 0 || current_y != prev_y {
                 current_x
@@ -298,10 +334,10 @@ where
                 current_y -= 1;
             }
 
-            vb.insert(c, current_y);
+            bufs.set_b(c, current_y);
 
-            if box_reg.delta() % 2 == 0 && k >= -d && k <= d {
-                if current_x <= *vf.get(&k).unwrap_or(&0) {
+            if (delta & 1) == 0 && k >= -d && k <= d {
+                if current_x <= bufs.get_f(k) {
                     return Some(((current_x, current_y), (prev_x, prev_y)));
                 }
             }
@@ -319,8 +355,9 @@ fn find_path<T, F>(
     source: &[T],
     target: &[T],
     cmp: &mut F,
-) -> Option<Vec<(i32, i32)>>
-where
+    bufs: &mut SearchBuffers,
+    path: &mut Vec<(i32, i32)>,
+) where
     F: FnMut(&T, &T) -> bool,
 {
     let box_reg = BoxRegion {
@@ -330,11 +367,11 @@ where
         bottom,
     };
     if box_reg.size() == 0 {
-        return None;
+        return;
     }
 
-    if let Some((snake_start, snake_end)) = find_midpoint(box_reg, source, target, cmp) {
-        let head = find_path(
+    if let Some((snake_start, snake_end)) = find_midpoint(box_reg, source, target, cmp, bufs) {
+        find_path(
             box_reg.left,
             box_reg.top,
             snake_start.0,
@@ -342,9 +379,18 @@ where
             source,
             target,
             cmp,
-        )
-        .unwrap_or_else(|| vec![snake_start]);
-        let tail = find_path(
+            bufs,
+            path,
+        );
+
+        if path.last() != Some(&snake_start) {
+            path.push(snake_start);
+        }
+        if path.last() != Some(&snake_end) {
+            path.push(snake_end);
+        }
+
+        find_path(
             snake_end.0,
             snake_end.1,
             box_reg.right,
@@ -352,12 +398,9 @@ where
             source,
             target,
             cmp,
-        )
-        .unwrap_or_else(|| vec![snake_end]);
-
-        Some(head.into_iter().chain(tail).collect())
-    } else {
-        None
+            bufs,
+            path,
+        );
     }
 }
 
@@ -368,17 +411,33 @@ where
     let source_len = source.len() as i32;
     let target_len = target.len() as i32;
 
-    let mut points =
-        find_path(0, 0, source_len, target_len, source, target, &mut cmp).unwrap_or_else(Vec::new);
-
-    if points.is_empty() || points[0] != (0, 0) {
-        points.insert(0, (0, 0));
+    if source_len == 0 && target_len == 0 {
+        return vec![(0, 0)];
     }
+
+    let mut bufs = SearchBuffers::new((source_len + target_len) as usize + 1);
+    let mut points = Vec::with_capacity((source_len + target_len) as usize + 2);
+
+    points.push((0, 0));
+    find_path(
+        0,
+        0,
+        source_len,
+        target_len,
+        source,
+        target,
+        &mut cmp,
+        &mut bufs,
+        &mut points,
+    );
+
     if points.last() != Some(&(source_len, target_len)) {
         points.push((source_len, target_len));
     }
 
-    let mut path = vec![(0, 0)];
+    let mut path = Vec::with_capacity(points.len() * 2);
+    path.push((0, 0));
+
     for i in 0..points.len() - 1 {
         let mut x = points[i].0;
         let mut y = points[i].1;
