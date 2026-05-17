@@ -43,6 +43,11 @@ use crate::{
 pub struct DiffCtx {
     pub file_1_hash: String,
     pub file_2_hash: String,
+    #[cfg(debug_assertions)]
+    pub debug_file_1_path: String,
+    #[cfg(debug_assertions)]
+    pub debug_file_2_path: String,
+
     pub one_sided_diff_is_left: Option<bool>,
     pub diff_option: DiffBuilderOptions,
     pub precomputed_diffs: Vec<(usize, usize)>, // list indicies of diff_rows of DiffOp != Equal from diff_rows
@@ -357,6 +362,10 @@ impl AppStateCtx {
             one_sided_diff_is_left,
             precomputed_diffs,
             precomputed_file_rows,
+            #[cfg(debug_assertions)]
+            debug_file_1_path: c1.path.clone().to_string_lossy().to_string(),
+            #[cfg(debug_assertions)]
+            debug_file_2_path: c2.path.clone().to_string_lossy().to_string(),
         }
     }
 }
@@ -1005,6 +1014,25 @@ impl<'a> ZApp {
                 } else {
                     diff_ctx_active_highlights.push(*start);
                 }
+            }
+
+            #[cfg(debug_assertions)]
+            if let (Some(f1), Some(diff_ctx)) = (&file_1, diff_ctx.as_ref()) {
+                let hash = hash_file(&f1.path).expect("Hash failed");
+                assert_eq!(
+                    hash, diff_ctx.file_1_hash,
+                    "f1_hash: {:?}, diff_ctx_hash: {:?}\nf1: {:?}, diff_ctx_f1: {:?}",
+                    hash, diff_ctx.file_1_hash, f1.path, diff_ctx.debug_file_1_path
+                );
+            }
+            #[cfg(debug_assertions)]
+            if let (Some(f2), Some(diff_ctx)) = (&file_2, diff_ctx.as_ref()) {
+                let hash = hash_file(&f2.path).expect("Hash failed");
+                assert_eq!(
+                    hash, diff_ctx.file_2_hash,
+                    "f2_hash: {:?}, diff_ctx_hash: {:?}\nf2: {:?}, diff_ctx_f2: {:?}",
+                    hash, diff_ctx.file_2_hash, f2.path, diff_ctx.debug_file_2_path
+                );
             }
 
             let mut behavior = TreeBehavior {

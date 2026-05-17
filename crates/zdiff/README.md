@@ -10,9 +10,9 @@ Library diffing file contents.
 
 ## Todo
 * Line diff -> inner line diff
+* toggle filter only diffs rows
 
 * Regex filter text contents
-* toggle filter only diffs rows
 * image file diff
 
 * hex diff/binary diff

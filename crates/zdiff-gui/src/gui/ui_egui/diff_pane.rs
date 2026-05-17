@@ -3,6 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPane};
 use eframe::egui::{self, Layout, TextEdit, UiBuilder, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
+use zcommon::hash::hash_file;
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, LineContent},
@@ -179,6 +180,25 @@ impl FileDiffPane {
                 }
             });
         });
+
+        // TODO: Fix actual bug, just plug fix it here for now
+        {
+            let mut do_not_render_due_to_bug = false;
+            if let (Some(f1), Some(diff_ctx)) = (&ctx.file_source, &ctx.diff_ctx) {
+                let hash = hash_file(&f1.path).expect("Hash failed");
+                do_not_render_due_to_bug |= diff_ctx.file_1_hash == hash;
+            }
+            if let (Some(f2), Some(diff_ctx)) = (&ctx.file_source, &ctx.diff_ctx) {
+                let hash = hash_file(&f2.path).expect("Hash failed");
+                do_not_render_due_to_bug |= diff_ctx.file_1_hash == hash;
+            }
+            if !do_not_render_due_to_bug {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Known bug, preventing crash...");
+                });
+                return egui_tiles::UiResponse::None;
+            }
+        }
 
         let diff_rows = ctx.diff_ctx.as_ref().and_then(|f| Some(&f.diff_rows));
         let source_path = ctx.file_source.as_ref().and_then(|f| Some(&f.path));
