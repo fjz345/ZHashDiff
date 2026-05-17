@@ -5,6 +5,10 @@
 
 GUI for zhashdiff crate
 
+# Known bugs
+* Opening file $1 and file $2 in quick succession while having file $2 open already will crash.
+- Workaround to open not open files at the same time while diffing is occuring.
+
 # Features
 * Tree folder diff view
 * Detect & remove duplicate files
