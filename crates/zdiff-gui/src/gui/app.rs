@@ -17,7 +17,10 @@ use zdiff::{
         LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_TOKENIZE, LexerDefault, LexerGreedy,
         LexerTokenize, RawToken,
     },
-    myers::{myers_backtrack, myers_count_add_deletes, myers_diff_linear, myers_diff_trace},
+    myers::{
+        myers_backtrack, myers_count_add_deletes, myers_diff_linear, myers_diff_linear_mt,
+        myers_diff_trace,
+    },
 };
 
 use eframe::{
@@ -297,13 +300,24 @@ impl AppStateCtx {
         println!("Allocations update_diff_rows: {:?}", reg.change_and_reset());
         const MYERS_LINEAR: bool = true;
         let myers_path = if MYERS_LINEAR {
-            let path = myers_diff_linear(&t1, &t2, cmp);
-            #[cfg(feature = "debug_alloc")]
-            println!(
-                "Allocations myers_diff_linear: {:?}",
-                reg.change_and_reset()
-            );
-            path
+            const MYERS_LINEAR_MT: bool = false;
+            if MYERS_LINEAR_MT {
+                let path = myers_diff_linear_mt(&t1, &t2, cmp);
+                #[cfg(feature = "debug_alloc")]
+                println!(
+                    "Allocations myers_diff_linear_mt: {:?}",
+                    reg.change_and_reset()
+                );
+                path
+            } else {
+                let path = myers_diff_linear(&t1, &t2, cmp);
+                #[cfg(feature = "debug_alloc")]
+                println!(
+                    "Allocations myers_diff_linear: {:?}",
+                    reg.change_and_reset()
+                );
+                path
+            }
         } else {
             let myers_trace = myers_diff_trace(t1, t2, cmp);
             #[cfg(feature = "debug_alloc")]

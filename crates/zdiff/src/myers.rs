@@ -42,18 +42,8 @@ impl std::ops::Index<usize> for MyersTrace {
 }
 
 /*
-returns "cost" between source/target comparing each entry
-*/
-pub fn myers_diff<T, F>(source: &[T], target: &[T], cmp: F) -> i32
-where
-    F: FnMut(&T, &T) -> bool,
-{
-    let trace = myers_diff_trace(source, target, cmp);
-    trace.shortest_edit() as i32
-}
-
-/*
 returns the path of lowest cost (edits) to get from source to target
+Uses (N+M)^2 memory
 */
 pub fn myers_diff_trace<T, F>(source: &[T], target: &[T], mut cmp: F) -> MyersTrace
 where
@@ -462,6 +452,264 @@ where
     path
 }
 
+fn find_path_mt<T, F>(
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    source: &[T],
+    target: &[T],
+    cmp: &F,
+    path: &mut Vec<(i32, i32)>,
+) where
+    T: Sync,
+    F: Fn(&T, &T) -> bool + Sync,
+{
+    let box_reg = BoxRegion {
+        left,
+        top,
+        right,
+        bottom,
+    };
+    let size = box_reg.size();
+    if size == 0 {
+        return;
+    }
+
+    // Allocate a scratch buffer local to this thread's scope frame
+    let mut bufs = SearchBuffers::new(size as usize + 1);
+
+    if let Some((snake_start, snake_end)) =
+        find_midpoint_mt(box_reg, source, target, cmp, &mut bufs)
+    {
+        // Threshold optimization: Do not pay scheduling costs for tiny sub-problems
+        if size > 2048 {
+            let mut left_path = Vec::new();
+            let mut right_path = Vec::new();
+
+            // Execute the independent left and right bounding boxes on Rayon's thread pool
+            rayon::join(
+                || {
+                    find_path_mt(
+                        box_reg.left,
+                        box_reg.top,
+                        snake_start.0,
+                        snake_start.1,
+                        source,
+                        target,
+                        cmp,
+                        &mut left_path,
+                    )
+                },
+                || {
+                    find_path_mt(
+                        snake_end.0,
+                        snake_end.1,
+                        box_reg.right,
+                        box_reg.bottom,
+                        source,
+                        target,
+                        cmp,
+                        &mut right_path,
+                    )
+                },
+            );
+
+            path.extend(left_path);
+            if path.last() != Some(&snake_start) {
+                path.push(snake_start);
+            }
+            if path.last() != Some(&snake_end) {
+                path.push(snake_end);
+            }
+            path.extend(right_path);
+        } else {
+            // Fall back to sequential execution on the current thread for small segments
+            find_path_mt(
+                box_reg.left,
+                box_reg.top,
+                snake_start.0,
+                snake_start.1,
+                source,
+                target,
+                cmp,
+                path,
+            );
+            if path.last() != Some(&snake_start) {
+                path.push(snake_start);
+            }
+            if path.last() != Some(&snake_end) {
+                path.push(snake_end);
+            }
+            find_path_mt(
+                snake_end.0,
+                snake_end.1,
+                box_reg.right,
+                box_reg.bottom,
+                source,
+                target,
+                cmp,
+                path,
+            );
+        }
+    }
+}
+
+// Internal logic remains identical to your linear midpoint execution, adapted to immutable closure matching
+fn find_midpoint_mt<T, F>(
+    box_reg: BoxRegion,
+    source: &[T],
+    target: &[T],
+    cmp: &F,
+    bufs: &mut SearchBuffers,
+) -> Option<((i32, i32), (i32, i32))>
+where
+    F: Fn(&T, &T) -> bool,
+{
+    let box_size = box_reg.size();
+    if box_size == 0 {
+        return None;
+    }
+
+    let delta = box_reg.delta();
+    bufs.set_f(1, box_reg.left);
+    bufs.set_b(1, box_reg.bottom);
+
+    let max_d = (box_size + 1) / 2;
+
+    for d in 0..=max_d {
+        for k in (-d..=d).step_by(2) {
+            let c = k - delta;
+            let (prev_x, x) = if k == -d || (k != d && bufs.get_f(k - 1) < bufs.get_f(k + 1)) {
+                let px = bufs.get_f(k + 1);
+                (px, px)
+            } else {
+                let px = bufs.get_f(k - 1);
+                (px, px + 1)
+            };
+
+            let mut current_x = x;
+            let mut current_y = current_x - box_reg.left - k + box_reg.top;
+            let prev_y = if d == 0 || current_x != prev_x {
+                current_y
+            } else {
+                current_y - 1
+            };
+
+            while current_x < box_reg.right
+                && current_y < box_reg.bottom
+                && cmp(&source[current_x as usize], &target[current_y as usize])
+            {
+                current_x += 1;
+                current_y += 1;
+            }
+            bufs.set_f(k, current_x);
+
+            if (delta & 1) != 0 && c >= -(d - 1) && c <= d - 1 {
+                if current_y >= bufs.get_b(c) {
+                    return Some(((prev_x, prev_y), (current_x, current_y)));
+                }
+            }
+        }
+
+        for c in (-d..=d).step_by(2) {
+            let k = c + delta;
+            let (prev_y, y) = if c == -d || (c != d && bufs.get_b(c - 1) > bufs.get_b(c + 1)) {
+                let py = bufs.get_b(c + 1);
+                (py, py)
+            } else {
+                let py = bufs.get_b(c - 1);
+                (py, py - 1)
+            };
+
+            let mut current_y = y;
+            let mut current_x = current_y - box_reg.top + k + box_reg.left;
+            let prev_x = if d == 0 || current_y != prev_y {
+                current_x
+            } else {
+                current_x + 1
+            };
+
+            while current_x > box_reg.left
+                && current_y > box_reg.top
+                && cmp(
+                    &source[(current_x - 1) as usize],
+                    &target[(current_y - 1) as usize],
+                )
+            {
+                current_x -= 1;
+                current_y -= 1;
+            }
+            bufs.set_b(c, current_y);
+
+            if (delta & 1) == 0 && k >= -d && k <= d {
+                if current_x <= bufs.get_f(k) {
+                    return Some(((current_x, current_y), (prev_x, prev_y)));
+                }
+            }
+        }
+    }
+    None
+}
+
+// Requires Fn + Sync instead of FnMut so it can be safely referenced across threads
+pub fn myers_diff_linear_mt<T, F>(source: &[T], target: &[T], cmp: F) -> Vec<(i32, i32)>
+where
+    T: Sync,
+    F: Fn(&T, &T) -> bool + Sync,
+{
+    let source_len = source.len() as i32;
+    let target_len = target.len() as i32;
+
+    if source_len == 0 && target_len == 0 {
+        return vec![(0, 0)];
+    }
+
+    let mut points = Vec::with_capacity((source_len + target_len) as usize + 2);
+    points.push((0, 0));
+
+    find_path_mt(
+        0,
+        0,
+        source_len,
+        target_len,
+        source,
+        target,
+        &cmp,
+        &mut points,
+    );
+
+    if points.last() != Some(&(source_len, target_len)) {
+        points.push((source_len, target_len));
+    }
+
+    let mut path = Vec::with_capacity(points.len() * 2);
+    path.push((0, 0));
+
+    for i in 0..points.len() - 1 {
+        let mut x = points[i].0;
+        let mut y = points[i].1;
+        let next_point = points[i + 1];
+
+        while x < next_point.0 || y < next_point.1 {
+            if x < next_point.0 && y < next_point.1 && cmp(&source[x as usize], &target[y as usize])
+            {
+                x += 1;
+                y += 1;
+            } else if next_point.0 - x > next_point.1 - y {
+                x += 1;
+            } else {
+                y += 1;
+            }
+            if path.last() != Some(&(x, y)) {
+                path.push((x, y));
+            }
+        }
+    }
+
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,8 +732,8 @@ mod tests {
         let b = vec!["a", "b", "c"];
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
-        let dist = myers_diff(&a, &b, cmp);
         let trace = myers_diff_trace(&a, &b, cmp);
+        let dist = trace.shortest_edit();
         let path = myers_backtrack(trace, a.len() as i32, b.len() as i32);
 
         assert_eq!(dist, 0);
@@ -499,7 +747,8 @@ mod tests {
         let b = vec!["c", "d"];
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
-        let dist = myers_diff(&a, &b, cmp);
+        let trace = myers_diff_trace(&a, &b, cmp);
+        let dist = trace.shortest_edit();
         assert_eq!(dist, 4); // 2 deletes, 2 inserts
     }
 
@@ -509,9 +758,12 @@ mod tests {
         let b: Vec<&str> = vec!["a", "b"];
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
-        assert_eq!(myers_diff(&a, &b, cmp), 2);
-        assert_eq!(myers_diff(&b, &a, cmp), 2);
-        assert_eq!(myers_diff(&a, &a, cmp), 0);
+        let trace = myers_diff_trace(&a, &b, cmp);
+        assert_eq!(trace.shortest_edit(), 2);
+        let trace = myers_diff_trace(&b, &a, cmp);
+        assert_eq!(trace.shortest_edit(), 2);
+        let trace = myers_diff_trace(&a, &a, cmp);
+        assert_eq!(trace.shortest_edit(), 0);
     }
 
     #[test]
@@ -609,6 +861,79 @@ mod tests {
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
         let path = myers_diff_linear(&a, &b, cmp);
+
+        // Verify every step in the path is valid (Right, Down, or Diagonal)
+        for w in path.windows(2) {
+            let (x1, y1) = w[0];
+            let (x2, y2) = w[1];
+            let dx = x2 - x1;
+            let dy = y2 - y1;
+
+            // Valid moves: (1,0), (0,1), or (1,1)
+            assert!(
+                (dx == 1 && dy == 0) || (dx == 0 && dy == 1) || (dx == 1 && dy == 1),
+                "Invalid path jump from ({},{}) to ({},{})",
+                x1,
+                y1,
+                x2,
+                y2
+            );
+        }
+    }
+
+    // LINEAR MT
+    #[test]
+    fn test_linear_mt_identical_sequences() {
+        let a = vec!["a", "b", "c"];
+        let b = vec!["a", "b", "c"];
+        let cmp = |t1: &&str, t2: &&str| t1 == t2;
+
+        let path = myers_diff_linear_mt(&a, &b, cmp);
+
+        assert_eq!(distance_from_path(&path), 0);
+        assert_eq!(path.len(), 4); // (0,0) -> (1,1) -> (2,2) -> (3,3)
+    }
+
+    #[test]
+    fn test_linear_mt_completely_different() {
+        let a = vec!["a", "b"];
+        let b = vec!["c", "d"];
+        let cmp = |t1: &&str, t2: &&str| t1 == t2;
+
+        let path = myers_diff_linear_mt(&a, &b, cmp);
+        assert_eq!(distance_from_path(&path), 4); // 2 deletes, 2 inserts
+    }
+
+    #[test]
+    fn test_linear_mt_empty_sequences() {
+        let a: Vec<&str> = vec![];
+        let b: Vec<&str> = vec!["a", "b"];
+        let cmp = |t1: &&str, t2: &&str| t1 == t2;
+
+        assert_eq!(myers_diff_linear_mt(&a, &b, cmp).len() - 1, 2);
+        assert_eq!(myers_diff_linear_mt(&b, &a, cmp).len() - 1, 2);
+        assert_eq!(myers_diff_linear_mt(&a, &a, cmp).len() - 1, 0);
+    }
+
+    #[test]
+    fn test_linear_mt_complex_interleaving() {
+        let a: Vec<char> = "ABCABBA".chars().collect();
+        let b: Vec<char> = "CBABAC".chars().collect();
+        let cmp = |t1: &char, t2: &char| t1 == t2;
+
+        let path = myers_diff_linear_mt(&a, &b, cmp);
+
+        // assert_eq!(dist, 5);
+        assert_eq!(distance_from_path(&path), 5);
+    }
+
+    #[test]
+    fn test_linear_mt_path_continuity() {
+        let a = vec!["A", "B", "C"];
+        let b = vec!["A", "X", "C"];
+        let cmp = |t1: &&str, t2: &&str| t1 == t2;
+
+        let path = myers_diff_linear_mt(&a, &b, cmp);
 
         // Verify every step in the path is valid (Right, Down, or Diagonal)
         for w in path.windows(2) {

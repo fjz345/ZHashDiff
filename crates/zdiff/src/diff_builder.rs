@@ -527,7 +527,9 @@ mod integration_tests {
     use crate::cached_file::CachedFile;
     use crate::diff_ir::DiffIR;
     use crate::lexer::{LexerDefault, RawToken};
-    use crate::myers::{myers_backtrack, myers_diff_linear, myers_diff_trace};
+    use crate::myers::{
+        myers_backtrack, myers_diff_linear, myers_diff_linear_mt, myers_diff_trace,
+    };
     use std::fs::File;
     use std::io::Write;
     use tempfile::tempdir;
@@ -551,7 +553,12 @@ mod integration_tests {
 
         const MYERS_LINEAR: bool = true;
         let path = if MYERS_LINEAR {
-            myers_diff_linear(&f1.tokens, &f2.tokens, cmp)
+            const MYERS_LINEAR_MT: bool = false;
+            if MYERS_LINEAR_MT {
+                myers_diff_linear_mt(&f1.tokens, &f2.tokens, cmp)
+            } else {
+                myers_diff_linear(&f1.tokens, &f2.tokens, cmp)
+            }
         } else {
             let trace = myers_diff_trace(&f1.tokens, &f2.tokens, cmp);
             myers_backtrack(trace, f1.tokens.len() as i32, f2.tokens.len() as i32)
