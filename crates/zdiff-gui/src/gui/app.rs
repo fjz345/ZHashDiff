@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, channel},
     },
 };
@@ -31,6 +32,7 @@ use egui_tiles::Tile;
 
 use crate::{
     clamped_cursor::ClampedCursor,
+    file::FileProcessor,
     keybindings::{self, Keybindings, Shortcut, ui_keybindings},
     quick_diff::{UniversalPath, UniversalPathConfig, quick_diff_process_paths, ui_universal_path},
     ui_egui::{
@@ -60,17 +62,8 @@ pub struct DiffCtx {
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AppStateCtx {
-    #[cfg_attr(feature = "serde", serde(skip))]
-    rx_file_path_1: Option<mpsc::Receiver<std::path::PathBuf>>,
-    #[cfg_attr(feature = "serde", serde(skip))]
-    rx_file_path_2: Option<mpsc::Receiver<std::path::PathBuf>>,
-
-    file_path_1: Option<PathBuf>,
-    file_path_2: Option<PathBuf>,
-    #[cfg_attr(feature = "serde", serde(skip))]
-    file_1: Option<Arc<CachedFile<RawToken>>>,
-    #[cfg_attr(feature = "serde", serde(skip))]
-    file_2: Option<Arc<CachedFile<RawToken>>>,
+    pub file_1: FileProcessor,
+    pub file_2: FileProcessor,
 
     pub diff_lexer_mode: u8,
     pub diff_options: DiffBuilderOptions,
@@ -80,11 +73,10 @@ pub struct AppStateCtx {
     #[cfg_attr(feature = "serde", serde(skip))]
     pub diff_ctx: Option<DiffCtx>,
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub diff_ctx_invalidated: bool,
+    diff_ctx_rx: Option<Receiver<DiffCtx>>,
+
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub diff_ctx_in_progress: bool,
-    #[cfg_attr(feature = "serde", serde(skip))]
-    rx: Option<Receiver<DiffCtx>>,
+    pub diff_ctx_in_progress_input: Option<UpdateDiffRowsInput>,
 
     pub scroll_left: f32,
     pub scroll_right: f32,
@@ -121,24 +113,18 @@ pub struct AppStateCtx {
 impl Default for AppStateCtx {
     fn default() -> Self {
         Self {
-            file_path_1: Default::default(),
-            file_path_2: Default::default(),
             file_1: Default::default(),
             file_2: Default::default(),
             diff_options: Default::default(),
             diff_ctx: Default::default(),
-            diff_ctx_in_progress: Default::default(),
-            rx: Default::default(),
+            diff_ctx_rx: Default::default(),
             scroll_left: Default::default(),
             scroll_right: Default::default(),
-            diff_ctx_invalidated: Default::default(),
             scroll_to_rows: Default::default(),
             goto_open: Default::default(),
             find_open: Default::default(),
             goto_input: Default::default(),
             find_input: Default::default(),
-            rx_file_path_1: Default::default(),
-            rx_file_path_2: Default::default(),
             diff_ctx_conflict_cursor: Default::default(),
             diff_ctx_active_highlights: Default::default(),
             diff_lexer_mode: LEXER_MODE_DEFAULT,
@@ -149,7 +135,29 @@ impl Default for AppStateCtx {
             keybindings: Default::default(),
             universal_path_config: Default::default(),
             myers_diff_algorithm: Default::default(),
+            diff_ctx_in_progress_input: Default::default(),
         }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct UpdateDiffRowsInput {
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub file_1: Option<Arc<CachedFile<RawToken>>>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub file_2: Option<Arc<CachedFile<RawToken>>>,
+    pub options: DiffBuilderOptions,
+    pub myers_diff_algorithm: MyersDiffAlgorithm,
+}
+impl PartialEq for UpdateDiffRowsInput {
+    fn eq(&self, other: &Self) -> bool {
+        self.file_1.as_ref().map_or(None, |f| Some(f.hash.clone()))
+            == other.file_1.as_ref().map_or(None, |f| Some(f.hash.clone()))
+            && self.file_2.as_ref().map_or(None, |f| Some(f.hash.clone()))
+                == other.file_2.as_ref().map_or(None, |f| Some(f.hash.clone()))
+            && self.options == other.options
+            && self.myers_diff_algorithm == other.myers_diff_algorithm
     }
 }
 
@@ -284,11 +292,16 @@ impl AppStateCtx {
     }
 
     fn update_diff_rows(
-        file_1: Option<Arc<CachedFile<RawToken>>>,
-        file_2: Option<Arc<CachedFile<RawToken>>>,
-        options: &DiffBuilderOptions,
-        myers_diff_algo: MyersDiffAlgorithm,
-    ) -> DiffCtx {
+        input: UpdateDiffRowsInput,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Option<DiffCtx> {
+        let UpdateDiffRowsInput {
+            file_1,
+            file_2,
+            options,
+            myers_diff_algorithm,
+        } = input;
+
         #[cfg(feature = "debug_alloc")]
         let mut reg = stats_alloc::Region::new(&crate::STATS_ALLOC);
         #[cfg(feature = "debug_alloc")]
@@ -313,13 +326,23 @@ impl AppStateCtx {
             "Allocations before myers_diff: {:?}",
             reg.change_and_reset()
         );
-        let myers_path = myers_diff_path(myers_diff_algo, t1, t2, cmp);
+        let myers_path = myers_diff_path(myers_diff_algorithm, t1, t2, cmp, cancel_flag.clone())?;
         #[cfg(feature = "debug_alloc")]
         log::log!("Allocations myers_diff: {:?}", reg.change_and_reset());
 
-        let diff_ir = DiffIR::new(&myers_path);
+        if cancel_flag.load(Ordering::Relaxed) {
+            log::debug!("cancel_flag: myers_diff_path");
+            return None;
+        }
+
+        let diff_ir = DiffIR::new(&myers_path, cancel_flag.clone())?;
         #[cfg(feature = "debug_alloc")]
         log::log!("Allocations DiffIR::new(): {:?}", reg.change_and_reset());
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            log::debug!("cancel_flag: DiffIR::new");
+            return None;
+        }
 
         let hash1 = hash_file(&c1.path).expect("Hash failed");
         let hash2 = match one_sided_diff_is_left {
@@ -328,7 +351,7 @@ impl AppStateCtx {
         };
         #[cfg(feature = "debug_alloc")]
         log::log!("Allocations hash_file: {:?}", reg.change_and_reset());
-        let mut diff_rows = build_diff_rows(
+        let mut diff_rows: Vec<DiffRow> = build_diff_rows(
             diff_ir,
             Some(&t1),
             Some(&t2),
@@ -337,6 +360,11 @@ impl AppStateCtx {
         );
         #[cfg(feature = "debug_alloc")]
         log::log!("Allocations build_diff_rows: {:?}", reg.change_and_reset());
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            log::debug!("cancel_flag: build_diff_rows");
+            return None;
+        }
 
         let line_count_1 = c1.metadata.line_starts.len();
         let line_count_2 = c2.metadata.line_starts.len();
@@ -349,11 +377,21 @@ impl AppStateCtx {
             }
         }
 
+        if cancel_flag.load(Ordering::Relaxed) {
+            log::debug!("cancel_flag: precompute_diff_spans");
+            return None;
+        }
+
         let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
         let precomputed_file_rows =
             Self::precompute_file_rows(&diff_rows, line_count_1, line_count_2);
 
-        DiffCtx {
+        if cancel_flag.load(Ordering::Relaxed) {
+            log::debug!("cancel_flag: precompute_file_rows");
+            return None;
+        }
+
+        Some(DiffCtx {
             file_1_hash: hash1,
             file_2_hash: hash2,
             diff_option: options.clone(),
@@ -366,7 +404,7 @@ impl AppStateCtx {
             debug_file_1_path: c1.path.clone().to_string_lossy().to_string(),
             #[cfg(debug_assertions)]
             debug_file_2_path: c2.path.clone().to_string_lossy().to_string(),
-        }
+        })
     }
 }
 
@@ -418,6 +456,11 @@ pub struct ZApp {
     tree: egui_tiles::Tree<Pane>,
 
     #[serde(skip)]
+    update_diff_rows_thread_handle: Option<std::thread::JoinHandle<()>>,
+    #[serde(skip)]
+    update_diff_rows_cancel_flag: Option<Arc<AtomicBool>>,
+
+    #[serde(skip)]
     open_shortcuts_window: bool,
 
     #[serde(skip)]
@@ -426,68 +469,6 @@ pub struct ZApp {
 
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
 impl<'a> ZApp {
-    fn update_source_target(&mut self, app_ctx: &mut AppStateCtx) -> bool {
-        let mut changed = false;
-
-        // Want to allow this later, for now easier if cached file is never stale
-        if app_ctx.file_path_1.is_none() {
-            app_ctx.file_1.take();
-        }
-        if app_ctx.file_path_2.is_none() {
-            app_ctx.file_2.take();
-        }
-
-        if let Some(path) = &app_ctx.file_path_1 {
-            if app_ctx.file_1.is_none()
-                || app_ctx.file_1.as_ref().unwrap().path != *path
-                || app_ctx.file_1.as_ref().unwrap().hash != hash_file(path).expect("failed to hash")
-            {
-                let lexer_parse_fn = match app_ctx.diff_lexer_mode {
-                    LEXER_MODE_GREEDY => |contents: &str| LexerGreedy::new(contents).parse(),
-                    LEXER_MODE_TOKENIZE => |contents: &str| LexerTokenize::new(contents).parse(),
-                    LEXER_MODE_NEWLINE => |contents: &str| LexerNewLine::new(contents).parse(),
-                    _ => |contents: &str| LexerDefault::new(contents).parse(),
-                };
-                match CachedFile::new(path, lexer_parse_fn) {
-                    Ok(r) => {
-                        app_ctx.file_1 = Some(Arc::new(r));
-                        changed |= app_ctx.file_1.is_some();
-                    }
-                    Err(e) => {
-                        log::error!("Cannot find file {}, Error: {e}", path.display());
-                        app_ctx.file_path_1 = None;
-                    }
-                }
-            }
-        }
-
-        if let Some(path) = &app_ctx.file_path_2 {
-            if app_ctx.file_2.is_none()
-                || app_ctx.file_2.as_ref().unwrap().path != *path
-                || app_ctx.file_2.as_ref().unwrap().hash != hash_file(path).expect("failed to hash")
-            {
-                let lexer_parse_fn = match app_ctx.diff_lexer_mode {
-                    LEXER_MODE_GREEDY => |contents: &str| LexerGreedy::new(contents).parse(),
-                    LEXER_MODE_TOKENIZE => |contents: &str| LexerTokenize::new(contents).parse(),
-                    LEXER_MODE_NEWLINE => |contents: &str| LexerNewLine::new(contents).parse(),
-                    _ => |contents: &str| LexerDefault::new(contents).parse(),
-                };
-                match CachedFile::new(path, lexer_parse_fn) {
-                    Ok(r) => {
-                        app_ctx.file_2 = Some(Arc::new(r));
-                        changed |= app_ctx.file_2.is_some()
-                    }
-                    Err(e) => {
-                        log::error!("Cannot find file {}, Error: {e}", path.display());
-                        app_ctx.file_path_2 = None;
-                    }
-                }
-            }
-        }
-
-        changed
-    }
-
     pub fn request_init(&mut self) {
         log::info!(
             "Request init called with state: {}",
@@ -500,35 +481,15 @@ impl<'a> ZApp {
             .state
             .take()
             .map(|ctx| AppState::Startup(ctx.into_ctx()));
+
         if let Some(state) = &mut self.state {
             match state {
                 AppState::Startup(ctx) | AppState::Idle(ctx) => {
                     let args: Vec<String> = env::args().collect();
-                    let p1 = args.get(1).cloned();
-                    let p2 = args.get(2).cloned();
 
-                    let lexer_parse_fn = match ctx.diff_lexer_mode {
-                        LEXER_MODE_GREEDY => |contents: &str| LexerGreedy::new(contents).parse(),
-                        LEXER_MODE_TOKENIZE => {
-                            |contents: &str| LexerTokenize::new(contents).parse()
-                        }
-                        _ => |contents: &str| LexerDefault::new(contents).parse(),
-                    };
-                    if let (Some(p1), Some(p2)) = (p1, p2) {
-                        let new_file_1 = CachedFile::new(p1, lexer_parse_fn);
-                        let new_file_2 = CachedFile::new(p2, lexer_parse_fn);
-                        match new_file_1 {
-                            Ok(c) => {
-                                ctx.file_1 = Some(Arc::new(c));
-                            }
-                            Err(e) => log::error!("{e}"),
-                        }
-                        match new_file_2 {
-                            Ok(c) => {
-                                ctx.file_2 = Some(Arc::new(c));
-                            }
-                            Err(e) => log::error!("{e}"),
-                        }
+                    if let (Some(p1), Some(p2)) = (args.get(1), args.get(2)) {
+                        ctx.file_1.set_path(PathBuf::from(p1));
+                        ctx.file_2.set_path(PathBuf::from(p2));
                     }
                 }
                 _ => {}
@@ -552,6 +513,8 @@ impl<'a> ZApp {
             tree: Self::create_tree(),
             open_shortcuts_window: false,
             open_universal_path_window: false,
+            update_diff_rows_thread_handle: None,
+            update_diff_rows_cancel_flag: None,
         }
     }
 
@@ -584,10 +547,7 @@ impl<'a> ZApp {
         egui_tiles::Tree::new("my_tree", root, tiles)
     }
 
-    fn open_file_picker(rx_storage: &mut Option<mpsc::Receiver<PathBuf>>) {
-        let (tx, rx) = mpsc::channel();
-        *rx_storage = Some(rx);
-
+    fn open_file_picker(tx: mpsc::Sender<PathBuf>) {
         std::thread::spawn(move || {
             if let Some(path) = pollster::block_on(rfd::AsyncFileDialog::new().pick_file()) {
                 if let Err(e) = tx.send(path.path().to_path_buf()) {
@@ -598,33 +558,25 @@ impl<'a> ZApp {
     }
 
     fn refresh_file_contents(
-        file_1: &mut Option<Arc<CachedFile<RawToken>>>,
-        file_2: &mut Option<Arc<CachedFile<RawToken>>>,
+        file_1: &mut FileProcessor,
+        file_2: &mut FileProcessor,
         diff_ctx: &mut Option<DiffCtx>,
-        diff_ctx_invalidated: &mut bool,
     ) {
-        *file_1 = None;
-        *file_2 = None;
+        file_1.invalidate_cache_file();
+        file_2.invalidate_cache_file();
         *diff_ctx = None;
-        *diff_ctx_invalidated = true;
     }
 
-    fn refresh_diff_rows(diff_ctx: &mut Option<DiffCtx>, diff_ctx_invalidated: &mut bool) {
+    fn refresh_diff_rows(diff_ctx: &mut Option<DiffCtx>) {
         *diff_ctx = None;
-        *diff_ctx_invalidated = true;
     }
 
     fn show_menu(
         &mut self,
         ui: &mut egui::Ui,
-        rx_file_path_1: &mut Option<mpsc::Receiver<PathBuf>>,
-        rx_file_path_2: &mut Option<mpsc::Receiver<PathBuf>>,
-        file_path_1: &mut Option<PathBuf>,
-        file_path_2: &mut Option<PathBuf>,
-        file_1: &mut Option<Arc<CachedFile<RawToken>>>,
-        file_2: &mut Option<Arc<CachedFile<RawToken>>>,
+        file_1: &mut FileProcessor,
+        file_2: &mut FileProcessor,
         diff_ctx: &mut Option<DiffCtx>,
-        diff_ctx_invalidated: &mut bool,
         find_open: &mut bool,
         goto_open: &mut bool,
         scroll_left: &mut f32,
@@ -634,18 +586,18 @@ impl<'a> ZApp {
         universal_path_config: &mut UniversalPathConfig,
         myers_diff_algorithm: &mut MyersDiffAlgorithm,
     ) {
-        let check_file_rx = |rx_opt: &mut Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
-                             target: &mut Option<std::path::PathBuf>| {
-            if let Some(rx) = rx_opt {
-                match rx.try_recv() {
-                    Ok(path) => *target = Some(path),
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => *rx_opt = None,
-                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                }
-            }
-        };
-        check_file_rx(rx_file_path_1, file_path_1);
-        check_file_rx(rx_file_path_2, file_path_2);
+        // let check_file_rx = |rx_opt: &mut Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
+        //                      target: &mut Option<std::path::PathBuf>| {
+        //     if let Some(rx) = rx_opt {
+        //         match rx.try_recv() {
+        //             Ok(path) => *target = Some(path),
+        //             Err(std::sync::mpsc::TryRecvError::Disconnected) => *rx_opt = None,
+        //             Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        //         }
+        //     }
+        // };
+        // check_file_rx(rx_file_path_1, file_path_1);
+        // check_file_rx(rx_file_path_2, file_path_2);
 
         ui.horizontal(|ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -661,7 +613,7 @@ impl<'a> ZApp {
                         ))
                         .clicked()
                     {
-                        Self::open_file_picker(rx_file_path_1);
+                        Self::open_file_picker(file_1.get_tx());
                     }
                     if ui
                         .button(format!(
@@ -673,15 +625,13 @@ impl<'a> ZApp {
                         ))
                         .clicked()
                     {
-                        Self::open_file_picker(rx_file_path_2);
+                        Self::open_file_picker(file_2.get_tx());
                     }
                     if ui.button("Swap Source/Target").clicked() {
                         std::mem::swap(file_1, file_2);
-                        std::mem::swap(file_path_1, file_path_2);
                         std::mem::swap(scroll_left, scroll_right);
 
                         *diff_ctx = None;
-                        *diff_ctx_invalidated = true;
                     }
                     if ui
                         .button(format!(
@@ -711,7 +661,7 @@ impl<'a> ZApp {
 
                 ui.menu_button("Options", |ui| {
                     ui.menu_button("Myers Algo", |ui| {
-                        ui.radio_value(myers_diff_algorithm, MyersDiffAlgorithm::Trace, "Trace");
+                        ui.radio_value(myers_diff_algorithm, MyersDiffAlgorithm::Trace, "debug");
                         ui.radio_value(myers_diff_algorithm, MyersDiffAlgorithm::Linear, "Linear");
                         ui.radio_value(
                             myers_diff_algorithm,
@@ -752,10 +702,9 @@ impl<'a> ZApp {
 
                 ui.menu_button("Debug", |ui| {
                     if ui.button("Clear File Paths").clicked() {
-                        *file_path_1 = None;
-                        *file_path_2 = None;
+                        file_1.set_path(None);
+                        file_2.set_path(None);
                         *diff_ctx = None;
-                        *diff_ctx_invalidated = true;
                     }
                     if ui
                         .button(format!(
@@ -767,7 +716,7 @@ impl<'a> ZApp {
                         ))
                         .clicked()
                     {
-                        Self::refresh_file_contents(file_1, file_2, diff_ctx, diff_ctx_invalidated);
+                        Self::refresh_file_contents(file_1, file_2, diff_ctx);
                     }
                     if ui
                         .button(format!(
@@ -779,36 +728,33 @@ impl<'a> ZApp {
                         ))
                         .clicked()
                     {
-                        Self::refresh_diff_rows(diff_ctx, diff_ctx_invalidated);
+                        Self::refresh_diff_rows(diff_ctx);
                     }
                     #[cfg(debug_assertions)]
                     {
                         let load_btn = |ui: &mut egui::Ui,
                                         label: &str,
-                                        file_path_1: &mut Option<std::path::PathBuf>,
-                                        file_path_2: &mut Option<std::path::PathBuf>,
+                                        file_1: &mut FileProcessor,
+                                        file_2: &mut FileProcessor,
                                         diff_ctx: &mut Option<_>,
-                                        diff_ctx_invalidated: &mut bool,
                                         p1: &str,
                                         p2: &str| {
                             if ui.button(label).clicked() {
                                 let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
-                                *file_path_1 = Some(base.join(p1));
-                                *file_path_2 = Some(base.join(p2));
+                                file_1.set_path(Some(base.join(p1)));
+                                file_2.set_path(Some(base.join(p2)));
 
                                 *diff_ctx = None;
-                                *diff_ctx_invalidated = true;
                             }
                         };
 
                         load_btn(
                             ui,
                             "Load $A",
-                            file_path_1,
-                            file_path_2,
+                            file_1,
+                            file_2,
                             diff_ctx,
-                            diff_ctx_invalidated,
                             "../../test/rust_files_diff_1/advanced_rust.rs",
                             "../../test/rust_files_diff_1/advanced_rust_2.rs",
                         );
@@ -816,10 +762,9 @@ impl<'a> ZApp {
                         load_btn(
                             ui,
                             "Load $B",
-                            file_path_1,
-                            file_path_2,
+                            file_1,
+                            file_2,
                             diff_ctx,
-                            diff_ctx_invalidated,
                             "../../test/rust_files_diff_1/imgui.1.91.1.h",
                             "../../test/rust_files_diff_1/imgui.h",
                         );
@@ -827,10 +772,9 @@ impl<'a> ZApp {
                         load_btn(
                             ui,
                             "Load $C",
-                            file_path_1,
-                            file_path_2,
+                            file_1,
+                            file_2,
                             diff_ctx,
-                            diff_ctx_invalidated,
                             "../../test/test_ignore_whitespace_simple/1.txt",
                             "../../test/test_ignore_whitespace_simple/2.txt",
                         );
@@ -838,10 +782,9 @@ impl<'a> ZApp {
                         load_btn(
                             ui,
                             "Load $D",
-                            file_path_1,
-                            file_path_2,
+                            file_1,
+                            file_2,
                             diff_ctx,
-                            diff_ctx_invalidated,
                             "../../test/test_ignore_whitespace_extreme_simple/1.txt",
                             "../../test/test_ignore_whitespace_extreme_simple/2.txt",
                         );
@@ -877,26 +820,20 @@ impl<'a> ZApp {
     fn ui(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
         egui::CentralPanel::default().show(ctx, |ui| {
             let AppStateCtx {
-                file_path_1,
-                file_path_2,
                 scroll_left,
                 scroll_right,
                 diff_ctx,
                 diff_options,
                 file_1,
                 file_2,
-                diff_ctx_invalidated,
                 scroll_to_rows,
                 goto_open,
                 find_open,
                 goto_input,
                 find_input,
-                rx_file_path_1,
-                rx_file_path_2,
                 diff_ctx_conflict_cursor,
                 diff_ctx_active_highlights,
-                diff_ctx_in_progress: _,
-                rx: _,
+                diff_ctx_rx: _,
                 diff_lexer_mode: lexer_mode,
                 find_cursor,
                 find_found_lines_1,
@@ -905,17 +842,13 @@ impl<'a> ZApp {
                 keybindings,
                 universal_path_config,
                 myers_diff_algorithm,
+                diff_ctx_in_progress_input,
             } = app_ctx;
             self.show_menu(
                 ui,
-                rx_file_path_1,
-                rx_file_path_2,
-                file_path_1,
-                file_path_2,
                 file_1,
                 file_2,
                 diff_ctx,
-                diff_ctx_invalidated,
                 find_open,
                 goto_open,
                 scroll_left,
@@ -962,6 +895,7 @@ impl<'a> ZApp {
                     log::info!("Finding line: {}", find_input);
                     if let Some(diff) = diff_ctx {
                         *find_found_lines_1 = file_1
+                            .get_cached_file()
                             .as_ref()
                             .map(|f| {
                                 f.content_search(&find_input)
@@ -972,11 +906,12 @@ impl<'a> ZApp {
                             .unwrap_or_default();
 
                         *find_found_lines_2 = file_2
+                            .get_cached_file()
                             .as_ref()
                             .map(|f| {
                                 f.content_search(&find_input)
                                     .into_iter()
-                                    .map(|f| diff.precomputed_file_rows.1[f])
+                                    .map(|f| diff.precomputed_file_rows.0[f])
                                     .collect()
                             })
                             .unwrap_or_default();
@@ -1016,33 +951,14 @@ impl<'a> ZApp {
                 }
             }
 
-            #[cfg(debug_assertions)]
-            if let (Some(f1), Some(diff_ctx)) = (&file_1, diff_ctx.as_ref()) {
-                let hash = hash_file(&f1.path).expect("Hash failed");
-                assert_eq!(
-                    hash, diff_ctx.file_1_hash,
-                    "f1_hash: {:?}, diff_ctx_hash: {:?}\nf1: {:?}, diff_ctx_f1: {:?}",
-                    hash, diff_ctx.file_1_hash, f1.path, diff_ctx.debug_file_1_path
-                );
-            }
-            #[cfg(debug_assertions)]
-            if let (Some(f2), Some(diff_ctx)) = (&file_2, diff_ctx.as_ref()) {
-                let hash = hash_file(&f2.path).expect("Hash failed");
-                assert_eq!(
-                    hash, diff_ctx.file_2_hash,
-                    "f2_hash: {:?}, diff_ctx_hash: {:?}\nf2: {:?}, diff_ctx_f2: {:?}",
-                    hash, diff_ctx.file_2_hash, f2.path, diff_ctx.debug_file_2_path
-                );
-            }
-
             let mut behavior = TreeBehavior {
                 ctx_file_diff: FileDiffPaneCtx {
                     diff_ctx: diff_ctx_ref,
                     scroll_left: scroll_left,
                     scroll_right: scroll_right,
                     diff_options: diff_options,
-                    file_source: file_1.clone(),
-                    file_target: file_2.clone(),
+                    file_source: file_1.get_cached_file().clone(),
+                    file_target: file_2.get_cached_file().clone(),
                     scroll_to_row_span: &scroll_to_rows,
                     active_highlights: &diff_ctx_active_highlights,
                     conflict_cursor: diff_ctx_conflict_cursor,
@@ -1067,10 +983,10 @@ impl<'a> ZApp {
             }
 
             if let Some(file_path) = behavior.ctx_file_diff.load_file_1_request.take() {
-                app_ctx.file_path_1 = Some(file_path);
+                app_ctx.file_1.set_path(file_path);
             }
             if let Some(file_path) = behavior.ctx_file_diff.load_file_2_request.take() {
-                app_ctx.file_path_2 = Some(file_path);
+                app_ctx.file_2.set_path(file_path);
             }
 
             drop(behavior);
@@ -1079,14 +995,8 @@ impl<'a> ZApp {
 
             for (_tile_id, tile) in self.tree.tiles.iter() {
                 if let Tile::Pane(Pane::FileDiff(..)) = tile {
-                    let source = app_ctx
-                        .file_1
-                        .as_ref()
-                        .map_or_else(|| "N/A", |p| p.path.to_str().unwrap_or_default());
-                    let target = app_ctx
-                        .file_2
-                        .as_ref()
-                        .map_or_else(|| "N/A", |p| p.path.to_str().unwrap_or_default());
+                    let source = app_ctx.file_1.get_path_as_string();
+                    let target = app_ctx.file_2.get_path_as_string();
                     let total_adds = app_ctx
                         .diff_ctx
                         .as_ref()
@@ -1185,26 +1095,22 @@ impl<'a> ZApp {
                     }
                 };
                 handle_kb(&app_state_ctx.keybindings.open_file_source, &mut |_kb| {
-                    Self::open_file_picker(&mut app_state_ctx.rx_file_path_1);
+                    Self::open_file_picker(app_state_ctx.file_1.get_tx());
                 });
                 handle_kb(&app_state_ctx.keybindings.open_file_target, &mut |_kb| {
-                    Self::open_file_picker(&mut app_state_ctx.rx_file_path_2);
+                    Self::open_file_picker(app_state_ctx.file_2.get_tx());
                 });
                 handle_kb(&app_state_ctx.keybindings.refresh_diff, &mut |_kb| {
                     Self::refresh_file_contents(
                         &mut app_state_ctx.file_1,
                         &mut app_state_ctx.file_2,
                         &mut app_state_ctx.diff_ctx,
-                        &mut app_state_ctx.diff_ctx_invalidated,
                     );
                 });
                 handle_kb(
                     &app_state_ctx.keybindings.refresh_diff_rows_only,
                     &mut |_kb| {
-                        Self::refresh_diff_rows(
-                            &mut app_state_ctx.diff_ctx,
-                            &mut app_state_ctx.diff_ctx_invalidated,
-                        );
+                        Self::refresh_diff_rows(&mut app_state_ctx.diff_ctx);
                     },
                 );
                 handle_kb(
@@ -1233,14 +1139,14 @@ impl<'a> ZApp {
                             i + 1,
                             kb.format()
                         );
-                        if let Some(path_source) = &app_state_ctx.file_path_1 {
+                        if let Some(path_source) = &app_state_ctx.file_1.get_path() {
                             let universal_source = UniversalPath::new(path_source);
                             let universal_target = UniversalPath::new(path);
                             let (translated_source, translated_target) =
                                 quick_diff_process_paths(&universal_source, &universal_target);
 
-                            app_state_ctx.file_path_1 = Some(translated_source);
-                            app_state_ctx.file_path_2 = Some(translated_target);
+                            app_state_ctx.file_1.set_path(translated_source);
+                            app_state_ctx.file_2.set_path(translated_target);
                         } else {
                             log::info!("No source file currently loaded, quick diff failed");
                         }
@@ -1299,73 +1205,84 @@ impl eframe::App for ZApp {
             }
 
             AppState::Idle(mut state) => {
-                if self.update_source_target(&mut state) {
-                    state.diff_ctx.take();
-                    state.diff_ctx_invalidated = true;
-                    log::info!("update_source_target return true, invalidating diff_ctx...");
-                }
-                state.diff_ctx_invalidated |= if let Some(diff_ctx) = &state.diff_ctx {
-                    let hash_equal = match diff_ctx.one_sided_diff_is_left {
-                        Some(is_left) => {
-                            if is_left {
-                                let file_1_hash = state
-                                    .file_1
-                                    .as_ref()
-                                    .and_then(|f| Some(f.hash.clone()))
-                                    .unwrap_or_default();
-                                diff_ctx.file_1_hash == file_1_hash
-                            } else {
-                                let file_2_hash = state
-                                    .file_2
-                                    .as_ref()
-                                    .and_then(|f| Some(f.hash.clone()))
-                                    .unwrap_or_default();
-                                diff_ctx.file_2_hash == file_2_hash
+                state.file_1.set_lexer_mode(state.diff_lexer_mode);
+                state.file_2.set_lexer_mode(state.diff_lexer_mode);
+
+                let diff_ctx_invalidated =
+                    if let Some(in_progress_input) = &state.diff_ctx_in_progress_input {
+                        *in_progress_input
+                            != UpdateDiffRowsInput {
+                                file_1: state.file_1.get_cached_file().clone(),
+                                file_2: state.file_2.get_cached_file().clone(),
+                                options: state.diff_options.clone(),
+                                myers_diff_algorithm: state.myers_diff_algorithm.clone(),
                             }
+                    } else if let Some(diff_ctx) = &state.diff_ctx {
+                        let hash_equal = match diff_ctx.one_sided_diff_is_left {
+                            Some(is_left) => {
+                                if is_left {
+                                    let file_1_hash =
+                                        state.file_1.get_cached_file_hash().unwrap_or_default();
+                                    diff_ctx.file_1_hash == file_1_hash
+                                } else {
+                                    let file_2_hash =
+                                        state.file_2.get_cached_file_hash().unwrap_or_default();
+                                    diff_ctx.file_2_hash == file_2_hash
+                                }
+                            }
+                            None => {
+                                let file_1_hash =
+                                    state.file_1.get_cached_file_hash().unwrap_or_default();
+                                let file_2_hash =
+                                    state.file_2.get_cached_file_hash().unwrap_or_default();
+                                diff_ctx.file_1_hash == file_1_hash
+                                    && diff_ctx.file_2_hash == file_2_hash
+                            }
+                        };
+
+                        let options_equal = diff_ctx.diff_option == state.diff_options;
+
+                        if (!hash_equal || !options_equal)
+                            && !state.diff_ctx_in_progress_input.is_some()
+                        {
+                            log::debug!(
+                                "diff_ctx invalidated!, reason: hash_equal: {}, options_equal: {}",
+                                hash_equal,
+                                options_equal
+                            );
                         }
-                        None => {
-                            let file_1_hash = state
-                                .file_1
-                                .as_ref()
-                                .and_then(|f| Some(f.hash.clone()))
-                                .unwrap_or_default();
-                            let file_2_hash = state
-                                .file_2
-                                .as_ref()
-                                .and_then(|f| Some(f.hash.clone()))
-                                .unwrap_or_default();
-                            diff_ctx.file_1_hash == file_1_hash
-                                && diff_ctx.file_2_hash == file_2_hash
-                        }
+                        !hash_equal || !options_equal
+                    } else {
+                        !state.diff_ctx_in_progress_input.is_some()
                     };
 
-                    let options_equal = diff_ctx.diff_option == state.diff_options;
+                if diff_ctx_invalidated && state.diff_ctx_in_progress_input.is_some() {
+                    log::info!("diff_ctx invalidated && diff_ctx_in_progress");
+                    self.update_diff_rows_cancel_flag
+                        .as_deref()
+                        .unwrap()
+                        .store(true, Ordering::Release);
+                    log::info!("thread cancel_flag set true");
+                    state.diff_ctx_in_progress_input = None;
+                } else if diff_ctx_invalidated && state.diff_ctx_in_progress_input.is_none() {
+                    let f1 = state.file_1.get_cached_file().clone();
+                    let f2 = state.file_2.get_cached_file().clone();
 
-                    if !hash_equal || !options_equal {
-                        log::debug!(
-                            "diff_ctx invalidated!, reason: hash_equal: {}, options_equal: {}",
-                            hash_equal,
-                            options_equal
-                        );
-                    }
-                    !hash_equal || !options_equal
-                } else {
-                    false
-                };
-
-                if state.diff_ctx_invalidated && !state.diff_ctx_in_progress {
-                    state.diff_ctx_invalidated = false;
-                    if state.file_1.is_some() || state.file_2.is_some() {
-                        state.diff_ctx_in_progress = true;
+                    if f1.is_some() || f2.is_some() {
                         let (tx, rx) = channel();
-                        state.rx = Some(rx);
+                        state.diff_ctx_rx = Some(rx);
 
-                        let f1 = state.file_1.clone();
-                        let f2 = state.file_2.clone();
-                        let opts = state.diff_options.clone();
-                        let myers_diff_algo = state.myers_diff_algorithm.clone();
+                        let cancel_flag = Arc::new(AtomicBool::new(false));
+                        self.update_diff_rows_cancel_flag = Some(cancel_flag.clone());
+                        let input = UpdateDiffRowsInput {
+                            file_1: f1.clone(),
+                            file_2: f2.clone(),
+                            options: state.diff_options.clone(),
+                            myers_diff_algorithm: state.myers_diff_algorithm.clone(),
+                        };
+                        state.diff_ctx_in_progress_input = Some(input.clone());
 
-                        std::thread::spawn(move || {
+                        self.update_diff_rows_thread_handle = Some(std::thread::spawn(move || {
                             log::info!(
                                 "Spawned thread for DiffCtx\nSource: {}, Target: {}",
                                 f1.as_ref()
@@ -1375,26 +1292,33 @@ impl eframe::App for ZApp {
                                     .and_then(|f| Some(f.path.display().to_string()))
                                     .unwrap_or_default()
                             );
-                            let result =
-                                AppStateCtx::update_diff_rows(f1, f2, &opts, myers_diff_algo);
-                            log::info!("Compute for DiffCtx complete!");
-                            let _ = tx.send(result);
-                        });
+                            let result = AppStateCtx::update_diff_rows(input, cancel_flag);
+                            log::info!(
+                                "Spawned thread for DiffCtx complete {:?}",
+                                result.is_some()
+                            );
+                            if let Some(result) = result {
+                                let _ = tx.send(result);
+                            }
+                        }));
                     }
                 }
 
-                if state.diff_ctx_in_progress {
-                    if let Some(rx) = &state.rx {
+                if state.diff_ctx_in_progress_input.is_some() {
+                    if let Some(rx) = &state.diff_ctx_rx {
                         match rx.try_recv() {
                             Ok(r) => {
-                                state.diff_ctx_in_progress = false;
+                                log::info!("Recieved new diff_ctx from thread");
+                                self.update_diff_rows_thread_handle = None;
+                                state.diff_ctx_in_progress_input = None;
                                 state.diff_ctx = Some(r);
                                 ctx.request_repaint();
                             }
                             Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                            Err(e) => {
-                                log::error!("Channel error: {e}");
-                                state.diff_ctx_in_progress = false;
+                            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                log::error!("Channel error: Disconnected");
+                                self.update_diff_rows_thread_handle = None;
+                                state.diff_ctx_in_progress_input = None;
                             }
                         }
                     }

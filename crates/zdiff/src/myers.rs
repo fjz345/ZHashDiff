@@ -1,3 +1,8 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MyersDiffAlgorithm {
@@ -12,7 +17,8 @@ pub fn myers_diff_path<T, F>(
     source: &[T],
     target: &[T],
     cmp: F,
-) -> Vec<(i32, i32)>
+    cancel_flag: Arc<AtomicBool>,
+) -> Option<Vec<(i32, i32)>>
 where
     T: Sync,
     F: Fn(&T, &T) -> bool + Sync,
@@ -20,10 +26,10 @@ where
     match algorithm {
         MyersDiffAlgorithm::Trace => {
             let trace = myers_diff_trace(source, target, cmp);
-            myers_backtrack(trace, source.len() as i32, target.len() as i32)
+            myers_backtrack(trace, source.len() as i32, target.len() as i32, cancel_flag)
         }
-        MyersDiffAlgorithm::Linear => myers_diff_linear(source, target, cmp),
-        MyersDiffAlgorithm::LinearMT => myers_diff_linear_mt(source, target, cmp),
+        MyersDiffAlgorithm::Linear => myers_diff_linear(source, target, cmp, cancel_flag),
+        MyersDiffAlgorithm::LinearMT => myers_diff_linear_mt(source, target, cmp, cancel_flag),
     }
 }
 
@@ -125,13 +131,22 @@ where
     trace
 }
 
-pub fn myers_backtrack(trace: MyersTrace, source_len: i32, target_len: i32) -> Vec<(i32, i32)> {
+pub fn myers_backtrack(
+    trace: MyersTrace,
+    source_len: i32,
+    target_len: i32,
+    cancel_flag: Arc<AtomicBool>,
+) -> Option<Vec<(i32, i32)>> {
     let mut path = Vec::with_capacity((source_len + target_len) as usize + 1);
     let mut current_x = source_len;
     let mut current_y = target_len;
 
     // Start from the final depth and work backwards to D=1
-    for depth in (1..trace.len()).rev() {
+    for (i, depth) in (1..trace.len()).rev().enumerate() {
+        if i % 1000 == 0 && cancel_flag.load(Ordering::Relaxed) {
+            return None;
+        }
+
         let d_idx = depth as i32;
         let k = current_x - current_y;
         let prev_v_slice = &trace[depth - 1];
@@ -181,7 +196,7 @@ pub fn myers_backtrack(trace: MyersTrace, source_len: i32, target_len: i32) -> V
     path.push((0, 0));
 
     path.reverse();
-    path
+    Some(path)
 }
 
 pub fn myers_count_add_deletes(diff_path: &[(i32, i32)]) -> (u32, u32) {
@@ -421,7 +436,12 @@ fn find_path<T, F>(
     }
 }
 
-pub fn myers_diff_linear<T, F>(source: &[T], target: &[T], mut cmp: F) -> Vec<(i32, i32)>
+pub fn myers_diff_linear<T, F>(
+    source: &[T],
+    target: &[T],
+    mut cmp: F,
+    cancel_flag: Arc<AtomicBool>,
+) -> Option<Vec<(i32, i32)>>
 where
     F: FnMut(&T, &T) -> bool,
 {
@@ -429,7 +449,7 @@ where
     let target_len = target.len() as i32;
 
     if source_len == 0 && target_len == 0 {
-        return vec![(0, 0)];
+        return Some(vec![(0, 0)]);
     }
 
     let mut bufs = SearchBuffers::new((source_len + target_len) as usize + 1);
@@ -456,6 +476,10 @@ where
     path.push((0, 0));
 
     for i in 0..points.len() - 1 {
+        if i % 1000 == 0 && cancel_flag.load(Ordering::Relaxed) {
+            return None;
+        }
+
         let mut x = points[i].0;
         let mut y = points[i].1;
         let next_point = points[i + 1];
@@ -476,7 +500,7 @@ where
         }
     }
 
-    path
+    Some(path)
 }
 
 fn find_path_mt<T, F>(
@@ -680,7 +704,12 @@ where
 }
 
 // Requires Fn + Sync instead of FnMut so it can be safely referenced across threads
-pub fn myers_diff_linear_mt<T, F>(source: &[T], target: &[T], cmp: F) -> Vec<(i32, i32)>
+pub fn myers_diff_linear_mt<T, F>(
+    source: &[T],
+    target: &[T],
+    cmp: F,
+    cancel_flag: Arc<AtomicBool>,
+) -> Option<Vec<(i32, i32)>>
 where
     T: Sync,
     F: Fn(&T, &T) -> bool + Sync,
@@ -689,7 +718,7 @@ where
     let target_len = target.len() as i32;
 
     if source_len == 0 && target_len == 0 {
-        return vec![(0, 0)];
+        return Some(vec![(0, 0)]);
     }
 
     let mut points = Vec::with_capacity((source_len + target_len) as usize + 2);
@@ -714,6 +743,10 @@ where
     path.push((0, 0));
 
     for i in 0..points.len() - 1 {
+        if i % 1000 == 0 && cancel_flag.load(Ordering::Relaxed) {
+            return None;
+        }
+
         let mut x = points[i].0;
         let mut y = points[i].1;
         let next_point = points[i + 1];
@@ -734,7 +767,7 @@ where
         }
     }
 
-    path
+    Some(path)
 }
 
 #[cfg(test)]

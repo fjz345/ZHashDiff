@@ -1,3 +1,8 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use crate::lexer::RawTokenTrait;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,16 +76,20 @@ pub fn diff_ir_to_no_ws<T: RawTokenTrait>(
     }
 }
 impl DiffIR {
-    pub fn new(path: &[(i32, i32)]) -> Self {
-        Self::generate_ir(path)
+    pub fn new(path: &[(i32, i32)], cancel_flag: Arc<AtomicBool>) -> Option<Self> {
+        Self::generate_ir(path, cancel_flag)
     }
 
     // path from myers backtracking
-    fn generate_ir(path: &[(i32, i32)]) -> DiffIR {
+    fn generate_ir(path: &[(i32, i32)], cancel_flag: Arc<AtomicBool>) -> Option<DiffIR> {
         let mut entries = Vec::with_capacity(path.len() * 2); // Worst case: all inserts or deletes
         let mut distance = 0;
 
-        for window in path.windows(2) {
+        for (idx, window) in path.windows(2).enumerate() {
+            if idx % 1000 == 0 && cancel_flag.load(Ordering::Relaxed) {
+                return None;
+            }
+
             let (x1, y1) = window[0];
             let (x2, y2) = window[1];
 
@@ -157,7 +166,7 @@ impl DiffIR {
             }
         }
 
-        DiffIR { entries, distance }
+        Some(DiffIR { entries, distance })
     }
 }
 

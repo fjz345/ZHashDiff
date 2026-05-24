@@ -6,6 +6,7 @@ use crate::app::ZApp;
 
 mod app;
 mod clamped_cursor;
+mod file;
 mod keybindings;
 mod p4;
 mod quick_diff;

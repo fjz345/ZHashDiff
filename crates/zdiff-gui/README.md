@@ -22,6 +22,8 @@ GUI for zdiff crate
 ## Todo
 * Fix memory consumption for big diffs ('binary search' and/or maybe start new diff when at the diagonal?)
 
+* Syncronized scroll bar (like p4)
+* Batch DiffRow performance optimzation
 * P4 integration for paths
 * Quick diff tool
 
