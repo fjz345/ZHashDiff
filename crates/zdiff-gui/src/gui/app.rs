@@ -57,6 +57,8 @@ pub struct DiffCtx {
     // Myers
     pub diff_rows: Vec<DiffRow>,
     pub num_add_deletes: (u32, u32),
+
+    pub update_diff_rows_input: UpdateDiffRowsInput,
 }
 
 #[derive(Debug)]
@@ -307,7 +309,10 @@ impl AppStateCtx {
         #[cfg(feature = "debug_alloc")]
         log::log!("Allocations update_diff_rows: {:?}", reg.change_and_reset());
 
-        let (c1, c2, one_sided_diff_is_left) = match (&file_1, &file_2) {
+        let file_1_clone = file_1.clone();
+        let file_2_clone = file_2.clone();
+
+        let (c1, c2, one_sided_diff_is_left) = match (&file_1_clone, &file_2_clone) {
             (Some(c1), Some(c2)) => (c1, c2, None),
             (Some(c1), None) => (c1, c1, Some(true)),
             (None, Some(c2)) => (c2, c2, Some(false)),
@@ -391,6 +396,12 @@ impl AppStateCtx {
             return None;
         }
 
+        let input = UpdateDiffRowsInput {
+            file_1,
+            file_2,
+            options: options.clone(),
+            myers_diff_algorithm,
+        };
         Some(DiffCtx {
             file_1_hash: hash1,
             file_2_hash: hash2,
@@ -404,6 +415,7 @@ impl AppStateCtx {
             debug_file_1_path: c1.path.clone().to_string_lossy().to_string(),
             #[cfg(debug_assertions)]
             debug_file_2_path: c2.path.clone().to_string_lossy().to_string(),
+            update_diff_rows_input: input,
         })
     }
 }
@@ -1290,7 +1302,7 @@ impl eframe::App for ZApp {
                                     .unwrap_or_default(),
                                 f2.as_ref()
                                     .and_then(|f| Some(f.path.display().to_string()))
-                                    .unwrap_or_default()
+                                    .unwrap_or_default(),
                             );
                             let result = AppStateCtx::update_diff_rows(input, cancel_flag);
                             log::info!(

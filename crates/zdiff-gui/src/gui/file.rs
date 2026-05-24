@@ -90,13 +90,12 @@ impl FileProcessor {
         if let Some(path) = self.get_path()
             && self.cached_file.is_none()
         {
-            let lexer_parse_fn = match self.diff_lexer_mode {
-                LEXER_MODE_GREEDY => |contents: &str| LexerGreedy::new(contents).parse(),
-                LEXER_MODE_TOKENIZE => |contents: &str| LexerTokenize::new(contents).parse(),
-                LEXER_MODE_NEWLINE => |contents: &str| LexerNewLine::new(contents).parse(),
-                _ => |contents: &str| LexerDefault::new(contents).parse(),
-            };
-            match CachedFile::new(&path, lexer_parse_fn) {
+            log::debug!(
+                "Constructing CachedFile: {:?} with lexer mode {:?}",
+                path,
+                self.diff_lexer_mode
+            );
+            match CachedFile::new(&path, self.diff_lexer_mode) {
                 Ok(r) => {
                     self.cached_file = Some(Arc::new(r));
                 }

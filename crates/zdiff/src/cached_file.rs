@@ -6,7 +6,13 @@ use std::{
 
 use zcommon::hash::hash_file;
 
-use crate::{lexer::RawTokenTrait, read_file_contents};
+use crate::{
+    lexer::{
+        LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE,
+        LexerDefault, LexerGreedy, LexerNewLine, LexerTokenize, RawTokenTrait,
+    },
+    read_file_contents,
+};
 
 #[derive(Debug, Default)]
 pub struct FileMetadata {
@@ -45,6 +51,7 @@ pub struct CachedFile<T: RawTokenTrait> {
     pub contents: String,
     pub tokens: Vec<T>,
     pub metadata: FileMetadata,
+    pub lexer_mode: u8,
 }
 
 impl<T: RawTokenTrait> CachedFile<T> {
@@ -66,21 +73,27 @@ impl<T: RawTokenTrait> CachedFile<T> {
 }
 
 impl<T: RawTokenTrait> CachedFile<T> {
-    pub fn new(
-        path: impl AsRef<Path>,
-        lexer_parse_fn: impl FnOnce(&str) -> Vec<T>,
-    ) -> io::Result<Self> {
+    pub fn new(path: impl AsRef<Path>, lexer_mode: u8) -> io::Result<Self> {
+        let lexer_parse_fn = match lexer_mode {
+            LEXER_MODE_GREEDY => |contents: &str| LexerGreedy::new(contents).parse(),
+            LEXER_MODE_TOKENIZE => |contents: &str| LexerTokenize::new(contents).parse(),
+            LEXER_MODE_NEWLINE => |contents: &str| LexerNewLine::new(contents).parse(),
+            _ => |contents: &str| LexerDefault::new(contents).parse(),
+        };
+
         let contents = read_file_contents(&path)?;
         let hash = hash_file(&path)?;
         let tokens = lexer_parse_fn(&contents);
         let path = path.as_ref().to_path_buf();
         let metadata = FileMetadata::new(&contents);
+
         Ok(Self {
             path,
             hash,
             contents,
             tokens,
             metadata,
+            lexer_mode,
         })
     }
 }
