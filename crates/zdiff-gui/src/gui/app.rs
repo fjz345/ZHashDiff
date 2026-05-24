@@ -1220,50 +1220,23 @@ impl eframe::App for ZApp {
                 state.file_1.set_lexer_mode(state.diff_lexer_mode);
                 state.file_2.set_lexer_mode(state.diff_lexer_mode);
 
+                let update_input = UpdateDiffRowsInput {
+                    file_1: state.file_1.get_cached_file().clone(),
+                    file_2: state.file_2.get_cached_file().clone(),
+                    options: state.diff_options.clone(),
+                    myers_diff_algorithm: state.myers_diff_algorithm.clone(),
+                };
+
                 let diff_ctx_invalidated =
                     if let Some(in_progress_input) = &state.diff_ctx_in_progress_input {
-                        *in_progress_input
-                            != UpdateDiffRowsInput {
-                                file_1: state.file_1.get_cached_file().clone(),
-                                file_2: state.file_2.get_cached_file().clone(),
-                                options: state.diff_options.clone(),
-                                myers_diff_algorithm: state.myers_diff_algorithm.clone(),
-                            }
+                        *in_progress_input != update_input
                     } else if let Some(diff_ctx) = &state.diff_ctx {
-                        let hash_equal = match diff_ctx.one_sided_diff_is_left {
-                            Some(is_left) => {
-                                if is_left {
-                                    let file_1_hash =
-                                        state.file_1.get_cached_file_hash().unwrap_or_default();
-                                    diff_ctx.file_1_hash == file_1_hash
-                                } else {
-                                    let file_2_hash =
-                                        state.file_2.get_cached_file_hash().unwrap_or_default();
-                                    diff_ctx.file_2_hash == file_2_hash
-                                }
-                            }
-                            None => {
-                                let file_1_hash =
-                                    state.file_1.get_cached_file_hash().unwrap_or_default();
-                                let file_2_hash =
-                                    state.file_2.get_cached_file_hash().unwrap_or_default();
-                                diff_ctx.file_1_hash == file_1_hash
-                                    && diff_ctx.file_2_hash == file_2_hash
-                            }
-                        };
+                        let input_equal = update_input == diff_ctx.update_diff_rows_input;
 
-                        let options_equal = diff_ctx.diff_option == state.diff_options;
-
-                        if (!hash_equal || !options_equal)
-                            && !state.diff_ctx_in_progress_input.is_some()
-                        {
-                            log::debug!(
-                                "diff_ctx invalidated!, reason: hash_equal: {}, options_equal: {}",
-                                hash_equal,
-                                options_equal
-                            );
+                        if !input_equal && !state.diff_ctx_in_progress_input.is_some() {
+                            log::debug!("diff_ctx invalidated!");
                         }
-                        !hash_equal || !options_equal
+                        !input_equal
                     } else {
                         !state.diff_ctx_in_progress_input.is_some()
                     };
