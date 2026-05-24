@@ -8,8 +8,8 @@ use zcommon::hash::hash_file;
 
 use crate::{
     lexer::{
-        LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE,
-        LexerDefault, LexerGreedy, LexerNewLine, LexerTokenize, RawTokenTrait,
+        LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE, LexerDefault, LexerGreedy,
+        LexerNewLine, LexerTokenize, RawTokenTrait,
     },
     read_file_contents,
 };

@@ -2,9 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 
 use zdiff::cached_file::CachedFile;
-use zdiff::lexer::{
-    LEXER_MODE_DEFAULT, LexerDefault, LexerGreedy, LexerNewLine, LexerTokenize, RawToken,
-};
+use zdiff::lexer::{LEXER_MODE_DEFAULT, RawToken};
 
 fn default_channel() -> (mpsc::Sender<PathBuf>, mpsc::Receiver<PathBuf>) {
     mpsc::channel()
@@ -34,11 +32,11 @@ impl Default for FileProcessor {
     }
 }
 
+#[allow(dead_code)]
 impl FileProcessor {
     pub fn new() -> Self {
         Self::default()
     }
-
     pub fn get_tx(&self) -> mpsc::Sender<PathBuf> {
         self.channel.0.clone()
     }

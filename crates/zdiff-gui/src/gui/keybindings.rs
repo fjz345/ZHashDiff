@@ -1,4 +1,4 @@
-use eframe::egui::{self, Button, Key, Layout, Modifiers};
+use eframe::egui::{self, Key, Modifiers};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -204,7 +204,7 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
             .num_columns(2)
             .spacing([40.0, 8.0])
             .show(ui, |ui| {
-                let mut ui_shortcut_row =
+                let ui_shortcut_row =
                     |ui: &mut egui::Ui, label: &str, shortcut: &mut Option<Shortcut>| {
                         ui.label(label);
 
@@ -262,14 +262,13 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                         ui.end_row();
                     };
 
-                let mut ui_quick_diff_path_row =
-                    |ui: &mut egui::Ui, label: &str, path: &mut String| {
-                        ui.label(label);
+                let ui_quick_diff_path_row = |ui: &mut egui::Ui, label: &str, path: &mut String| {
+                    ui.label(label);
 
-                        ui.text_edit_singleline(path);
+                    ui.text_edit_singleline(path);
 
-                        ui.end_row();
-                    };
+                    ui.end_row();
+                };
 
                 for (i, (user_qd, quick_diff_path)) in
                     keybindings.user_quick_diffs.iter_mut().enumerate()

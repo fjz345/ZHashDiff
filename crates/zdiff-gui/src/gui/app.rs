@@ -15,13 +15,9 @@ use zdiff::{
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
     lexer::{
-        LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE,
-        LexerDefault, LexerGreedy, LexerNewLine, LexerTokenize, RawToken,
+        LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE, RawToken,
     },
-    myers::{
-        MyersDiffAlgorithm, myers_backtrack, myers_count_add_deletes, myers_diff_linear,
-        myers_diff_linear_mt, myers_diff_path, myers_diff_trace,
-    },
+    myers::{MyersDiffAlgorithm, myers_count_add_deletes, myers_diff_path},
 };
 
 use eframe::{
@@ -33,7 +29,7 @@ use egui_tiles::Tile;
 use crate::{
     clamped_cursor::ClampedCursor,
     file::FileProcessor,
-    keybindings::{self, Keybindings, Shortcut, ui_keybindings},
+    keybindings::{Keybindings, Shortcut, ui_keybindings},
     quick_diff::{UniversalPath, UniversalPathConfig, quick_diff_process_paths, ui_universal_path},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
@@ -854,7 +850,7 @@ impl<'a> ZApp {
                 keybindings,
                 universal_path_config,
                 myers_diff_algorithm,
-                diff_ctx_in_progress_input,
+                diff_ctx_in_progress_input: _,
             } = app_ctx;
             self.show_menu(
                 ui,
@@ -1044,7 +1040,7 @@ impl<'a> ZApp {
             .as_mut()
             .expect("State was not valid while processing inputs")
             .ctx_mut();
-        let mut user_quit: bool = false;
+        let user_quit: bool = false;
         {
             let _input_ctx = ctx.input(|r| {
                 // Esc

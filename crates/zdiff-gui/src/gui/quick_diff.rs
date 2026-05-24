@@ -1,9 +1,9 @@
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Response};
-use tempfile::{NamedTempFile, TempPath};
+use eframe::egui::{self};
+use tempfile::NamedTempFile;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UniversalPath {
