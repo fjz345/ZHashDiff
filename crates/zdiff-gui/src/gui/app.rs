@@ -9,7 +9,10 @@ use std::{
         mpsc::{self, Receiver, channel},
     },
 };
-use zcommon::{hash::hash_file, ui_egui::common::show_custom_popup};
+use zcommon::{
+    hash::{hash_contents, hash_file_mmap},
+    ui_egui::common::show_custom_popup,
+};
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
@@ -345,11 +348,9 @@ impl AppStateCtx {
             return None;
         }
 
-        let hash1 = hash_file(&c1.path).expect("Hash failed");
-        let hash2 = match one_sided_diff_is_left {
-            None => hash_file(&c2.path).expect("Hash failed"),
-            Some(_) => hash1.clone(),
-        };
+        let hash1 = hash_contents(&c1.contents.as_bytes());
+        let hash2 = hash_contents(&c2.contents.as_bytes());
+
         #[cfg(feature = "debug_alloc")]
         log::log!("Allocations hash_file: {:?}", reg.change_and_reset());
         let mut diff_rows: Vec<DiffRow> = build_diff_rows(
@@ -1239,6 +1240,8 @@ impl eframe::App for ZApp {
                 } else if diff_ctx_invalidated && state.diff_ctx_in_progress_input.is_none() {
                     let f1 = state.file_1.get_cached_file().clone();
                     let f2 = state.file_2.get_cached_file().clone();
+
+                    state.diff_ctx = None;
 
                     if f1.is_some() || f2.is_some() {
                         let (tx, rx) = channel();

@@ -105,13 +105,19 @@ impl FileProcessor {
                 let target_path = match &path {
                     UniversalPath::Local(p) => p.clone(),
                     UniversalPath::Depot(depot_str) => {
-                        let mut tmp = match NamedTempFile::new() {
-                            Ok(t) => t,
-                            Err(e) => {
-                                log::error!("Failed to create temp file for {}: {}", depot_str, e);
+                        let sanitized = depot_str.trim_start_matches('/');
+                        let target_path = std::env::temp_dir().join(sanitized);
+
+                        if let Some(parent) = target_path.parent() {
+                            if let Err(e) = std::fs::create_dir_all(parent) {
+                                log::error!(
+                                    "Failed to create directories for {}: {}",
+                                    depot_str,
+                                    e
+                                );
                                 return None;
                             }
-                        };
+                        }
 
                         let content = match get_p4_file_content(depot_str) {
                             Ok(c) => c,
@@ -121,18 +127,12 @@ impl FileProcessor {
                             }
                         };
 
-                        if let Err(e) = tmp.write_all(content.as_bytes()) {
+                        if let Err(e) = std::fs::write(&target_path, content.as_bytes()) {
                             log::error!("Failed to write P4 content to temp file: {}", e);
                             return None;
                         }
 
-                        match tmp.keep() {
-                            Ok((_, kept_path)) => kept_path,
-                            Err(e) => {
-                                log::error!("Failed to keep temp file: {}", e);
-                                return None;
-                            }
-                        }
+                        target_path
                     }
                 };
 
@@ -147,7 +147,7 @@ impl FileProcessor {
                 }
 
                 if path.is_depot() {
-                    let _ = std::fs::remove_file(target_path);
+                    let _ = std::fs::remove_file(&target_path);
                 }
             }
         }

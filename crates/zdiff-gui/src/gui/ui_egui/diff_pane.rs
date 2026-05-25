@@ -6,7 +6,7 @@ use crate::{
 };
 use eframe::egui::{self, Layout, TextEdit, UiBuilder, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
-use zcommon::hash::hash_file;
+use zcommon::hash::{hash_contents, hash_file_mmap};
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, LineContent},
@@ -216,11 +216,11 @@ impl FileDiffPane {
             (Some(_), Some(_), Some(_)) => {
                 let mut do_not_render = false;
                 if let (Some(f1), Some(diff_ctx)) = (&ctx.file_source, &ctx.diff_ctx) {
-                    let hash = hash_file(&f1.path).expect("Hash failed");
+                    let hash = hash_contents(&f1.contents.as_bytes());
                     do_not_render |= diff_ctx.file_1_hash != hash;
                 }
                 if let (Some(f2), Some(diff_ctx)) = (&ctx.file_target, &ctx.diff_ctx) {
-                    let hash = hash_file(&f2.path).expect("Hash failed");
+                    let hash = hash_contents(&f2.contents.as_bytes());
                     do_not_render |= diff_ctx.file_2_hash != hash;
                 }
                 if do_not_render {

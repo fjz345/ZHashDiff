@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::Path;
 
-use zcommon::hash::hash_file;
+use zcommon::hash::hash_file_mmap;
 
 pub enum PathComparissonMethod {
     Byte,
@@ -108,8 +108,8 @@ pub fn compare_hash(
     path1: impl AsRef<Path>,
     path2: impl AsRef<Path>,
 ) -> io::Result<PathComparisonResult> {
-    let hash1 = hash_file(path1)?;
-    let hash2 = hash_file(path2)?;
+    let hash1 = hash_file_mmap(path1)?;
+    let hash2 = hash_file_mmap(path2)?;
 
     Ok(PathComparisonResult::Hash {
         identical: hash1 == hash2,

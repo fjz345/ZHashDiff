@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use zcommon::hash::hash_file;
+use zcommon::hash::hash_file_mmap;
 
 use crate::{
     lexer::{
@@ -82,7 +82,7 @@ impl<T: RawTokenTrait> CachedFile<T> {
         };
 
         let contents = read_file_contents(&path)?;
-        let hash = hash_file(&path)?;
+        let hash = hash_file_mmap(&path)?;
         let tokens = lexer_parse_fn(&contents);
         let path = path.as_ref().to_path_buf();
         let metadata = FileMetadata::new(&contents);

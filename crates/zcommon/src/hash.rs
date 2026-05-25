@@ -11,7 +11,13 @@ use std::{
     time::Duration,
 };
 
-pub fn hash_file(path: impl AsRef<Path>) -> io::Result<String> {
+pub fn hash_contents(contents: &[u8]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update_rayon(contents);
+    hasher.finalize().to_hex().to_string()
+}
+
+pub fn hash_file_mmap(path: impl AsRef<Path>) -> io::Result<String> {
     let mut hasher = blake3::Hasher::new();
     hasher.update_mmap_rayon(path)?;
     Ok(hasher.finalize().to_hex().to_string())
@@ -92,7 +98,7 @@ impl HashService {
                 match msg {
                     Ok(path) => {
                         in_progress.fetch_add(1, Ordering::SeqCst);
-                        let hash = hash_file(&path).ok();
+                        let hash = hash_file_mmap(&path).ok();
                         hashes.write().unwrap().insert(path, hash);
                         in_progress.fetch_sub(1, Ordering::SeqCst);
                     }
@@ -214,7 +220,7 @@ mod tests {
         }
 
         assert!(hash.is_some());
-        assert_eq!(hash.unwrap(), hash_file(&file_path).unwrap());
+        assert_eq!(hash.unwrap(), hash_file_mmap(&file_path).unwrap());
     }
 
     #[test]
