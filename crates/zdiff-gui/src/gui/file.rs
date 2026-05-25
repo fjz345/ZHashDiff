@@ -88,6 +88,11 @@ impl FileProcessor {
         self.invalidate_cache_file();
     }
 
+    pub fn invalidate_path(&mut self) {
+        log::debug!("Invalidating path: {:?}", self.file_path);
+        self.file_path = None;
+    }
+
     pub fn invalidate_cache_file(&mut self) {
         log::debug!("Invalidating cache file for path: {:?}", self.file_path);
         self.cached_file = None;
@@ -143,6 +148,7 @@ impl FileProcessor {
                     Err(e) => {
                         log::error!("Cannot find file {}, Error: {e}", target_path.display());
                         self.cached_file = None;
+                        self.invalidate_path();
                     }
                 }
 

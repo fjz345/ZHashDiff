@@ -66,6 +66,8 @@ pub struct DiffCtx {
 pub struct AppStateCtx {
     pub file_1: FileProcessor,
     pub file_2: FileProcessor,
+    pub diffpane_file_1_buffer: String,
+    pub diffpane_file_2_buffer: String,
 
     pub diff_lexer_mode: u8,
     pub diff_options: DiffBuilderOptions,
@@ -117,6 +119,8 @@ impl Default for AppStateCtx {
         Self {
             file_1: Default::default(),
             file_2: Default::default(),
+            diffpane_file_1_buffer: Default::default(),
+            diffpane_file_2_buffer: Default::default(),
             diff_options: Default::default(),
             diff_ctx: Default::default(),
             diff_ctx_rx: Default::default(),
@@ -842,6 +846,8 @@ impl<'a> ZApp {
                 universal_path_config,
                 myers_diff_algorithm,
                 diff_ctx_in_progress_input: _,
+                diffpane_file_1_buffer,
+                diffpane_file_2_buffer,
             } = app_ctx;
             self.show_menu(
                 ui,

@@ -3,7 +3,10 @@ use std::{path::PathBuf, sync::Arc};
 use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPane};
 use eframe::egui::{self, Layout, TextEdit, UiBuilder, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
-use zcommon::hash::{hash_contents, hash_file_mmap};
+use zcommon::{
+    hash::{hash_contents, hash_file_mmap},
+    ui_egui::common::draw_persistent_hint_text_edit,
+};
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, LineContent},
@@ -256,6 +259,61 @@ impl FileDiffPane {
                             table_builder =
                                 table_builder.scroll_to_row(*start, Some(egui::Align::Min));
                         }
+
+                        let editable_path_test = |ui: &mut egui::Ui,
+                                                  file: Option<Arc<CachedFile<T>>>|
+                         -> Option<UniversalPath> {
+                            let size = ui.available_size_before_wrap();
+
+                            let source_path_text = file
+                                .as_ref()
+                                .map(|f| format!("{}", f.path))
+                                .unwrap_or_default();
+
+                            // 🔥 KEY FIX: tie UI state to file identity
+                            let file_key = file
+                                .as_ref()
+                                .map(|f| format!("{}", f.path))
+                                .unwrap_or_else(|| "<none>".to_string());
+
+                            let id = ui.next_auto_id().with(file_key);
+
+                            let mut text = ui.memory_mut(|mem| {
+                                let stored = mem.data.get_temp::<String>(id);
+                                match stored {
+                                    Some(t) => t,
+                                    None => source_path_text.clone(),
+                                }
+                            });
+
+                            let response =
+                                ui.add_sized(size, egui::TextEdit::singleline(&mut text));
+
+                            if response.changed() {
+                                ui.memory_mut(|mem| {
+                                    mem.data.insert_temp(id, text.clone());
+                                });
+                            }
+
+                            let mut commit = false;
+                            ui.input(|i| {
+                                if i.key_pressed(egui::Key::Enter) {
+                                    commit = true;
+                                }
+                            });
+
+                            if commit {
+                                log::debug!("Setting load_file_request: {}", text);
+
+                                ui.memory_mut(|mem| {
+                                    mem.data.insert_temp(id, text.clone());
+                                });
+
+                                return Some(UniversalPath::from(&text));
+                            }
+
+                            None
+                        };
                         table_builder
                             .id_salt("file_diff_table")
                             .striped(false)
@@ -270,21 +328,13 @@ impl FileDiffPane {
                             .column(Column::remainder().clip(false))
                             .header(20.0, |mut header| {
                                 header.col(|ui| {
-                                    ui.strong(
-                                        ctx.file_source
-                                            .as_ref()
-                                            .and_then(|f| Some(format!("{}", f.path)))
-                                            .unwrap_or_default(),
-                                    );
+                                    *ctx.load_file_1_request =
+                                        editable_path_test(ui, ctx.file_source.clone());
                                 });
                                 header.col(|_| {});
                                 header.col(|ui| {
-                                    ui.strong(
-                                        ctx.file_target
-                                            .as_ref()
-                                            .and_then(|f| Some(format!("{}", f.path)))
-                                            .unwrap_or_default(),
-                                    );
+                                    *ctx.load_file_2_request =
+                                        editable_path_test(ui, ctx.file_target.clone());
                                 });
                             })
                             .body(|body| {
@@ -477,32 +527,38 @@ impl FileDiffPane {
 
                         ui.add_space(4.0);
 
-                        let read_string = |diff_result: &DiffResult| -> &str {
-                            let str = match diff_result.operation {
+                        let read_string = |diff_result: &DiffResult| -> Option<&str> {
+                            let str: Option<&str> = match diff_result.operation {
                                 zdiff::diff_ir::DiffOp::Equal | zdiff::diff_ir::DiffOp::Delete => {
-                                    let token =
-                                        &file_source.clone().expect("Source was None").tokens
-                                            [diff_result.token_source_idx.unwrap() as usize];
-                                    file_source
-                                        .as_ref()
-                                        .unwrap()
-                                        .read_content_span(token.as_ref().span.clone())
+                                    let file = file_source.as_ref().cloned()?;
+                                    let token = file.tokens
+                                        [diff_result.token_source_idx.unwrap() as usize]
+                                        .clone();
+                                    Some(
+                                        file_source
+                                            .as_ref()
+                                            .unwrap()
+                                            .read_content_span(token.as_ref().span.clone()),
+                                    )
                                 }
                                 zdiff::diff_ir::DiffOp::Insert => {
-                                    let token =
-                                        &file_target.clone().expect("Target was None").tokens
-                                            [diff_result.token_target_idx.unwrap() as usize];
-                                    file_target
-                                        .as_ref()
-                                        .unwrap()
-                                        .read_content_span(token.as_ref().span.clone())
+                                    let file = file_target.as_ref().cloned()?;
+                                    let token = file.tokens
+                                        [diff_result.token_target_idx.unwrap() as usize]
+                                        .clone();
+                                    Some(
+                                        file_target
+                                            .as_ref()
+                                            .unwrap()
+                                            .read_content_span(token.as_ref().span.clone()),
+                                    )
                                 }
                             };
                             return str;
                         };
                         log::trace!("-----------------------------------------------");
                         for (diff_result, color) in tokens {
-                            let str = read_string(diff_result);
+                            let str = read_string(diff_result).unwrap_or_default();
                             log::trace!(
                                 "Op: {:?}, Str: {:?}, L: {:?}, R: {:?}",
                                 diff_result.operation,
@@ -543,10 +599,10 @@ fn handle_drops(
     rect1: egui::Rect,
     rect2: egui::Rect,
 ) -> bool {
-    assert!(
-        load_file_1_request.is_none() && load_file_2_request.is_none(),
-        "File load requests should be None when handling drops"
-    );
+    // assert!(
+    //     load_file_1_request.is_none() && load_file_2_request.is_none(),
+    //     "File load requests should be None when handling drops"
+    // );
 
     // let mut should_draw = false;
     let did_drop = ui.input(|i| {
