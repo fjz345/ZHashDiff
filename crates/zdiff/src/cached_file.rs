@@ -1,8 +1,4 @@
-use std::{
-    io,
-    ops::Range,
-    path::{Path, PathBuf},
-};
+use std::{io, ops::Range, path::Path};
 
 use zcommon::hash::hash_file_mmap;
 
@@ -12,6 +8,7 @@ use crate::{
         LexerNewLine, LexerTokenize, RawTokenTrait,
     },
     read_file_contents,
+    universal_path::UniversalPath,
 };
 
 #[derive(Debug, Default)]
@@ -44,9 +41,9 @@ impl FileMetadata {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CachedFile<T: RawTokenTrait> {
-    pub path: PathBuf,
+    pub path: UniversalPath,
     pub hash: String,
     pub contents: String,
     pub tokens: Vec<T>,
@@ -59,7 +56,6 @@ impl<T: RawTokenTrait> CachedFile<T> {
         &self.contents[span]
     }
 
-    // returns vec of lines that match
     pub fn content_search(&self, query: &str) -> Vec<usize> {
         log::trace!("content_search: {}", query);
         if query.is_empty() {
@@ -73,7 +69,11 @@ impl<T: RawTokenTrait> CachedFile<T> {
 }
 
 impl<T: RawTokenTrait> CachedFile<T> {
-    pub fn new(path: impl AsRef<Path>, lexer_mode: u8) -> io::Result<Self> {
+    pub fn new(
+        display_path: UniversalPath,
+        physical_path: impl AsRef<Path>,
+        lexer_mode: u8,
+    ) -> io::Result<Self> {
         let lexer_parse_fn = match lexer_mode {
             LEXER_MODE_GREEDY => |contents: &str| LexerGreedy::new(contents).parse(),
             LEXER_MODE_TOKENIZE => |contents: &str| LexerTokenize::new(contents).parse(),
@@ -81,14 +81,13 @@ impl<T: RawTokenTrait> CachedFile<T> {
             _ => |contents: &str| LexerDefault::new(contents).parse(),
         };
 
-        let contents = read_file_contents(&path)?;
-        let hash = hash_file_mmap(&path)?;
+        let contents = read_file_contents(&physical_path)?;
+        let hash = hash_file_mmap(&physical_path)?;
         let tokens = lexer_parse_fn(&contents);
-        let path = path.as_ref().to_path_buf();
         let metadata = FileMetadata::new(&contents);
 
         Ok(Self {
-            path,
+            path: display_path,
             hash,
             contents,
             tokens,

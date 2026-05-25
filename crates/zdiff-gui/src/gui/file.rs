@@ -136,7 +136,7 @@ impl FileProcessor {
                     }
                 };
 
-                match CachedFile::new(&target_path, self.diff_lexer_mode) {
+                match CachedFile::new(path.clone(), &target_path, self.diff_lexer_mode) {
                     Ok(r) => {
                         self.cached_file = Some(Arc::new(r));
                     }

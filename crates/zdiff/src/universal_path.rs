@@ -11,6 +11,21 @@ pub enum UniversalPath {
     Local(PathBuf),
 }
 
+impl Default for UniversalPath {
+    fn default() -> Self {
+        UniversalPath::Local(PathBuf::new())
+    }
+}
+
+impl std::fmt::Display for UniversalPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UniversalPath::Local(p) => write!(f, "{}", p.display()),
+            UniversalPath::Depot(s) => write!(f, "{}", s),
+        }
+    }
+}
+
 impl From<&String> for UniversalPath {
     fn from(s: &String) -> Self {
         UniversalPath::new(s)

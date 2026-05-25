@@ -34,7 +34,7 @@ use crate::{
     clamped_cursor::ClampedCursor,
     file::FileProcessor,
     keybindings::{Keybindings, Shortcut, ui_keybindings},
-    quick_diff::{UniversalPathConfig, quick_diff_process_paths, ui_universal_path},
+    quick_diff::{UniversalPathConfig, ui_universal_path},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},
@@ -46,9 +46,9 @@ pub struct DiffCtx {
     pub file_1_hash: String,
     pub file_2_hash: String,
     #[cfg(debug_assertions)]
-    pub debug_file_1_path: String,
+    pub debug_file_1_path: UniversalPath,
     #[cfg(debug_assertions)]
-    pub debug_file_2_path: String,
+    pub debug_file_2_path: UniversalPath,
 
     pub one_sided_diff_is_left: Option<bool>,
     pub diff_option: DiffBuilderOptions,
@@ -410,9 +410,9 @@ impl AppStateCtx {
             precomputed_diffs,
             precomputed_file_rows,
             #[cfg(debug_assertions)]
-            debug_file_1_path: c1.path.clone().to_string_lossy().to_string(),
+            debug_file_1_path: c1.path.clone(),
             #[cfg(debug_assertions)]
-            debug_file_2_path: c2.path.clone().to_string_lossy().to_string(),
+            debug_file_2_path: c2.path.clone(),
             update_diff_rows_input: input,
         })
     }
@@ -1262,10 +1262,10 @@ impl eframe::App for ZApp {
                             log::info!(
                                 "Spawned thread for DiffCtx\nSource: {}, Target: {}",
                                 f1.as_ref()
-                                    .and_then(|f| Some(f.path.display().to_string()))
+                                    .and_then(|f| Some(format!("{}", f.path)))
                                     .unwrap_or_default(),
                                 f2.as_ref()
-                                    .and_then(|f| Some(f.path.display().to_string()))
+                                    .and_then(|f| Some(format!("{}", f.path)))
                                     .unwrap_or_default(),
                             );
                             let result = AppStateCtx::update_diff_rows(input, cancel_flag);

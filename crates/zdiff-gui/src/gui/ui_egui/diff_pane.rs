@@ -273,7 +273,7 @@ impl FileDiffPane {
                                     ui.strong(
                                         ctx.file_source
                                             .as_ref()
-                                            .and_then(|f| Some(f.path.display().to_string()))
+                                            .and_then(|f| Some(format!("{}", f.path)))
                                             .unwrap_or_default(),
                                     );
                                 });
@@ -282,7 +282,7 @@ impl FileDiffPane {
                                     ui.strong(
                                         ctx.file_target
                                             .as_ref()
-                                            .and_then(|f| Some(f.path.display().to_string()))
+                                            .and_then(|f| Some(format!("{}", f.path)))
                                             .unwrap_or_default(),
                                     );
                                 });
