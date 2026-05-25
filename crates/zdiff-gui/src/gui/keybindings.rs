@@ -33,6 +33,13 @@ impl Shortcut {
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct QuickDiffPaths {
+    pub target: String,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Keybindings {
     pub open_file_source: Option<Shortcut>,
     pub open_file_target: Option<Shortcut>,
@@ -46,7 +53,7 @@ pub struct Keybindings {
     pub prev_conflict: Option<Shortcut>,
     pub next_find: Option<Shortcut>,
     pub prev_find: Option<Shortcut>,
-    pub user_quick_diffs: Vec<(Option<Shortcut>, String)>,
+    pub user_quick_diffs: Vec<(Option<Shortcut>, QuickDiffPaths)>,
 }
 
 impl Default for Keybindings {
@@ -156,7 +163,10 @@ impl Default for Keybindings {
                             ..Default::default()
                         },
                     }),
-                    "".into(),
+                    QuickDiffPaths {
+                        target: "".into(),
+                        source: None,
+                    },
                 ),
                 (
                     Some(Shortcut {
@@ -165,7 +175,10 @@ impl Default for Keybindings {
                             ..Default::default()
                         },
                     }),
-                    "".into(),
+                    QuickDiffPaths {
+                        target: "".into(),
+                        source: None,
+                    },
                 ),
                 (
                     Some(Shortcut {
@@ -174,7 +187,10 @@ impl Default for Keybindings {
                             ..Default::default()
                         },
                     }),
-                    "".into(),
+                    QuickDiffPaths {
+                        target: "".into(),
+                        source: None,
+                    },
                 ),
                 (
                     Some(Shortcut {
@@ -183,7 +199,10 @@ impl Default for Keybindings {
                             ..Default::default()
                         },
                     }),
-                    "".into(),
+                    QuickDiffPaths {
+                        target: "".into(),
+                        source: None,
+                    },
                 ),
             ],
         }
@@ -195,7 +214,13 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
         *keybindings = Keybindings::default();
     }
     if ui.button("Add Quick Diff").clicked() {
-        keybindings.user_quick_diffs.push((None, String::new()));
+        keybindings.user_quick_diffs.push((
+            None,
+            QuickDiffPaths {
+                target: "".into(),
+                source: None,
+            },
+        ));
     }
     ui.separator();
 
@@ -274,7 +299,32 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                     keybindings.user_quick_diffs.iter_mut().enumerate()
                 {
                     ui_shortcut_row(ui, &format!("User Quick Diff {}", i + 1), user_qd);
-                    ui_quick_diff_path_row(ui, "Path", quick_diff_path);
+                    ui_quick_diff_path_row(ui, "Target Path", &mut quick_diff_path.target);
+
+                    let mut action_remove = false;
+                    let mut action_add = false;
+
+                    match &mut quick_diff_path.source {
+                        Some(source_str) => {
+                            if ui.button("Remove").clicked() {
+                                action_remove = true;
+                            }
+                            ui.text_edit_singleline(source_str);
+                        }
+                        None => {
+                            ui.label("Source Path");
+                            if ui.button("➕ Add Source").clicked() {
+                                action_add = true;
+                            }
+                        }
+                    }
+                    ui.end_row();
+
+                    if action_remove {
+                        quick_diff_path.source = None;
+                    } else if action_add {
+                        quick_diff_path.source = Some(String::new());
+                    }
                 }
 
                 ui.separator();

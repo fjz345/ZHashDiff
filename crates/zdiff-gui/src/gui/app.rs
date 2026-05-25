@@ -496,8 +496,10 @@ impl<'a> ZApp {
                     let args: Vec<String> = env::args().collect();
 
                     if let (Some(p1), Some(p2)) = (args.get(1), args.get(2)) {
-                        ctx.file_1.set_path(PathBuf::from(p1));
-                        ctx.file_2.set_path(PathBuf::from(p2));
+                        ctx.file_1
+                            .set_path(Some(UniversalPath::from(PathBuf::from(p1))));
+                        ctx.file_2
+                            .set_path(Some(UniversalPath::from(PathBuf::from(p2))));
                     }
                 }
                 _ => {}
@@ -555,10 +557,10 @@ impl<'a> ZApp {
         egui_tiles::Tree::new("my_tree", root, tiles)
     }
 
-    fn open_file_picker(tx: mpsc::Sender<PathBuf>) {
+    fn open_file_picker(tx: mpsc::Sender<UniversalPath>) {
         std::thread::spawn(move || {
             if let Some(path) = pollster::block_on(rfd::AsyncFileDialog::new().pick_file()) {
-                if let Err(e) = tx.send(path.path().to_path_buf()) {
+                if let Err(e) = tx.send(UniversalPath::from(path.path().to_path_buf())) {
                     log::error!("Failed to send path: {e}");
                 }
             }
@@ -594,19 +596,6 @@ impl<'a> ZApp {
         universal_path_config: &mut UniversalPathConfig,
         myers_diff_algorithm: &mut MyersDiffAlgorithm,
     ) {
-        // let check_file_rx = |rx_opt: &mut Option<std::sync::mpsc::Receiver<std::path::PathBuf>>,
-        //                      target: &mut Option<std::path::PathBuf>| {
-        //     if let Some(rx) = rx_opt {
-        //         match rx.try_recv() {
-        //             Ok(path) => *target = Some(path),
-        //             Err(std::sync::mpsc::TryRecvError::Disconnected) => *rx_opt = None,
-        //             Err(std::sync::mpsc::TryRecvError::Empty) => {}
-        //         }
-        //     }
-        // };
-        // check_file_rx(rx_file_path_1, file_path_1);
-        // check_file_rx(rx_file_path_2, file_path_2);
-
         ui.horizontal(|ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
@@ -750,8 +739,8 @@ impl<'a> ZApp {
                             if ui.button(label).clicked() {
                                 let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
-                                file_1.set_path(Some(base.join(p1)));
-                                file_2.set_path(Some(base.join(p2)));
+                                file_1.set_path(Some(UniversalPath::from(base.join(p1))));
+                                file_2.set_path(Some(UniversalPath::from(base.join(p2))));
 
                                 *diff_ctx = None;
                             }
@@ -1147,14 +1136,16 @@ impl<'a> ZApp {
                             i + 1,
                             kb.format()
                         );
-                        if let Some(path_source) = &app_state_ctx.file_1.get_path() {
-                            let universal_source = UniversalPath::new(path_source);
-                            let universal_target = UniversalPath::new(path);
-                            let (translated_source, translated_target) =
-                                quick_diff_process_paths(&universal_source, &universal_target);
+                        let final_source = match &path.source {
+                            Some(src_override) => Some(UniversalPath::from(src_override)),
+                            None => app_state_ctx.file_1.get_path(),
+                        };
 
-                            app_state_ctx.file_1.set_path(translated_source);
-                            app_state_ctx.file_2.set_path(translated_target);
+                        if let Some(path_source) = final_source {
+                            app_state_ctx.file_1.set_path(path_source);
+                            app_state_ctx
+                                .file_2
+                                .set_path(UniversalPath::from(&path.target));
                         } else {
                             log::info!("No source file currently loaded, quick diff failed");
                         }

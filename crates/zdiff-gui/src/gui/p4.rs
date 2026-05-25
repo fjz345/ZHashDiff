@@ -1,5 +1,5 @@
 use std::process::Command;
-use std::str;
+use std::{env, str};
 
 pub struct P4Revision {
     pub rev: u32,
@@ -9,7 +9,9 @@ pub struct P4Revision {
 }
 
 pub fn get_p4_file_content(path: &str) -> Result<String, String> {
-    let output = Command::new("p4")
+    let p4_exe = env::var("P4_PATH").unwrap_or_else(|_| "p4".to_string());
+
+    let output = Command::new(&p4_exe)
         .args(["print", "-q", path])
         .output()
         .map_err(|e| e.to_string())?;
@@ -26,16 +28,23 @@ pub fn get_p4_file_content(path: &str) -> Result<String, String> {
 }
 
 pub fn get_revision_history(path: &str) -> Result<Vec<P4Revision>, String> {
-    // -ztag provides formatted output that is easier to parse than raw text
-    let output = Command::new("p4")
-        .args(["-ztag", "filelog", "-m", "10", path])
+    let (program, args) = if cfg!(target_os = "windows") {
+        (
+            "cmd",
+            vec!["/C", "p4", "-ztag", "filelog", "-m", "10", path],
+        )
+    } else {
+        ("p4", vec!["-ztag", "filelog", "-m", "10", path])
+    };
+
+    let output = Command::new(program)
+        .args(args)
         .output()
         .map_err(|e| e.to_string())?;
 
     let stdout = str::from_utf8(&output.stdout).map_err(|e| e.to_string())?;
     let mut history = Vec::new();
 
-    // Basic ztag parser logic
     let mut current_rev = 0;
     let mut current_change = 0;
     let mut current_action = String::new();

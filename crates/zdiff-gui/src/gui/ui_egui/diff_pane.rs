@@ -1,6 +1,9 @@
 use std::{path::PathBuf, sync::Arc};
 
-use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPane};
+use crate::{
+    app::DiffCtx, clamped_cursor::ClampedCursor, quick_diff::UniversalPath,
+    ui_egui::panes::ZAppPane,
+};
 use eframe::egui::{self, Layout, TextEdit, UiBuilder, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
 use zcommon::hash::hash_file;
@@ -24,8 +27,8 @@ pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
     pub active_highlights: &'a Vec<usize>,
     pub conflict_cursor: &'a mut ClampedCursor,
     pub find_cursor: &'a mut ClampedCursor,
-    pub load_file_1_request: &'a mut Option<PathBuf>,
-    pub load_file_2_request: &'a mut Option<PathBuf>,
+    pub load_file_1_request: &'a mut Option<UniversalPath>,
+    pub load_file_2_request: &'a mut Option<UniversalPath>,
     pub pivot: &'a mut (Option<usize>, Option<usize>),
 }
 
@@ -537,8 +540,8 @@ impl FileDiffPane {
 
 fn handle_drops(
     ui: &egui::Ui,
-    load_file_1_request: &mut Option<PathBuf>,
-    load_file_2_request: &mut Option<PathBuf>,
+    load_file_1_request: &mut Option<UniversalPath>,
+    load_file_2_request: &mut Option<UniversalPath>,
     rect1: egui::Rect,
     rect2: egui::Rect,
 ) -> bool {
@@ -554,11 +557,11 @@ fn handle_drops(
             for dropped_file in &i.raw.dropped_files {
                 if let Some(path) = &dropped_file.path {
                     if rect1.contains(drop_pos) {
-                        *load_file_1_request = Some(path.clone());
+                        *load_file_1_request = Some(UniversalPath::from(path.clone()));
                         log::info!("File dropped on left pane: {:?}", path);
                         return true;
                     } else if rect2.contains(drop_pos) {
-                        *load_file_2_request = Some(path.clone());
+                        *load_file_2_request = Some(UniversalPath::from(path.clone()));
                         log::info!("File dropped on right pane: {:?}", path);
                         return true;
                     }

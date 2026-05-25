@@ -13,6 +13,35 @@ pub enum UniversalPath {
     Local(PathBuf),
 }
 
+impl From<&String> for UniversalPath {
+    fn from(s: &String) -> Self {
+        UniversalPath::new(s)
+    }
+}
+impl From<PathBuf> for UniversalPath {
+    fn from(path: PathBuf) -> Self {
+        UniversalPath::Local(path)
+    }
+}
+
+impl From<&std::path::Path> for UniversalPath {
+    fn from(path: &std::path::Path) -> Self {
+        UniversalPath::Local(path.to_path_buf())
+    }
+}
+
+impl From<String> for UniversalPath {
+    fn from(s: String) -> Self {
+        UniversalPath::new(s)
+    }
+}
+
+impl From<&str> for UniversalPath {
+    fn from(s: &str) -> Self {
+        UniversalPath::new(s)
+    }
+}
+
 impl UniversalPath {
     pub fn new<S: AsRef<OsStr>>(s: S) -> Self {
         let os_str = s.as_ref();
@@ -64,6 +93,7 @@ pub struct UniversalPathConfig {
 pub fn ui_universal_path(ui: &mut egui::Ui, config: &mut UniversalPathConfig) -> egui::Response {
     ui.vertical(|ui| {
         ui.heading("Perforce Configuration");
+        ui.label("Uses $P4PORT, $P4USER, and $P4CLIENT if not specified here");
 
         if ui.button("Reset to Defaults").clicked() {
             *config = UniversalPathConfig::default();
