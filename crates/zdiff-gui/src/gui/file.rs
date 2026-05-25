@@ -5,9 +5,9 @@ use std::sync::{Arc, mpsc};
 use tempfile::NamedTempFile;
 use zdiff::cached_file::CachedFile;
 use zdiff::lexer::{LEXER_MODE_DEFAULT, RawToken};
+use zdiff::universal_path::UniversalPath;
 
 use crate::p4::get_p4_file_content;
-use crate::quick_diff::UniversalPath;
 
 fn default_channel() -> (mpsc::Sender<UniversalPath>, mpsc::Receiver<UniversalPath>) {
     mpsc::channel()

@@ -5,6 +5,7 @@ pub mod diff_builder;
 pub mod diff_ir;
 pub mod lexer;
 pub mod myers;
+pub mod universal_path;
 
 pub fn read_file_contents<P: AsRef<Path>>(path: P) -> std::io::Result<String> {
     use std::fs::File;

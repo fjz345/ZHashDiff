@@ -21,6 +21,7 @@ use zdiff::{
         LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE, RawToken,
     },
     myers::{MyersDiffAlgorithm, myers_count_add_deletes, myers_diff_path},
+    universal_path::UniversalPath,
 };
 
 use eframe::{
@@ -33,7 +34,7 @@ use crate::{
     clamped_cursor::ClampedCursor,
     file::FileProcessor,
     keybindings::{Keybindings, Shortcut, ui_keybindings},
-    quick_diff::{UniversalPath, UniversalPathConfig, quick_diff_process_paths, ui_universal_path},
+    quick_diff::{UniversalPathConfig, quick_diff_process_paths, ui_universal_path},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},

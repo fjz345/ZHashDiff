@@ -1,9 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
-use crate::{
-    app::DiffCtx, clamped_cursor::ClampedCursor, quick_diff::UniversalPath,
-    ui_egui::panes::ZAppPane,
-};
+use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPane};
 use eframe::egui::{self, Layout, TextEdit, UiBuilder, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
 use zcommon::hash::{hash_contents, hash_file_mmap};
@@ -12,6 +9,7 @@ use zdiff::{
     diff_builder::{DiffBuilderOptions, LineContent},
     diff_ir::{DiffOp, DiffResult},
     lexer::RawTokenTrait,
+    universal_path::UniversalPath,
 };
 
 pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
