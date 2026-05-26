@@ -13,6 +13,7 @@ GUI for zdiff crate
     - Goto line
     - Line Pivot
     - Lexer modes
+    - P4 Integration
     - Diff Options
         + Ignore whitespace
         + Highlight rows that differ
@@ -20,14 +21,10 @@ GUI for zdiff crate
         + Syntax highlight (only hardcoded keywords for now)
 
 ## Todo
-* Fix memory consumption for big diffs ('binary search' and/or maybe start new diff when at the diagonal?)
-
 * Syncronized scroll bar (like p4)
 * Batch DiffRow performance optimzation
-* P4 integration for paths
 * Quick diff tool
 
 * user defined comparison per file format
 * better horizontal scrolling
-* fix update_diff_ctx interupt
 * show time it took to compute the diff

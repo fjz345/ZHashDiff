@@ -1,7 +1,10 @@
 use std::{path::PathBuf, sync::Arc};
 
 use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPane};
-use eframe::egui::{self, Layout, TextEdit, UiBuilder, scroll_area::ScrollBarVisibility};
+use eframe::egui::{
+    self, Layout, TextEdit, UiBuilder,
+    scroll_area::{ScrollAreaOutput, ScrollBarVisibility},
+};
 use serde::{Deserialize, Serialize};
 use zcommon::{
     hash::{hash_contents, hash_file_mmap},
@@ -193,32 +196,13 @@ impl FileDiffPane {
         let diff_rows = ctx.diff_ctx.as_ref().and_then(|f| Some(&f.diff_rows));
         let source_path = ctx.file_source.as_ref().and_then(|f| Some(&f.path));
         let target_path = ctx.file_target.as_ref().and_then(|f| Some(&f.path));
-        match (&diff_rows, source_path, target_path) {
-            (Some(_), None, None) | (None, None, None) => {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Load Source & Target files to see diff.");
-                });
-                return egui_tiles::UiResponse::None;
-            }
-            (None, Some(_), None) => {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Target tokens were not set");
-                });
-                return egui_tiles::UiResponse::None;
-            }
-            (None, None, Some(_)) => {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Source tokens were not set");
-                });
-                return egui_tiles::UiResponse::None;
-            }
-            (Some(_), Some(_), None) | (Some(_), None, Some(_)) => {}
-            (None, Some(_), Some(_)) => {
-                ui.centered_and_justified(|ui| {
-                    ui.label("Waiting for diff results...");
-                });
-                return egui_tiles::UiResponse::None;
-            }
+
+        let do_not_render_diff = match (&diff_rows, source_path, target_path) {
+            (Some(_), None, None) | (None, None, None) => true,
+            (None, Some(_), None) => true,
+            (None, None, Some(_)) => true,
+            (Some(_), Some(_), None) | (Some(_), None, Some(_)) => false,
+            (None, Some(_), Some(_)) => true,
             (Some(_), Some(_), Some(_)) => {
                 let mut do_not_render = false;
                 if let (Some(f1), Some(diff_ctx)) = (&ctx.file_source, &ctx.diff_ctx) {
@@ -229,16 +213,9 @@ impl FileDiffPane {
                     let hash = hash_contents(&f2.contents.as_bytes());
                     do_not_render |= diff_ctx.file_2_hash != hash;
                 }
-                if do_not_render {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("Waiting for diff results...");
-                    });
-                    return egui_tiles::UiResponse::None;
-                }
+                if do_not_render { true } else { false }
             }
-        }
-
-        let rows = diff_rows.unwrap();
+        };
 
         ui.add_space(4.0);
         ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
@@ -369,114 +346,132 @@ impl FileDiffPane {
                                 });
                             })
                             .body(|body| {
+                                if do_not_render_diff {
+                                    return Default::default();
+                                }
+
                                 let widths = body.widths().to_vec();
-                                body.rows(row_height, rows.len(), |mut row| {
-                                    let row_index = row.index();
-                                    let diff_row = &rows[row.index()];
-                                    let is_highlighted = ctx.active_highlights.contains(&row_index);
+                                body.rows(
+                                    row_height,
+                                    diff_rows.map(|f| f.len()).unwrap_or_default(),
+                                    |mut row| {
+                                        if let Some(rows) = diff_rows {
+                                            let row_index = row.index();
+                                            let diff_row = &rows[row.index()];
+                                            let is_highlighted =
+                                                ctx.active_highlights.contains(&row_index);
 
-                                    log::trace!("==LEFT==");
-                                    row.col(|ui| {
-                                        egui::ScrollArea::horizontal()
-                                            .id_salt(format!("l{}", row_index))
-                                            .scroll_bar_visibility(
-                                                ScrollBarVisibility::AlwaysHidden,
-                                            )
-                                            .scroll_offset(egui::vec2(sl, 0.0))
-                                            .show(ui, |ui| {
-                                                Self::render_side_row(
-                                                    ui,
-                                                    ctx.file_source.clone(),
-                                                    ctx.file_target.clone(),
-                                                    &diff_row.left,
-                                                    widths[0],
-                                                    is_highlighted,
-                                                );
+                                            log::trace!("==LEFT==");
+                                            row.col(|ui| {
+                                                egui::ScrollArea::horizontal()
+                                                    .id_salt(format!("l{}", row_index))
+                                                    .scroll_bar_visibility(
+                                                        ScrollBarVisibility::AlwaysHidden,
+                                                    )
+                                                    .scroll_offset(egui::vec2(sl, 0.0))
+                                                    .show(ui, |ui| {
+                                                        Self::render_side_row(
+                                                            ui,
+                                                            ctx.file_source.clone(),
+                                                            ctx.file_target.clone(),
+                                                            &diff_row.left,
+                                                            widths[0],
+                                                            is_highlighted,
+                                                        );
+                                                    });
+                                                left_rect = left_rect.union(ui.max_rect());
                                             });
-                                        left_rect = left_rect.union(ui.max_rect());
-                                    });
 
-                                    row.col(|ui| {
-                                        let has_op = |tokens: &[(DiffResult, _)], op| {
-                                            tokens
-                                                .iter()
-                                                .any(|f| !f.0.hide_in_diff && f.0.operation == op)
-                                        };
+                                            row.col(|ui| {
+                                                let has_op = |tokens: &[(DiffResult, _)], op| {
+                                                    tokens.iter().any(|f| {
+                                                        !f.0.hide_in_diff && f.0.operation == op
+                                                    })
+                                                };
 
-                                        let symbol =
-                                            |contains_delete: bool, contains_insert: bool| match (
-                                                contains_delete,
-                                                contains_insert,
-                                            ) {
-                                                (true, true) => "≠",
-                                                (true, false) => "-",
-                                                (false, true) => "+",
-                                                (false, false) => " ",
-                                            };
+                                                let symbol =
+                                                |contains_delete: bool, contains_insert: bool| {
+                                                    match (contains_delete, contains_insert) {
+                                                        (true, true) => "≠",
+                                                        (true, false) => "-",
+                                                        (false, true) => "+",
+                                                        (false, false) => " ",
+                                                    }
+                                                };
 
-                                        let text = match (&diff_row.left, &diff_row.right) {
-                                            (
-                                                LineContent::Void,
-                                                LineContent::Code { tokens, .. },
-                                            ) => symbol(
-                                                has_op(tokens, DiffOp::Delete),
-                                                has_op(tokens, DiffOp::Insert),
-                                            ),
+                                                let text = match (&diff_row.left, &diff_row.right) {
+                                                    (
+                                                        LineContent::Void,
+                                                        LineContent::Code { tokens, .. },
+                                                    ) => symbol(
+                                                        has_op(tokens, DiffOp::Delete),
+                                                        has_op(tokens, DiffOp::Insert),
+                                                    ),
 
-                                            (
-                                                LineContent::Code { tokens, .. },
-                                                LineContent::Void,
-                                            ) => symbol(
-                                                has_op(tokens, DiffOp::Delete),
-                                                has_op(tokens, DiffOp::Insert),
-                                            ),
+                                                    (
+                                                        LineContent::Code { tokens, .. },
+                                                        LineContent::Void,
+                                                    ) => symbol(
+                                                        has_op(tokens, DiffOp::Delete),
+                                                        has_op(tokens, DiffOp::Insert),
+                                                    ),
 
-                                            (
-                                                LineContent::Code { tokens: t1, .. },
-                                                LineContent::Code { tokens: t2, .. },
-                                            ) => {
-                                                let contains_delete = has_op(t1, DiffOp::Delete)
-                                                    || has_op(t2, DiffOp::Delete);
-                                                let contains_insert = has_op(t1, DiffOp::Insert)
-                                                    || has_op(t2, DiffOp::Insert);
+                                                    (
+                                                        LineContent::Code { tokens: t1, .. },
+                                                        LineContent::Code { tokens: t2, .. },
+                                                    ) => {
+                                                        let contains_delete =
+                                                            has_op(t1, DiffOp::Delete)
+                                                                || has_op(t2, DiffOp::Delete);
+                                                        let contains_insert =
+                                                            has_op(t1, DiffOp::Insert)
+                                                                || has_op(t2, DiffOp::Insert);
 
-                                                symbol(contains_delete, contains_insert)
-                                            }
+                                                        symbol(contains_delete, contains_insert)
+                                                    }
 
-                                            _ => " ",
-                                        };
-                                        ui.centered_and_justified(|ui| {
-                                            ui.label(
-                                                egui::RichText::new(text)
-                                                    .color(egui::Color32::DARK_GRAY),
-                                            );
-                                        });
-                                    });
-
-                                    log::trace!("==RIGHT==");
-                                    row.col(|ui| {
-                                        egui::ScrollArea::horizontal()
-                                            .id_salt(format!("r{}", row_index))
-                                            .scroll_bar_visibility(
-                                                ScrollBarVisibility::AlwaysHidden,
-                                            )
-                                            .scroll_offset(egui::vec2(sr, 0.0))
-                                            .show(ui, |ui| {
-                                                Self::render_side_row(
-                                                    ui,
-                                                    ctx.file_source.clone(),
-                                                    ctx.file_target.clone(),
-                                                    &diff_row.right,
-                                                    widths[2],
-                                                    is_highlighted,
-                                                );
+                                                    _ => " ",
+                                                };
+                                                ui.centered_and_justified(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(text)
+                                                            .color(egui::Color32::DARK_GRAY),
+                                                    );
+                                                });
                                             });
-                                        right_rect = right_rect.union(ui.max_rect());
-                                    });
-                                });
+
+                                            log::trace!("==RIGHT==");
+                                            row.col(|ui| {
+                                                egui::ScrollArea::horizontal()
+                                                    .id_salt(format!("r{}", row_index))
+                                                    .scroll_bar_visibility(
+                                                        ScrollBarVisibility::AlwaysHidden,
+                                                    )
+                                                    .scroll_offset(egui::vec2(sr, 0.0))
+                                                    .show(ui, |ui| {
+                                                        Self::render_side_row(
+                                                            ui,
+                                                            ctx.file_source.clone(),
+                                                            ctx.file_target.clone(),
+                                                            &diff_row.right,
+                                                            widths[2],
+                                                            is_highlighted,
+                                                        );
+                                                    });
+                                                right_rect = right_rect.union(ui.max_rect());
+                                            });
+                                        }
+                                    },
+                                );
                             });
                     });
             });
+
+            if do_not_render_diff {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Load Source & Target files to see diff.");
+                });
+            }
 
             ui.add_space(4.0);
             ui.horizontal(|ui| {
