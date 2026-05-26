@@ -69,8 +69,28 @@ impl UniversalPath {
             }
             Self::Depot(cow.into_owned(), None)
         } else {
-            Self::Local(PathBuf::from(os_str))
+            Self::Local(Self::normalize_local_path(Path::new(os_str)))
         }
+    }
+
+    fn normalize_local_path(path: &Path) -> PathBuf {
+        let mut components = Vec::new();
+
+        for comp in path.components() {
+            match comp {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    if let Some(std::path::Component::Normal(_)) = components.last() {
+                        components.pop();
+                    } else {
+                        components.push(comp);
+                    }
+                }
+                _ => components.push(comp),
+            }
+        }
+
+        components.into_iter().collect()
     }
 
     pub fn as_local_path(&self) -> Option<&Path> {
