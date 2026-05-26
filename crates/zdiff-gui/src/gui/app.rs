@@ -164,6 +164,10 @@ impl PartialEq for UpdateDiffRowsInput {
                 == other.file_2.as_ref().map_or(None, |f| Some(f.hash.clone()))
             && self.options == other.options
             && self.myers_diff_algorithm == other.myers_diff_algorithm
+            && self.file_1.as_ref().map_or(None, |f| Some(f.lexer_mode))
+                == other.file_1.as_ref().map_or(None, |f| Some(f.lexer_mode))
+            && self.file_2.as_ref().map_or(None, |f| Some(f.lexer_mode))
+                == other.file_2.as_ref().map_or(None, |f| Some(f.lexer_mode))
     }
 }
 
