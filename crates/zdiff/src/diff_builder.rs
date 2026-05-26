@@ -174,7 +174,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
     }
 
     pub fn handle_match(&mut self, diff_result: DiffResult) {
-        assert!(matches!(diff_result.operation, DiffOp::Equal));
+        assert!(matches!(diff_result.operation, DiffOp::Equal(_)));
 
         let token_idx = diff_result
             .token_source_idx
@@ -332,7 +332,7 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
         DiffBuilder::with_capacity(tokens_source, tokens_target, options, estimated_num_rows);
     for diff_result in diff_ir.entries {
         match &diff_result.operation {
-            DiffOp::Equal => builder.handle_match(diff_result),
+            DiffOp::Equal(_) => builder.handle_match(diff_result),
             DiffOp::Delete => builder.handle_diff(diff_result, true),
             DiffOp::Insert => builder.handle_diff(diff_result, false),
         }

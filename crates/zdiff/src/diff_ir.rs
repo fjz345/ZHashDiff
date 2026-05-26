@@ -7,9 +7,10 @@ use crate::lexer::RawTokenTrait;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiffOp {
-    Equal,  // From Source 1
-    Delete, // From Source 1
-    Insert, // From Source 2
+    // true: From Source 1, false: From Source 2
+    Equal(bool), // From Source 1 (if not one sided diff)
+    Delete,      // From Source 1
+    Insert,      // From Source 2
 }
 
 #[derive(Debug, Clone)]
@@ -76,12 +77,20 @@ pub fn diff_ir_to_no_ws<T: RawTokenTrait>(
     }
 }
 impl DiffIR {
-    pub fn new(path: &[(i32, i32)], cancel_flag: Arc<AtomicBool>) -> Option<Self> {
-        Self::generate_ir(path, cancel_flag)
+    pub fn new(
+        path: &[(i32, i32)],
+        equal_from_source: bool,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Option<Self> {
+        Self::generate_ir(path, equal_from_source, cancel_flag)
     }
 
     // path from myers backtracking
-    fn generate_ir(path: &[(i32, i32)], cancel_flag: Arc<AtomicBool>) -> Option<DiffIR> {
+    fn generate_ir(
+        path: &[(i32, i32)],
+        equal_from_source: bool,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Option<DiffIR> {
         let mut entries = Vec::with_capacity(path.len() * 2); // Worst case: all inserts or deletes
         let mut distance = 0;
 
@@ -109,7 +118,7 @@ impl DiffIR {
                     }
                     for i in 0..dy {
                         entries.push(DiffResult {
-                            operation: DiffOp::Equal,
+                            operation: DiffOp::Equal(equal_from_source),
                             token_source_idx: Some((x1 + (dx - dy) + i) as u32),
                             token_target_idx: Some((y1 + i) as u32),
                             hide_in_diff: false,
@@ -127,7 +136,7 @@ impl DiffIR {
                     }
                     for i in 0..dx {
                         entries.push(DiffResult {
-                            operation: DiffOp::Equal,
+                            operation: DiffOp::Equal(equal_from_source),
                             token_source_idx: Some((x1 + i) as u32),
                             token_target_idx: Some((y1 + (dy - dx) + i) as u32),
                             hide_in_diff: false,
@@ -136,7 +145,7 @@ impl DiffIR {
                 } else {
                     for i in 0..dx {
                         entries.push(DiffResult {
-                            operation: DiffOp::Equal,
+                            operation: DiffOp::Equal(equal_from_source),
                             token_source_idx: Some((x1 + i) as u32),
                             token_target_idx: Some((y1 + i) as u32),
                             hide_in_diff: false,
@@ -177,7 +186,7 @@ mod tests {
     #[test]
     fn test_generate_ir_simple_equal() {
         let path = vec![(0, 0), (1, 1), (2, 2)];
-        let ir = DiffIR::generate_ir(&path);
+        let ir = DiffIR::generate_ir(&path, false);
 
         assert_eq!(ir.entries.len(), 2);
         assert_eq!(ir.distance, 0);

@@ -172,7 +172,7 @@ impl AppStateCtx {
         let has_change = |content: &LineContent| match content {
             LineContent::Code { tokens, .. } => tokens
                 .iter()
-                .any(|(res, _)| !res.hide_in_diff && res.operation != DiffOp::Equal),
+                .any(|(res, _)| !res.hide_in_diff && !matches!(res.operation, DiffOp::Equal(_))),
             _ => false,
         };
 
@@ -344,7 +344,9 @@ impl AppStateCtx {
             return None;
         }
 
-        let diff_ir = DiffIR::new(&myers_path, cancel_flag.clone())?;
+        let is_equal_left = one_sided_diff_is_left.unwrap_or(true);
+        let diff_ir = DiffIR::new(&myers_path, is_equal_left, cancel_flag.clone())?;
+
         #[cfg(feature = "debug_alloc")]
         log::log!("Allocations DiffIR::new(): {:?}", reg.change_and_reset());
 

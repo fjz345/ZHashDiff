@@ -510,33 +510,26 @@ impl FileDiffPane {
                         ui.add_space(4.0);
 
                         let read_string = |diff_result: &DiffResult| -> Option<&str> {
-                            let str: Option<&str> = match diff_result.operation {
-                                zdiff::diff_ir::DiffOp::Equal | zdiff::diff_ir::DiffOp::Delete => {
-                                    let file = file_source.as_ref().cloned()?;
-                                    let token = file.tokens
-                                        [diff_result.token_source_idx.unwrap() as usize]
-                                        .clone();
-                                    Some(
-                                        file_source
-                                            .as_ref()
-                                            .unwrap()
-                                            .read_content_span(token.as_ref().span.clone()),
-                                    )
+                            let (file, token_idx) = match diff_result.operation {
+                                zdiff::diff_ir::DiffOp::Equal(is_source) => (
+                                    if is_source {
+                                        file_source.as_ref()?
+                                    } else {
+                                        file_target.as_ref()?
+                                    },
+                                    diff_result.token_source_idx?,
+                                ),
+                                zdiff::diff_ir::DiffOp::Delete => {
+                                    (file_source.as_ref()?, diff_result.token_source_idx?)
                                 }
                                 zdiff::diff_ir::DiffOp::Insert => {
-                                    let file = file_target.as_ref().cloned()?;
-                                    let token = file.tokens
-                                        [diff_result.token_target_idx.unwrap() as usize]
-                                        .clone();
-                                    Some(
-                                        file_target
-                                            .as_ref()
-                                            .unwrap()
-                                            .read_content_span(token.as_ref().span.clone()),
-                                    )
+                                    (file_target.as_ref()?, diff_result.token_target_idx?)
                                 }
                             };
-                            return str;
+
+                            let token = &file.tokens[token_idx as usize];
+
+                            Some(file.read_content_span(token.as_ref().span.clone()))
                         };
                         log::trace!("-----------------------------------------------");
                         for (diff_result, color) in tokens {
