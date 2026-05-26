@@ -11,6 +11,7 @@ Library diffing file contents.
 ## Todo
 * Line diff -> inner line diff
 * toggle filter only diffs rows
+* P4 revision graph + timelapse keybind
 
 * Regex filter text contents
 * image file diff
