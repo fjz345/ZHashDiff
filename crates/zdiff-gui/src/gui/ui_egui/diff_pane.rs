@@ -264,52 +264,33 @@ impl FileDiffPane {
                                                   file: Option<Arc<CachedFile<T>>>|
                          -> Option<UniversalPath> {
                             let size = ui.available_size_before_wrap();
+                            let id = ui.id().with("file_path_editor");
 
-                            let source_path_text = file
+                            let original_path = file
                                 .as_ref()
-                                .map(|f| format!("{}", f.path))
+                                .map(|f| f.path.to_string())
                                 .unwrap_or_default();
 
-                            // 🔥 KEY FIX: tie UI state to file identity
-                            let file_key = file
-                                .as_ref()
-                                .map(|f| format!("{}", f.path))
-                                .unwrap_or_else(|| "<none>".to_string());
-
-                            let id = ui.next_auto_id().with(file_key);
-
                             let mut text = ui.memory_mut(|mem| {
-                                let stored = mem.data.get_temp::<String>(id);
-                                match stored {
-                                    Some(t) => t,
-                                    None => source_path_text.clone(),
-                                }
+                                mem.data
+                                    .get_temp::<String>(id)
+                                    .unwrap_or_else(|| original_path.clone())
                             });
 
                             let response =
                                 ui.add_sized(size, egui::TextEdit::singleline(&mut text));
 
                             if response.changed() {
-                                ui.memory_mut(|mem| {
-                                    mem.data.insert_temp(id, text.clone());
-                                });
+                                ui.memory_mut(|mem| mem.data.insert_temp(id, text.clone()));
                             }
 
-                            let mut commit = false;
-                            ui.input(|i| {
-                                if i.key_pressed(egui::Key::Enter) {
-                                    commit = true;
+                            if response.lost_focus() {
+                                ui.memory_mut(|mem| mem.data.remove::<String>(id));
+
+                                let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                if !cancelled && text != original_path {
+                                    return Some(UniversalPath::from(&text));
                                 }
-                            });
-
-                            if commit {
-                                log::debug!("Setting load_file_request: {}", text);
-
-                                ui.memory_mut(|mem| {
-                                    mem.data.insert_temp(id, text.clone());
-                                });
-
-                                return Some(UniversalPath::from(&text));
                             }
 
                             None
