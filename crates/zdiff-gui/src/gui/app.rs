@@ -330,8 +330,24 @@ impl AppStateCtx {
         let t1 = &c1.tokens;
         let t2 = &c2.tokens;
         let cmp = |a: &RawToken, b: &RawToken| {
-            a.as_ref().kind == b.as_ref().kind
-                && c1.read_content_span(a.span.clone()) == c2.read_content_span(b.span.clone())
+            if a.as_ref().kind != b.as_ref().kind {
+                return false;
+            }
+
+            let a_span = &a.span;
+            let b_span = &b.span;
+
+            let a_len = a_span.end - a_span.start;
+            let b_len = b_span.end - b_span.start;
+
+            if a_len != b_len {
+                return false;
+            }
+
+            let a_bytes = &c1.contents.as_bytes()[a_span.start..a_span.end];
+            let b_bytes = &c2.contents.as_bytes()[b_span.start..b_span.end];
+
+            a_bytes == b_bytes
         };
 
         #[cfg(feature = "debug_alloc")]

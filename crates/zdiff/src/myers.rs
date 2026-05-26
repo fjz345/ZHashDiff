@@ -462,7 +462,7 @@ where
     }
 
     let mut bufs = SearchBuffers::new((source_len + target_len) as usize + 1);
-    let mut points = Vec::with_capacity((source_len + target_len) as usize + 2);
+    let mut points = Vec::with_capacity(((source_len + target_len) / 8) as usize);
 
     points.push((0, 0));
     find_path(
@@ -740,7 +740,7 @@ where
         return Some(vec![(0, 0)]);
     }
 
-    let mut points = Vec::with_capacity((source_len + target_len) as usize + 2);
+    let mut points = Vec::with_capacity(((source_len + target_len) / 8) as usize);
     points.push((0, 0));
 
     find_path_mt(
