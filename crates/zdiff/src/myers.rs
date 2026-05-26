@@ -282,6 +282,7 @@ fn find_midpoint<T, F>(
     target: &[T],
     cmp: &mut F,
     bufs: &mut SearchBuffers,
+    cancel_flag: Arc<AtomicBool>,
 ) -> Option<((i32, i32), (i32, i32))>
 where
     F: FnMut(&T, &T) -> bool,
@@ -298,6 +299,9 @@ where
     let max_d = (box_size + 1) / 2;
 
     for d in 0..=max_d {
+        if d % 1000 == 0 && cancel_flag.load(Ordering::Relaxed) {
+            return None;
+        }
         for k in (-d..=d).step_by(2) {
             let c = k - delta;
 
@@ -389,6 +393,7 @@ fn find_path<T, F>(
     cmp: &mut F,
     bufs: &mut SearchBuffers,
     path: &mut Vec<(i32, i32)>,
+    cancel_flag: Arc<AtomicBool>,
 ) where
     F: FnMut(&T, &T) -> bool,
 {
@@ -402,7 +407,9 @@ fn find_path<T, F>(
         return;
     }
 
-    if let Some((snake_start, snake_end)) = find_midpoint(box_reg, source, target, cmp, bufs) {
+    if let Some((snake_start, snake_end)) =
+        find_midpoint(box_reg, source, target, cmp, bufs, cancel_flag.clone())
+    {
         find_path(
             box_reg.left,
             box_reg.top,
@@ -413,6 +420,7 @@ fn find_path<T, F>(
             cmp,
             bufs,
             path,
+            cancel_flag.clone(),
         );
 
         if path.last() != Some(&snake_start) {
@@ -432,6 +440,7 @@ fn find_path<T, F>(
             cmp,
             bufs,
             path,
+            cancel_flag,
         );
     }
 }
@@ -466,6 +475,7 @@ where
         &mut cmp,
         &mut bufs,
         &mut points,
+        cancel_flag.clone(),
     );
 
     if points.last() != Some(&(source_len, target_len)) {
@@ -512,6 +522,7 @@ fn find_path_mt<T, F>(
     target: &[T],
     cmp: &F,
     path: &mut Vec<(i32, i32)>,
+    cancel_flag: Arc<AtomicBool>,
 ) where
     T: Sync,
     F: Fn(&T, &T) -> bool + Sync,
@@ -531,7 +542,7 @@ fn find_path_mt<T, F>(
     let mut bufs = SearchBuffers::new(size as usize + 1);
 
     if let Some((snake_start, snake_end)) =
-        find_midpoint_mt(box_reg, source, target, cmp, &mut bufs)
+        find_midpoint_mt(box_reg, source, target, cmp, &mut bufs, cancel_flag.clone())
     {
         // Threshold optimization: Do not pay scheduling costs for tiny sub-problems
         if size > 2048 {
@@ -550,6 +561,7 @@ fn find_path_mt<T, F>(
                         target,
                         cmp,
                         &mut left_path,
+                        cancel_flag.clone(),
                     )
                 },
                 || {
@@ -562,6 +574,7 @@ fn find_path_mt<T, F>(
                         target,
                         cmp,
                         &mut right_path,
+                        cancel_flag.clone(),
                     )
                 },
             );
@@ -585,6 +598,7 @@ fn find_path_mt<T, F>(
                 target,
                 cmp,
                 path,
+                cancel_flag.clone(),
             );
             if path.last() != Some(&snake_start) {
                 path.push(snake_start);
@@ -601,6 +615,7 @@ fn find_path_mt<T, F>(
                 target,
                 cmp,
                 path,
+                cancel_flag,
             );
         }
     }
@@ -613,6 +628,7 @@ fn find_midpoint_mt<T, F>(
     target: &[T],
     cmp: &F,
     bufs: &mut SearchBuffers,
+    cancel_flag: Arc<AtomicBool>,
 ) -> Option<((i32, i32), (i32, i32))>
 where
     F: Fn(&T, &T) -> bool,
@@ -629,6 +645,9 @@ where
     let max_d = (box_size + 1) / 2;
 
     for d in 0..=max_d {
+        if d % 1000 == 0 && cancel_flag.load(Ordering::Relaxed) {
+            return None;
+        }
         for k in (-d..=d).step_by(2) {
             let c = k - delta;
             let (prev_x, x) = if k == -d || (k != d && bufs.get_f(k - 1) < bufs.get_f(k + 1)) {
@@ -733,6 +752,7 @@ where
         target,
         &cmp,
         &mut points,
+        cancel_flag.clone(),
     );
 
     if points.last() != Some(&(source_len, target_len)) {
