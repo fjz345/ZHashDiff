@@ -197,12 +197,16 @@ impl FileDiffPane {
         let source_path = ctx.file_source.as_ref().and_then(|f| Some(&f.path));
         let target_path = ctx.file_target.as_ref().and_then(|f| Some(&f.path));
 
+        let mut waiting_for_diff = false;
         let do_not_render_diff = match (&diff_rows, source_path, target_path) {
             (Some(_), None, None) | (None, None, None) => true,
             (None, Some(_), None) => true,
             (None, None, Some(_)) => true,
             (Some(_), Some(_), None) | (Some(_), None, Some(_)) => false,
-            (None, Some(_), Some(_)) => true,
+            (None, Some(_), Some(_)) => {
+                waiting_for_diff = true;
+                true
+            }
             (Some(_), Some(_), Some(_)) => {
                 let mut do_not_render = false;
                 if let (Some(f1), Some(diff_ctx)) = (&ctx.file_source, &ctx.diff_ctx) {
@@ -213,6 +217,7 @@ impl FileDiffPane {
                     let hash = hash_contents(&f2.contents.as_bytes());
                     do_not_render |= diff_ctx.file_2_hash != hash;
                 }
+                waiting_for_diff = do_not_render;
                 if do_not_render { true } else { false }
             }
         };
@@ -467,7 +472,11 @@ impl FileDiffPane {
                     });
             });
 
-            if do_not_render_diff {
+            if waiting_for_diff {
+                ui.centered_and_justified(|ui| {
+                    ui.label("Waiting for diff results...");
+                });
+            } else if do_not_render_diff {
                 ui.centered_and_justified(|ui| {
                     ui.label("Load Source & Target files to see diff.");
                 });
