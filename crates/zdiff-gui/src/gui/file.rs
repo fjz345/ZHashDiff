@@ -92,6 +92,7 @@ impl FileProcessor {
     pub fn invalidate_cache_file(&mut self) {
         log::debug!("Invalidating cache file for path: {:?}", self.file_path);
         self.cached_file = None;
+        self.cached_file_path = None;
     }
 
     pub fn get_cached_file(&mut self) -> Option<Arc<CachedFile<RawToken>>> {
