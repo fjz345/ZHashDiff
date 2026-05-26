@@ -502,10 +502,8 @@ impl<'a> ZApp {
                     let args: Vec<String> = env::args().collect();
 
                     if let (Some(p1), Some(p2)) = (args.get(1), args.get(2)) {
-                        ctx.file_1
-                            .set_path(Some(UniversalPath::from(PathBuf::from(p1))));
-                        ctx.file_2
-                            .set_path(Some(UniversalPath::from(PathBuf::from(p2))));
+                        ctx.file_1.set_path(UniversalPath::from(PathBuf::from(p1)));
+                        ctx.file_2.set_path(UniversalPath::from(PathBuf::from(p2)));
                     }
                 }
                 _ => {}
@@ -705,8 +703,8 @@ impl<'a> ZApp {
 
                 ui.menu_button("Debug", |ui| {
                     if ui.button("Clear File Paths").clicked() {
-                        file_1.set_path(None);
-                        file_2.set_path(None);
+                        file_1.set_path(UniversalPath::default());
+                        file_2.set_path(UniversalPath::default());
                         *diff_ctx = None;
                     }
                     if ui
@@ -745,8 +743,8 @@ impl<'a> ZApp {
                             if ui.button(label).clicked() {
                                 let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
-                                file_1.set_path(Some(UniversalPath::from(base.join(p1))));
-                                file_2.set_path(Some(UniversalPath::from(base.join(p2))));
+                                file_1.set_path(UniversalPath::from(base.join(p1)));
+                                file_2.set_path(UniversalPath::from(base.join(p2)));
 
                                 *diff_ctx = None;
                             }
@@ -971,6 +969,8 @@ impl<'a> ZApp {
                     load_file_2_request: &mut None,
                     find_cursor,
                     pivot: diff_ctx_pivot,
+                    file_source_path: file_1.get_path(),
+                    file_target_path: file_2.get_path(),
                 },
             };
 
@@ -1144,18 +1144,25 @@ impl<'a> ZApp {
                             i + 1,
                             kb.format()
                         );
-                        let final_source = match &path.source {
-                            Some(src_override) => Some(UniversalPath::from(src_override)),
-                            None => app_state_ctx.file_1.get_path(),
-                        };
 
-                        if let Some(path_source) = final_source {
-                            app_state_ctx.file_1.set_path(path_source);
-                            app_state_ctx
-                                .file_2
-                                .set_path(UniversalPath::from(&path.target));
+                        app_state_ctx
+                            .file_2
+                            .set_path(UniversalPath::from(&path.target));
+                        if let Some(source) = &path.source {
+                            app_state_ctx.file_1.set_path(UniversalPath::from(source));
+                        }
+
+                        if path.source.is_some() {
+                            log::info!(
+                                "User Quick Diff Shortcut set paths:\nSource: {:?}\nTarget: {:?}",
+                                app_state_ctx.file_1.get_path(),
+                                app_state_ctx.file_2.get_path()
+                            );
                         } else {
-                            log::info!("No source file currently loaded, quick diff failed");
+                            log::info!(
+                                "User Quick Diff Shortcut set paths:\nTarget: {:?}",
+                                app_state_ctx.file_2.get_path()
+                            );
                         }
                     });
                 }

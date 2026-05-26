@@ -13,8 +13,8 @@ fn default_channel() -> (mpsc::Sender<UniversalPath>, mpsc::Receiver<UniversalPa
     mpsc::channel()
 }
 
-fn default_file_path() -> Option<UniversalPath> {
-    None
+fn default_file_path() -> UniversalPath {
+    UniversalPath::new("")
 }
 
 #[derive(Debug)]
@@ -23,11 +23,14 @@ pub struct FileProcessor {
     #[cfg_attr(feature = "serde", serde(skip, default = "default_channel"))]
     channel: (mpsc::Sender<UniversalPath>, mpsc::Receiver<UniversalPath>),
     #[cfg_attr(feature = "serde", serde(skip, default = "default_file_path"))]
-    file_path: Option<UniversalPath>,
+    file_path: UniversalPath,
 
     #[cfg_attr(feature = "serde", serde(skip))]
     cached_file: Option<Arc<CachedFile<RawToken>>>,
     diff_lexer_mode: u8,
+
+    #[cfg_attr(feature = "serde", serde(skip))]
+    cached_file_path: Option<UniversalPath>, // only process once the path
 }
 
 impl Default for FileProcessor {
@@ -37,6 +40,7 @@ impl Default for FileProcessor {
             file_path: default_file_path(),
             cached_file: None,
             diff_lexer_mode: LEXER_MODE_DEFAULT,
+            cached_file_path: None,
         }
     }
 }
@@ -71,26 +75,18 @@ impl FileProcessor {
         }
     }
 
-    pub fn get_path(&mut self) -> Option<UniversalPath> {
+    pub fn get_path(&mut self) -> UniversalPath {
         self.poll_path_channel();
         self.file_path.clone()
     }
 
     pub fn get_path_as_string(&self) -> String {
-        self.file_path
-            .as_ref()
-            .map(|p| p.to_p4_string())
-            .unwrap_or_else(|| "N/A".to_string())
+        self.file_path.to_p4_string()
     }
 
-    pub fn set_path(&mut self, path: impl Into<Option<UniversalPath>>) {
-        self.file_path = path.into();
+    pub fn set_path(&mut self, path: UniversalPath) {
+        self.file_path = path;
         self.invalidate_cache_file();
-    }
-
-    pub fn invalidate_path(&mut self) {
-        log::debug!("Invalidating path: {:?}", self.file_path);
-        self.file_path = None;
     }
 
     pub fn invalidate_cache_file(&mut self) {
@@ -99,7 +95,9 @@ impl FileProcessor {
     }
 
     pub fn get_cached_file(&mut self) -> Option<Arc<CachedFile<RawToken>>> {
-        if let Some(path) = self.get_path() {
+        let path = &self.get_path();
+        if !path.is_empty() && self.cached_file_path.as_ref() != Some(path) {
+            self.cached_file_path = Some(path.clone());
             if self.cached_file.is_none() {
                 log::debug!(
                     "Constructing CachedFile: {:?} with lexer mode {:?}",
@@ -148,7 +146,6 @@ impl FileProcessor {
                     Err(e) => {
                         log::error!("Cannot find file {}, Error: {e}", target_path.display());
                         self.cached_file = None;
-                        self.invalidate_path();
                     }
                 }
 

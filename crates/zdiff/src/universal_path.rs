@@ -81,6 +81,10 @@ impl UniversalPath {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.to_p4_string().is_empty()
+    }
+
     pub fn is_depot(&self) -> bool {
         matches!(self, Self::Depot(_))
     }

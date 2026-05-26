@@ -16,6 +16,11 @@ use zdiff::{
 };
 
 pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
+    // need this because file_source can be none and we want to keep displaying
+    // the text edit with the old path if even if it could not load a cachedfile
+    pub file_source_path: UniversalPath,
+    pub file_target_path: UniversalPath,
+
     pub file_source: Option<Arc<CachedFile<T>>>,
     pub file_target: Option<Arc<CachedFile<T>>>,
 
@@ -260,41 +265,37 @@ impl FileDiffPane {
                                 table_builder.scroll_to_row(*start, Some(egui::Align::Min));
                         }
 
-                        let editable_path_test = |ui: &mut egui::Ui,
-                                                  file: Option<Arc<CachedFile<T>>>|
-                         -> Option<UniversalPath> {
-                            let size = ui.available_size_before_wrap();
-                            let id = ui.id().with("file_path_editor");
+                        let editable_path_test =
+                            |ui: &mut egui::Ui, file: &UniversalPath| -> Option<UniversalPath> {
+                                let size = ui.available_size_before_wrap();
+                                let id = ui.id().with("file_path_editor");
 
-                            let original_path = file
-                                .as_ref()
-                                .map(|f| f.path.to_string())
-                                .unwrap_or_default();
+                                let original_path = file.to_string();
 
-                            let mut text = ui.memory_mut(|mem| {
-                                mem.data
-                                    .get_temp::<String>(id)
-                                    .unwrap_or_else(|| original_path.clone())
-                            });
+                                let mut text = ui.memory_mut(|mem| {
+                                    mem.data
+                                        .get_temp::<String>(id)
+                                        .unwrap_or_else(|| original_path.clone())
+                                });
 
-                            let response =
-                                ui.add_sized(size, egui::TextEdit::singleline(&mut text));
+                                let response =
+                                    ui.add_sized(size, egui::TextEdit::singleline(&mut text));
 
-                            if response.changed() {
-                                ui.memory_mut(|mem| mem.data.insert_temp(id, text.clone()));
-                            }
-
-                            if response.lost_focus() {
-                                ui.memory_mut(|mem| mem.data.remove::<String>(id));
-
-                                let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                                if !cancelled && text != original_path {
-                                    return Some(UniversalPath::from(&text));
+                                if response.changed() {
+                                    ui.memory_mut(|mem| mem.data.insert_temp(id, text.clone()));
                                 }
-                            }
 
-                            None
-                        };
+                                if response.lost_focus() {
+                                    ui.memory_mut(|mem| mem.data.remove::<String>(id));
+
+                                    let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                    if !cancelled && text != original_path {
+                                        return Some(UniversalPath::from(&text));
+                                    }
+                                }
+
+                                None
+                            };
                         table_builder
                             .id_salt("file_diff_table")
                             .striped(false)
@@ -310,12 +311,12 @@ impl FileDiffPane {
                             .header(20.0, |mut header| {
                                 header.col(|ui| {
                                     *ctx.load_file_1_request =
-                                        editable_path_test(ui, ctx.file_source.clone());
+                                        editable_path_test(ui, &ctx.file_source_path);
                                 });
                                 header.col(|_| {});
                                 header.col(|ui| {
                                     *ctx.load_file_2_request =
-                                        editable_path_test(ui, ctx.file_target.clone());
+                                        editable_path_test(ui, &ctx.file_target_path);
                                 });
                             })
                             .body(|body| {
