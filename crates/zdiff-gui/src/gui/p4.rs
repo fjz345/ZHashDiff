@@ -16,14 +16,22 @@ pub fn get_p4_file_content(path: &str) -> Result<String, String> {
         .output()
         .map_err(|e| e.to_string())?;
 
-    if output.status.success() {
+    let stderr = str::from_utf8(&output.stderr).unwrap_or("").trim();
+
+    if output.status.success() && stderr.is_empty() {
         Ok(str::from_utf8(&output.stdout)
             .map_err(|e| e.to_string())?
             .to_string())
     } else {
-        Err(str::from_utf8(&output.stderr)
-            .unwrap_or("Unknown error")
-            .to_string())
+        let err_msg = if !stderr.is_empty() {
+            stderr.to_string()
+        } else if !output.status.success() {
+            format!("Process exited with status: {}", output.status)
+        } else {
+            "Unknown Perforce error".to_string()
+        };
+
+        Err(err_msg)
     }
 }
 

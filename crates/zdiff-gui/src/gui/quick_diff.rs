@@ -57,7 +57,7 @@ pub fn quick_diff_process_paths(
     let handle_path = |u_path: &UniversalPath| -> PathBuf {
         match u_path {
             UniversalPath::Local(p) => p.to_path_buf(),
-            UniversalPath::Depot(_depot_str) => {
+            UniversalPath::Depot(..) => {
                 let mut tmp = NamedTempFile::new().expect("Failed to create tmp file");
 
                 // could call 'p4 print' or similar

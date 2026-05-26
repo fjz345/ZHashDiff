@@ -6,7 +6,7 @@ use std::{
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UniversalPath {
     /// Represented as //stream/path/file.txt
-    Depot(String),
+    Depot(String, Option<u32>),
     /// Represented as C:\User\File.txt or /home/user/file.txt
     Local(PathBuf),
 }
@@ -21,7 +21,8 @@ impl std::fmt::Display for UniversalPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             UniversalPath::Local(p) => write!(f, "{}", p.display()),
-            UniversalPath::Depot(s) => write!(f, "{}", s),
+            UniversalPath::Depot(s, Some(rev)) => write!(f, "{}#{}", s, rev),
+            UniversalPath::Depot(s, None) => write!(f, "{}", s),
         }
     }
 }
@@ -61,7 +62,12 @@ impl UniversalPath {
         let cow = os_str.to_string_lossy();
 
         if cow.starts_with("//") {
-            Self::Depot(cow.into_owned())
+            if let Some(hash_idx) = cow.rfind('#') {
+                if let Ok(rev) = cow[hash_idx + 1..].parse::<u32>() {
+                    return Self::Depot(cow[..hash_idx].to_string(), Some(rev));
+                }
+            }
+            Self::Depot(cow.into_owned(), None)
         } else {
             Self::Local(PathBuf::from(os_str))
         }
@@ -70,30 +76,47 @@ impl UniversalPath {
     pub fn as_local_path(&self) -> Option<&Path> {
         match self {
             Self::Local(p) => Some(p.as_path()),
-            Self::Depot(_) => None,
+            Self::Depot(..) => None,
         }
     }
 
     pub fn to_p4_string(&self) -> String {
         match self {
-            Self::Depot(s) => s.clone(),
+            Self::Depot(s, Some(rev)) => format!("{}#{}", s, rev),
+            Self::Depot(s, None) => s.clone(),
             Self::Local(p) => p.to_string_lossy().replace('\\', "/"),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.to_p4_string().is_empty()
+        match self {
+            Self::Depot(s, _) => s.is_empty(),
+            Self::Local(p) => p.as_os_str().is_empty(),
+        }
     }
 
     pub fn is_depot(&self) -> bool {
-        matches!(self, Self::Depot(_))
+        matches!(self, Self::Depot(..))
+    }
+
+    pub fn revision(&self) -> Option<u32> {
+        match self {
+            Self::Depot(_, rev) => *rev,
+            Self::Local(_) => None,
+        }
+    }
+
+    pub fn set_revision(&mut self, new_rev: Option<u32>) {
+        if let Self::Depot(_, rev) = self {
+            *rev = new_rev;
+        }
     }
 }
 
 impl AsRef<OsStr> for UniversalPath {
     fn as_ref(&self) -> &OsStr {
         match self {
-            Self::Depot(s) => OsStr::new(s),
+            Self::Depot(s, _) => OsStr::new(s),
             Self::Local(p) => p.as_os_str(),
         }
     }

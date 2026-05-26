@@ -97,8 +97,10 @@ impl FileProcessor {
 
     pub fn get_cached_file(&mut self) -> Option<Arc<CachedFile<RawToken>>> {
         let path = &self.get_path();
+
         if !path.is_empty() && self.cached_file_path.as_ref() != Some(path) {
             self.cached_file_path = Some(path.clone());
+
             if self.cached_file.is_none() {
                 log::debug!(
                     "Constructing CachedFile: {:?} with lexer mode {:?}",
@@ -108,11 +110,18 @@ impl FileProcessor {
 
                 let target_path = match &path {
                     UniversalPath::Local(p) => p.clone(),
-                    UniversalPath::Depot(depot_str) => {
+                    UniversalPath::Depot(depot_str, rev) => {
                         let sanitized = depot_str.trim_start_matches('/');
-                        let target_path = std::env::temp_dir().join(sanitized);
+                        let mut temp_path = std::env::temp_dir().join(sanitized);
 
-                        if let Some(parent) = target_path.parent() {
+                        if let Some(r) = rev {
+                            let mut filename =
+                                temp_path.file_name().unwrap_or_default().to_os_string();
+                            filename.push(format!("_rev{}", r));
+                            temp_path.set_file_name(filename);
+                        }
+
+                        if let Some(parent) = temp_path.parent() {
                             if let Err(e) = std::fs::create_dir_all(parent) {
                                 log::error!(
                                     "Failed to create directories for {}: {}",
@@ -123,20 +132,21 @@ impl FileProcessor {
                             }
                         }
 
-                        let content = match get_p4_file_content(depot_str) {
+                        let p4_path = path.to_p4_string();
+                        let content = match get_p4_file_content(&p4_path) {
                             Ok(c) => c,
                             Err(e) => {
-                                log::error!("P4 command failed for {}: {}", depot_str, e);
+                                log::error!("P4 command failed for {}: {}", p4_path, e);
                                 return None;
                             }
                         };
 
-                        if let Err(e) = std::fs::write(&target_path, content.as_bytes()) {
+                        if let Err(e) = std::fs::write(&temp_path, content.as_bytes()) {
                             log::error!("Failed to write P4 content to temp file: {}", e);
                             return None;
                         }
 
-                        target_path
+                        temp_path
                     }
                 };
 
