@@ -1277,7 +1277,8 @@ impl eframe::App for ZApp {
                         };
                         state.diff_ctx_in_progress_input = Some(input.clone());
 
-                        self.update_diff_rows_thread_handle = Some(std::thread::spawn(move || {
+                        let builder = std::thread::Builder::new().name("DiffCtxTHREAD".into());
+                        let handle = builder.spawn(move || {
                             log::info!(
                                 "Spawned thread for DiffCtx\nSource: {}, Target: {}",
                                 f1.as_ref()
@@ -1295,7 +1296,17 @@ impl eframe::App for ZApp {
                             if let Some(result) = result {
                                 let _ = tx.send(result);
                             }
-                        }));
+                        });
+                        match handle {
+                            Ok(h) => {
+                                self.update_diff_rows_thread_handle = Some(h);
+                            }
+                            Err(e) => {
+                                log::error!("Failed to spawn thread: {e}");
+                                state.diff_ctx_in_progress_input = None;
+                                state.diff_ctx_rx = None;
+                            }
+                        }
                     }
                 }
 
