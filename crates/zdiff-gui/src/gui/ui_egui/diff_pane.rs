@@ -265,37 +265,80 @@ impl FileDiffPane {
                                 table_builder.scroll_to_row(*start, Some(egui::Align::Min));
                         }
 
-                        let editable_path_test =
-                            |ui: &mut egui::Ui, file: &UniversalPath| -> Option<UniversalPath> {
-                                let size = ui.available_size_before_wrap();
-                                let id = ui.id().with("file_path_editor");
+                        let editable_path_test = |ui: &mut egui::Ui,
+                                                  file: &UniversalPath,
+                                                  is_valid: bool|
+                         -> Option<UniversalPath> {
+                            let id = ui.id().with("file_path_editor");
 
-                                let original_path = file.to_string();
+                            let original_path = file.to_string();
 
-                                let mut text = ui.memory_mut(|mem| {
-                                    mem.data
-                                        .get_temp::<String>(id)
-                                        .unwrap_or_else(|| original_path.clone())
+                            let mut text = ui.memory_mut(|mem| {
+                                mem.data
+                                    .get_temp::<String>(id)
+                                    .unwrap_or_else(|| original_path.clone())
+                            });
+
+                            let frame = egui::Frame::NONE
+                                .fill(if !is_valid {
+                                    egui::Color32::from_rgb(45, 10, 10)
+                                } else {
+                                    ui.visuals().extreme_bg_color
+                                })
+                                .stroke(if !is_valid {
+                                    egui::Stroke::new(1.0, egui::Color32::RED)
+                                } else {
+                                    ui.visuals().widgets.inactive.bg_stroke
                                 });
 
-                                let response =
-                                    ui.add_sized(size, egui::TextEdit::singleline(&mut text));
+                            let response = ui
+                                .scope(|ui| {
+                                    if !is_valid {
+                                        let bg = egui::Color32::from_rgb(45, 10, 10);
+                                        let stroke = egui::Stroke::new(1.0, egui::Color32::RED);
 
-                                if response.changed() {
-                                    ui.memory_mut(|mem| mem.data.insert_temp(id, text.clone()));
-                                }
+                                        {
+                                            let visuals = &mut ui.visuals_mut();
+                                            visuals.text_edit_bg_color = Some(bg);
+                                        }
+                                        let visuals = &mut ui.visuals_mut().widgets;
 
-                                if response.lost_focus() {
-                                    ui.memory_mut(|mem| mem.data.remove::<String>(id));
+                                        visuals.inactive.bg_fill = bg;
+                                        visuals.inactive.bg_stroke = stroke;
 
-                                    let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                                    if !cancelled && text != original_path {
-                                        return Some(UniversalPath::from(&text));
+                                        visuals.hovered.bg_fill = bg;
+                                        visuals.hovered.bg_stroke = stroke;
+
+                                        visuals.active.bg_fill = bg;
+                                        visuals.active.bg_stroke = stroke;
                                     }
-                                }
 
-                                None
-                            };
+                                    ui.add_sized(
+                                        [ui.available_width(), ui.spacing().interact_size.y],
+                                        egui::TextEdit::singleline(&mut text),
+                                    )
+                                })
+                                .inner;
+
+                            if response.changed() {
+                                ui.memory_mut(|mem| mem.data.insert_temp(id, text.clone()));
+                            }
+
+                            if response.lost_focus() {
+                                ui.memory_mut(|mem| mem.data.remove::<String>(id));
+
+                                let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                if !cancelled && text != original_path {
+                                    return Some(UniversalPath::from(&text));
+                                }
+                            }
+
+                            if !is_valid {
+                                response.on_hover_text("Invalid path");
+                            }
+
+                            None
+                        };
                         table_builder
                             .id_salt("file_diff_table")
                             .striped(false)
@@ -310,13 +353,19 @@ impl FileDiffPane {
                             .column(Column::remainder().clip(false))
                             .header(20.0, |mut header| {
                                 header.col(|ui| {
-                                    *ctx.load_file_1_request =
-                                        editable_path_test(ui, &ctx.file_source_path);
+                                    *ctx.load_file_1_request = editable_path_test(
+                                        ui,
+                                        &ctx.file_source_path,
+                                        ctx.file_source.is_some(),
+                                    );
                                 });
                                 header.col(|_| {});
                                 header.col(|ui| {
-                                    *ctx.load_file_2_request =
-                                        editable_path_test(ui, &ctx.file_target_path);
+                                    *ctx.load_file_2_request = editable_path_test(
+                                        ui,
+                                        &ctx.file_target_path,
+                                        ctx.file_target.is_some(),
+                                    );
                                 });
                             })
                             .body(|body| {
