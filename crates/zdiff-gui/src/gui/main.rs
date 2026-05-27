@@ -26,14 +26,10 @@ pub static STATS_ALLOC: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 fn main() -> eframe::Result {
     dotenv().ok();
 
-    let p4port = env::var("P4PORT").expect("P4PORT must be set");
-    let p4user = env::var("P4USER").expect("P4USER must be set");
-    let p4client = env::var("P4CLIENT").expect("P4CLIENT must be set");
-    let p4password = env::var("P4PASSWORD").expect("P4PASSWORD must be set");
-
-    println!("Connecting to {} as {}", p4port, p4user);
-
-    unsafe { env::set_var("RUST_LOG", "debug") }; // or "info" or "debug"
+    #[cfg(debug_assertions)]
+    unsafe {
+        env::set_var("RUST_LOG", "debug")
+    }; // or "info" or "debug"
     #[cfg(feature = "pretty-backtrace")]
     {
         color_backtrace::install();
