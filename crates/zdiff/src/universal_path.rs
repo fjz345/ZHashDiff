@@ -141,3 +141,19 @@ impl AsRef<OsStr> for UniversalPath {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parsing() {
+        let depot = UniversalPath::new("//stream/main/file.txt");
+        assert!(matches!(depot, UniversalPath::Depot(..)));
+        assert_eq!(depot.to_p4_string(), "//stream/main/file.txt");
+
+        let local = UniversalPath::new(r"C:\User\File.txt");
+        assert!(matches!(local, UniversalPath::Local(..)));
+        assert_eq!(local.to_p4_string(), "C:/User/File.txt");
+    }
+}
