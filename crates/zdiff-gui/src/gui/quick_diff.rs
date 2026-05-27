@@ -50,28 +50,6 @@ pub fn ui_universal_path(ui: &mut egui::Ui, config: &mut UniversalPathConfig) ->
     .inner
 }
 
-pub fn quick_diff_process_paths(
-    path_source: &UniversalPath,
-    path_target: &UniversalPath,
-) -> (PathBuf, PathBuf) {
-    let handle_path = |u_path: &UniversalPath| -> PathBuf {
-        match u_path {
-            UniversalPath::Local(p) => p.to_path_buf(),
-            UniversalPath::Depot(..) => {
-                let mut tmp = NamedTempFile::new().expect("Failed to create tmp file");
-
-                // could call 'p4 print' or similar
-                tmp.write_all(b"Contents of depot file")
-                    .expect("Write failed");
-
-                tmp.path().to_path_buf()
-            }
-        }
-    };
-
-    (handle_path(path_source), handle_path(path_target))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
