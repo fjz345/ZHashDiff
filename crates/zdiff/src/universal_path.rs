@@ -96,7 +96,7 @@ impl UniversalPath {
     pub fn as_local_path(&self) -> Option<&Path> {
         match self {
             Self::Local(p) => Some(p.as_path()),
-            Self::Depot(..) => None,
+            Self::Depot(..) => None, // TODO: get local path for depot
         }
     }
 

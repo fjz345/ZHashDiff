@@ -21,6 +21,9 @@ GUI for zdiff crate
         + Syntax highlight (only hardcoded keywords for now)
 
 ## Todo
+* !IMPORTANT! - Add quick diff for paths
+    - If possible, support finding file/moved file in p4
+
 * Syncronized scroll bar (like p4)
 * Batch DiffRow performance optimzation
 * Quick diff tool

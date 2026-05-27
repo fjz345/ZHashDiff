@@ -13,6 +13,7 @@ Library diffing file contents.
 * Line diff -> inner line diff
 * toggle filter only diffs rows
 * P4 revision graph + timelapse keybind
+* fix as_local_path to work for depot paths
 
 * Regex filter text contents
 * image file diff
