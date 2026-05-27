@@ -9,7 +9,7 @@ path = "src/gui/main.rs"
 required-features = ["gui"]
 
 [features]
-default = ["serde", "gui"]
+default = ["pretty-backtrace", "serde", "gui"]
 serde = ["zdiff/serde", "dep:serde", "dep:serde_json"]
 gui = ["zcommon/gui", "dep:eframe", "dep:egui_tiles"]
 pretty-backtrace = ["dep:color-backtrace"]

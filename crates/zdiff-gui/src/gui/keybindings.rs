@@ -54,6 +54,8 @@ pub struct Keybindings {
     pub next_find: Option<Shortcut>,
     pub prev_find: Option<Shortcut>,
     pub user_quick_diffs: Vec<(Option<Shortcut>, QuickDiffPaths)>,
+    pub revision_graph: Option<Shortcut>,
+    pub timelapse_view: Option<Shortcut>,
 }
 
 impl Default for Keybindings {
@@ -80,7 +82,6 @@ impl Default for Keybindings {
                 modifiers: Modifiers {
                     ctrl: true,
                     command: true,
-                    shift: true,
                     ..Default::default()
                 },
             }),
@@ -89,6 +90,7 @@ impl Default for Keybindings {
                 modifiers: Modifiers {
                     ctrl: true,
                     command: true,
+                    alt: true,
                     ..Default::default()
                 },
             }),
@@ -205,6 +207,24 @@ impl Default for Keybindings {
                     },
                 ),
             ],
+            revision_graph: Some(Shortcut {
+                key: Key::R,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            }),
+            timelapse_view: Some(Shortcut {
+                key: Key::T,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    command: true,
+                    shift: true,
+                    ..Default::default()
+                },
+            }),
         }
     }
 }
@@ -354,6 +374,8 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                 ui_shortcut_row(ui, "Previous Conflict", &mut keybindings.prev_conflict);
                 ui_shortcut_row(ui, "Next Find Result", &mut keybindings.next_find);
                 ui_shortcut_row(ui, "Previous Find Result", &mut keybindings.prev_find);
+                ui_shortcut_row(ui, "Revision Graph", &mut keybindings.revision_graph);
+                ui_shortcut_row(ui, "Timelapse View", &mut keybindings.timelapse_view);
             });
     });
 }

@@ -245,7 +245,7 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait + From<RawToken>> Iterator
                 self.consume(); // /
                 if LEXER_MODE == LEXER_MODE_GREEDY {
                     while let Some(next_c) = self.peek() {
-                        if next_c == '\n' {
+                        if next_c == '\r' || next_c == '\n' {
                             break;
                         }
                         self.consume();

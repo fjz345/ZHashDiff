@@ -34,6 +34,7 @@ use crate::{
     clamped_cursor::ClampedCursor,
     file::FileProcessor,
     keybindings::{Keybindings, Shortcut, ui_keybindings},
+    p4::open_revision_graph,
     quick_diff::{UniversalPathConfig, ui_universal_path},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
@@ -1153,6 +1154,24 @@ impl<'a> ZApp {
                 handle_kb(&app_state_ctx.keybindings.goto, &mut |_kb| {
                     app_state_ctx.goto_open = true
                 });
+                handle_kb(&app_state_ctx.keybindings.revision_graph, &mut |_kb| {
+                    let path = &app_state_ctx.file_1.get_path();
+                    match path {
+                        UniversalPath::Depot(_, _) => {
+                            match open_revision_graph(&path.to_p4_string()) {
+                                Ok(_) => {
+                                    log::info!("Revision graph returned Ok");
+                                }
+                                Err(e) => log::error!("Failed to open revision graph: {e}"),
+                            }
+                        }
+                        UniversalPath::Local(path_buf) => {
+                            log::info!("Can not open revision graph for local path {}", path);
+                            return;
+                        }
+                    }
+                });
+                handle_kb(&app_state_ctx.keybindings.timelapse_view, &mut |_kb| {});
 
                 for (i, (kb, path)) in app_state_ctx
                     .keybindings

@@ -9,7 +9,7 @@ pub struct P4Revision {
 }
 
 pub fn get_p4_file_content(path: &str) -> Result<String, String> {
-    let p4_exe = env::var("P4_PATH").unwrap_or_else(|_| "p4".to_string());
+    let p4_exe = env::var("P4PATH").unwrap_or_else(|_| "p4".to_string());
 
     let output = Command::new(&p4_exe)
         .args(["print", "-q", path])
@@ -75,4 +75,28 @@ pub fn get_revision_history(path: &str) -> Result<Vec<P4Revision>, String> {
     }
 
     Ok(history)
+}
+
+pub fn open_revision_graph(path: &str) -> Result<(), String> {
+    let p4v_exe = env::var("P4VPATH").unwrap_or_else(|_| "p4v".to_string());
+
+    let p4v_cmd = format!("revgraph {}", path);
+
+    let program = p4v_exe;
+
+    let args = vec!["-cmd", &p4v_cmd];
+
+    log::info!(
+        "Opening revision graph for {} with command: {} {}",
+        path,
+        program,
+        args.join(" ")
+    );
+
+    Command::new(program)
+        .args(args)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }

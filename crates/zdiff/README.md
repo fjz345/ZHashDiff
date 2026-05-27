@@ -9,6 +9,7 @@ Library diffing file contents.
 * Powerful diffing view
 
 ## Todo
+* Propper state based lexer for parsing scopes (// COMMENT & /* COMMENT\n*/)
 * Line diff -> inner line diff
 * toggle filter only diffs rows
 * P4 revision graph + timelapse keybind
