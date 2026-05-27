@@ -343,6 +343,8 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, atomic::AtomicBool};
+
     use super::*;
     use crate::lexer::{LexerDefault, RawToken};
 
@@ -364,7 +366,7 @@ mod tests {
         ) -> Self {
             let t1: Vec<RawToken> = LexerDefault::<RawToken>::new(s1).collect();
             let t2: Vec<RawToken> = LexerDefault::<RawToken>::new(s2).collect();
-            let diff_ir = DiffIR::new(&path);
+            let diff_ir = DiffIR::new(&path, false, Arc::new(AtomicBool::new(false))).unwrap();
             let rows = build_diff_rows(diff_ir, Some(&t1), Some(&t2), &options, estimated_num_rows);
 
             Self {
@@ -413,7 +415,7 @@ mod tests {
                 for (res, _) in tokens {
                     // Determine which token array and which index to use
                     let (src_tokens, src_text, idx) = match res.operation {
-                        DiffOp::Equal | DiffOp::Delete => (
+                        DiffOp::Equal(..) | DiffOp::Delete => (
                             l_tokens,
                             s1,
                             res.token_source_idx
@@ -526,12 +528,14 @@ mod integration_tests {
     use super::*;
     use crate::cached_file::CachedFile;
     use crate::diff_ir::DiffIR;
-    use crate::lexer::{LexerDefault, RawToken};
+    use crate::lexer::{LEXER_MODE_DEFAULT, LexerDefault, RawToken};
     use crate::myers::{
         myers_backtrack, myers_diff_linear, myers_diff_linear_mt, myers_diff_trace,
     };
     use std::fs::File;
     use std::io::Write;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use tempfile::tempdir;
 
     fn run_reconstruction_test(s1: &str, s2: &str) {
@@ -542,10 +546,8 @@ mod integration_tests {
         File::create(&p1).unwrap().write_all(s1.as_bytes()).unwrap();
         File::create(&p2).unwrap().write_all(s2.as_bytes()).unwrap();
 
-        let f1 = CachedFile::<RawToken>::new(&p1, |contents| LexerDefault::new(contents).parse())
-            .unwrap();
-        let f2 = CachedFile::<RawToken>::new(&p2, |contents| LexerDefault::new(contents).parse())
-            .unwrap();
+        let f1 = CachedFile::<RawToken>::new(p1.clone().into(), p1, LEXER_MODE_DEFAULT).unwrap();
+        let f2 = CachedFile::<RawToken>::new(p2.clone().into(), p2, LEXER_MODE_DEFAULT).unwrap();
 
         let cmp = |t1: &RawToken, t2: &RawToken| {
             f1.contents[t1.as_ref().span.clone()] == f2.contents[t2.as_ref().span.clone()]
@@ -555,17 +557,35 @@ mod integration_tests {
         let path = if MYERS_LINEAR {
             const MYERS_LINEAR_MT: bool = false;
             if MYERS_LINEAR_MT {
-                myers_diff_linear_mt(&f1.tokens, &f2.tokens, cmp)
+                myers_diff_linear_mt(
+                    &f1.tokens,
+                    &f2.tokens,
+                    cmp,
+                    Arc::new(AtomicBool::new(false)),
+                )
+                .expect("Myers linear MT failed")
             } else {
-                myers_diff_linear(&f1.tokens, &f2.tokens, cmp)
+                myers_diff_linear(
+                    &f1.tokens,
+                    &f2.tokens,
+                    cmp,
+                    Arc::new(AtomicBool::new(false)),
+                )
+                .expect("Myers linear failed")
             }
         } else {
             let trace = myers_diff_trace(&f1.tokens, &f2.tokens, cmp);
-            myers_backtrack(trace, f1.tokens.len() as i32, f2.tokens.len() as i32)
+            myers_backtrack(
+                trace,
+                f1.tokens.len() as i32,
+                f2.tokens.len() as i32,
+                Arc::new(AtomicBool::new(false)),
+            )
+            .expect("Myers backtrack failed")
         };
 
         let rows = build_diff_rows(
-            DiffIR::new(&path),
+            DiffIR::new(&path, false, Arc::new(AtomicBool::new(false))).unwrap(),
             Some(&f1.tokens),
             Some(&f2.tokens),
             &DiffBuilderOptions {

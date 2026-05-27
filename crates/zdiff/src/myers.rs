@@ -814,7 +814,13 @@ mod tests {
 
         let trace = myers_diff_trace(&a, &b, cmp);
         let dist = trace.shortest_edit();
-        let path = myers_backtrack(trace, a.len() as i32, b.len() as i32);
+        let path = myers_backtrack(
+            trace,
+            a.len() as i32,
+            b.len() as i32,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("myers backtrack failed");
 
         assert_eq!(dist, 0);
         assert_eq!(distance_from_path(&path), 0);
@@ -854,7 +860,13 @@ mod tests {
 
         let trace = myers_diff_trace(&a, &b, cmp);
         let dist = trace.shortest_edit();
-        let path = myers_backtrack(trace, a.len() as i32, b.len() as i32);
+        let path = myers_backtrack(
+            trace,
+            a.len() as i32,
+            b.len() as i32,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("myers backtrack failed");
 
         assert_eq!(dist, 5);
         assert_eq!(distance_from_path(&path), 5);
@@ -867,7 +879,13 @@ mod tests {
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
         let trace = myers_diff_trace(&a, &b, cmp);
-        let path = myers_backtrack(trace, a.len() as i32, b.len() as i32);
+        let path = myers_backtrack(
+            trace,
+            a.len() as i32,
+            b.len() as i32,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("myers backtrack failed");
 
         // Verify every step in the path is valid (Right, Down, or Diagonal)
         for w in path.windows(2) {
@@ -895,7 +913,8 @@ mod tests {
         let b = vec!["a", "b", "c"];
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
-        let path = myers_diff_linear(&a, &b, cmp);
+        let path = myers_diff_linear(&a, &b, cmp, Arc::new(AtomicBool::new(false)))
+            .expect("myers diff failed");
 
         assert_eq!(distance_from_path(&path), 0);
         assert_eq!(path.len(), 4); // (0,0) -> (1,1) -> (2,2) -> (3,3)
@@ -907,7 +926,8 @@ mod tests {
         let b = vec!["c", "d"];
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
-        let path = myers_diff_linear(&a, &b, cmp);
+        let path = myers_diff_linear(&a, &b, cmp, Arc::new(AtomicBool::new(false)))
+            .expect("myers diff failed");
         assert_eq!(distance_from_path(&path), 4); // 2 deletes, 2 inserts
     }
 
@@ -917,9 +937,27 @@ mod tests {
         let b: Vec<&str> = vec!["a", "b"];
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
-        assert_eq!(myers_diff_linear(&a, &b, cmp).len() - 1, 2);
-        assert_eq!(myers_diff_linear(&b, &a, cmp).len() - 1, 2);
-        assert_eq!(myers_diff_linear(&a, &a, cmp).len() - 1, 0);
+        assert_eq!(
+            myers_diff_linear(&a, &b, cmp, Arc::new(AtomicBool::new(false)))
+                .expect("myers diff failed")
+                .len()
+                - 1,
+            2
+        );
+        assert_eq!(
+            myers_diff_linear(&b, &a, cmp, Arc::new(AtomicBool::new(false)))
+                .expect("myers diff failed")
+                .len()
+                - 1,
+            2
+        );
+        assert_eq!(
+            myers_diff_linear(&a, &a, cmp, Arc::new(AtomicBool::new(false)))
+                .expect("myers diff failed")
+                .len()
+                - 1,
+            0
+        );
     }
 
     #[test]
@@ -928,7 +966,8 @@ mod tests {
         let b: Vec<char> = "CBABAC".chars().collect();
         let cmp = |t1: &char, t2: &char| t1 == t2;
 
-        let path = myers_diff_linear(&a, &b, cmp);
+        let path = myers_diff_linear(&a, &b, cmp, Arc::new(AtomicBool::new(false)))
+            .expect("myers diff failed");
 
         // assert_eq!(dist, 5);
         assert_eq!(distance_from_path(&path), 5);
@@ -940,7 +979,8 @@ mod tests {
         let b = vec!["A", "X", "C"];
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
-        let path = myers_diff_linear(&a, &b, cmp);
+        let path = myers_diff_linear(&a, &b, cmp, Arc::new(AtomicBool::new(false)))
+            .expect("myers diff failed");
 
         // Verify every step in the path is valid (Right, Down, or Diagonal)
         for w in path.windows(2) {
@@ -968,7 +1008,8 @@ mod tests {
         let b = vec!["a", "b", "c"];
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
-        let path = myers_diff_linear_mt(&a, &b, cmp);
+        let path = myers_diff_linear_mt(&a, &b, cmp, Arc::new(AtomicBool::new(false)))
+            .expect("myers diff failed");
 
         assert_eq!(distance_from_path(&path), 0);
         assert_eq!(path.len(), 4); // (0,0) -> (1,1) -> (2,2) -> (3,3)
@@ -980,7 +1021,8 @@ mod tests {
         let b = vec!["c", "d"];
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
-        let path = myers_diff_linear_mt(&a, &b, cmp);
+        let path = myers_diff_linear_mt(&a, &b, cmp, Arc::new(AtomicBool::new(false)))
+            .expect("myers diff failed");
         assert_eq!(distance_from_path(&path), 4); // 2 deletes, 2 inserts
     }
 
@@ -990,9 +1032,27 @@ mod tests {
         let b: Vec<&str> = vec!["a", "b"];
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
-        assert_eq!(myers_diff_linear_mt(&a, &b, cmp).len() - 1, 2);
-        assert_eq!(myers_diff_linear_mt(&b, &a, cmp).len() - 1, 2);
-        assert_eq!(myers_diff_linear_mt(&a, &a, cmp).len() - 1, 0);
+        assert_eq!(
+            myers_diff_linear_mt(&a, &b, cmp, Arc::new(AtomicBool::new(false)))
+                .expect("myers diff failed")
+                .len()
+                - 1,
+            2
+        );
+        assert_eq!(
+            myers_diff_linear_mt(&b, &a, cmp, Arc::new(AtomicBool::new(false)))
+                .expect("myers diff failed")
+                .len()
+                - 1,
+            2
+        );
+        assert_eq!(
+            myers_diff_linear_mt(&a, &a, cmp, Arc::new(AtomicBool::new(false)))
+                .expect("myers diff failed")
+                .len()
+                - 1,
+            0
+        );
     }
 
     #[test]
@@ -1001,7 +1061,8 @@ mod tests {
         let b: Vec<char> = "CBABAC".chars().collect();
         let cmp = |t1: &char, t2: &char| t1 == t2;
 
-        let path = myers_diff_linear_mt(&a, &b, cmp);
+        let path = myers_diff_linear_mt(&a, &b, cmp, Arc::new(AtomicBool::new(false)))
+            .expect("myers diff failed");
 
         // assert_eq!(dist, 5);
         assert_eq!(distance_from_path(&path), 5);
@@ -1013,7 +1074,8 @@ mod tests {
         let b = vec!["A", "X", "C"];
         let cmp = |t1: &&str, t2: &&str| t1 == t2;
 
-        let path = myers_diff_linear_mt(&a, &b, cmp);
+        let path = myers_diff_linear_mt(&a, &b, cmp, Arc::new(AtomicBool::new(false)))
+            .expect("myers diff failed");
 
         // Verify every step in the path is valid (Right, Down, or Diagonal)
         for w in path.windows(2) {

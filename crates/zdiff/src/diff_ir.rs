@@ -186,11 +186,11 @@ mod tests {
     #[test]
     fn test_generate_ir_simple_equal() {
         let path = vec![(0, 0), (1, 1), (2, 2)];
-        let ir = DiffIR::generate_ir(&path, false);
+        let ir = DiffIR::generate_ir(&path, false, Arc::new(AtomicBool::new(false))).unwrap();
 
         assert_eq!(ir.entries.len(), 2);
         assert_eq!(ir.distance, 0);
-        assert_eq!(ir.entries[0].operation, DiffOp::Equal);
+        assert_eq!(ir.entries[0].operation, DiffOp::Equal(false));
         assert_eq!(ir.entries[0].token_source_idx, Some(0));
         assert_eq!(ir.entries[0].token_target_idx, Some(0));
     }
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn test_generate_ir_with_delete_and_insert() {
         let path = vec![(0, 0), (1, 0), (1, 1)];
-        let ir = DiffIR::generate_ir(&path);
+        let ir = DiffIR::generate_ir(&path, false, Arc::new(AtomicBool::new(false))).unwrap();
 
         assert_eq!(ir.distance, 2);
         assert_eq!(ir.entries[0].operation, DiffOp::Delete);
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn test_distance_calculation() {
         let path = vec![(0, 0), (1, 0), (2, 0), (2, 1)];
-        let ir = DiffIR::generate_ir(&path);
+        let ir = DiffIR::generate_ir(&path, false, Arc::new(AtomicBool::new(false))).unwrap();
         assert_eq!(ir.distance, 3);
     }
 }
