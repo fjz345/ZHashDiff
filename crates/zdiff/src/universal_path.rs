@@ -73,6 +73,31 @@ impl UniversalPath {
         }
     }
 
+    pub fn append(&mut self, other: UniversalPath) {
+        match (self, other) {
+            (Self::Local(base), Self::Local(addition)) => {
+                base.push(addition);
+                *base = Self::normalize_local_path(base);
+            }
+            (Self::Local(base), Self::Depot(addition, _)) => {
+                let clean_addition = addition.trim_start_matches('/');
+                base.push(clean_addition);
+                *base = Self::normalize_local_path(base);
+            }
+            (Self::Depot(base, _), Self::Depot(addition, _)) => {
+                let clean_base = base.trim_end_matches('/');
+                let clean_addition = addition.trim_start_matches('/');
+                *base = format!("{}/{}", clean_base, clean_addition);
+            }
+            (Self::Depot(base, _), Self::Local(addition)) => {
+                let clean_base = base.trim_end_matches('/');
+                let add_str = addition.to_string_lossy().replace('\\', "/");
+                let clean_addition = add_str.trim_start_matches('/');
+                *base = format!("{}/{}", clean_base, clean_addition);
+            }
+        }
+    }
+
     fn normalize_local_path(path: &Path) -> PathBuf {
         let mut components = Vec::new();
 
@@ -155,5 +180,49 @@ mod tests {
         let local = UniversalPath::new(r"C:\User\File.txt");
         assert!(matches!(local, UniversalPath::Local(..)));
         assert_eq!(local.to_p4_string(), "C:/User/File.txt");
+    }
+
+    #[test]
+    fn test_append_local_to_local() {
+        let mut base = UniversalPath::new(r"C:\User\Project");
+        let addition = UniversalPath::new(r"src\main.rs");
+        base.append(addition);
+        assert_eq!(
+            base,
+            UniversalPath::Local(PathBuf::from(r"C:\User\Project\src\main.rs"))
+        );
+    }
+
+    #[test]
+    fn test_append_depot_to_local() {
+        let mut base = UniversalPath::new(r"C:\User\Project");
+        let addition = UniversalPath::new("//depot/src/main.rs");
+        base.append(addition);
+        assert_eq!(
+            base,
+            UniversalPath::Local(PathBuf::from(r"C:\User\Project\depot\src\main.rs"))
+        );
+    }
+
+    #[test]
+    fn test_append_depot_to_depot() {
+        let mut base = UniversalPath::new("//stream/main/");
+        let addition = UniversalPath::new("//folder/file.txt#3");
+        base.append(addition);
+        assert_eq!(
+            base,
+            UniversalPath::Depot(String::from("//stream/main/folder/file.txt"), None)
+        );
+    }
+
+    #[test]
+    fn test_append_local_to_depot() {
+        let mut base = UniversalPath::new("//stream/main");
+        let addition = UniversalPath::new(r"folder\file.txt");
+        base.append(addition);
+        assert_eq!(
+            base,
+            UniversalPath::Depot(String::from("//stream/main/folder/file.txt"), None)
+        );
     }
 }

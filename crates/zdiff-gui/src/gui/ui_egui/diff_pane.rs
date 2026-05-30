@@ -23,6 +23,10 @@ pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
     // the text edit with the old path if even if it could not load a cachedfile
     pub file_source_path: UniversalPath,
     pub file_target_path: UniversalPath,
+    pub file_source_root: Option<UniversalPath>,
+    pub file_target_root: Option<UniversalPath>,
+    pub file_source_root_valid: bool,
+    pub file_target_root_valid: bool,
 
     pub file_source: Option<Arc<CachedFile<T>>>,
     pub file_target: Option<Arc<CachedFile<T>>>,
@@ -38,6 +42,8 @@ pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
     pub find_cursor: &'a mut ClampedCursor,
     pub load_file_1_request: &'a mut Option<UniversalPath>,
     pub load_file_2_request: &'a mut Option<UniversalPath>,
+    pub set_file_1_root_request: &'a mut Option<UniversalPath>,
+    pub set_file_2_root_request: &'a mut Option<UniversalPath>,
     pub pivot: &'a mut (Option<usize>, Option<usize>),
 }
 
@@ -248,11 +254,10 @@ impl FileDiffPane {
                         }
 
                         let editable_path_test = |ui: &mut egui::Ui,
+                                                  id: egui::Id,
                                                   file: &UniversalPath,
                                                   is_valid: bool|
                          -> Option<UniversalPath> {
-                            let id = ui.id().with("file_path_editor");
-
                             let original_path = file.to_string();
 
                             let mut text = ui.memory_mut(|mem| {
@@ -335,19 +340,41 @@ impl FileDiffPane {
                             .column(Column::remainder().clip(false))
                             .header(20.0, |mut header| {
                                 header.col(|ui| {
-                                    *ctx.load_file_1_request = editable_path_test(
-                                        ui,
-                                        &ctx.file_source_path,
-                                        ctx.file_source.is_some(),
-                                    );
+                                    ui.vertical(|ui| {
+                                        *ctx.set_file_1_root_request = editable_path_test(
+                                            ui,
+                                            ui.id().with("file_path_editor_path"),
+                                            &ctx.file_source_root.clone().unwrap_or_default(),
+                                            ctx.file_source_root_valid,
+                                        );
+                                        ui.separator();
+                                        *ctx.load_file_1_request = editable_path_test(
+                                            ui,
+                                            ui.id().with("file_path_editor"),
+                                            &ctx.file_source_path,
+                                            ctx.file_source.is_some(),
+                                        );
+                                        ui.separator();
+                                    });
                                 });
                                 header.col(|_| {});
                                 header.col(|ui| {
-                                    *ctx.load_file_2_request = editable_path_test(
-                                        ui,
-                                        &ctx.file_target_path,
-                                        ctx.file_target.is_some(),
-                                    );
+                                    ui.vertical(|ui| {
+                                        *ctx.set_file_2_root_request = editable_path_test(
+                                            ui,
+                                            ui.id().with("file_path_editor_path"),
+                                            &ctx.file_target_root.clone().unwrap_or_default(),
+                                            ctx.file_target_root_valid,
+                                        );
+                                        ui.separator();
+                                        *ctx.load_file_2_request = editable_path_test(
+                                            ui,
+                                            ui.id().with("file_path_editor"),
+                                            &ctx.file_target_path,
+                                            ctx.file_target.is_some(),
+                                        );
+                                        ui.separator();
+                                    });
                                 });
                             })
                             .body(|body| {

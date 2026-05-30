@@ -1,4 +1,4 @@
-use eframe::egui::{self, Key, Modifiers};
+use eframe::egui::{self, Key, Modifiers, Vec2};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -31,10 +31,11 @@ impl Shortcut {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuickDiffPaths {
     pub target: String,
+    pub target_root: String,
     pub source: Option<String>,
 }
 
@@ -168,6 +169,7 @@ impl Default for Keybindings {
                     QuickDiffPaths {
                         target: "".into(),
                         source: None,
+                        ..Default::default()
                     },
                 ),
                 (
@@ -180,6 +182,7 @@ impl Default for Keybindings {
                     QuickDiffPaths {
                         target: "".into(),
                         source: None,
+                        ..Default::default()
                     },
                 ),
                 (
@@ -192,6 +195,7 @@ impl Default for Keybindings {
                     QuickDiffPaths {
                         target: "".into(),
                         source: None,
+                        ..Default::default()
                     },
                 ),
                 (
@@ -204,6 +208,7 @@ impl Default for Keybindings {
                     QuickDiffPaths {
                         target: "".into(),
                         source: None,
+                        ..Default::default()
                     },
                 ),
             ],
@@ -234,13 +239,9 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
         *keybindings = Keybindings::default();
     }
     if ui.button("Add Quick Diff").clicked() {
-        keybindings.user_quick_diffs.push((
-            None,
-            QuickDiffPaths {
-                target: "".into(),
-                source: None,
-            },
-        ));
+        keybindings
+            .user_quick_diffs
+            .push((None, QuickDiffPaths::default()));
     }
     ui.separator();
 
@@ -307,19 +308,33 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                         ui.end_row();
                     };
 
-                let ui_quick_diff_path_row = |ui: &mut egui::Ui, label: &str, path: &mut String| {
-                    ui.label(label);
+                let ui_quick_diff_path_row =
+                    |ui: &mut egui::Ui, label: &str, root: &mut String, path: &mut String| {
+                        ui.label(label);
 
-                    ui.text_edit_singleline(path);
+                        ui.horizontal(|ui| {
+                            let widget = egui::TextEdit::singleline(root).desired_width(150.0);
+                            ui.add(widget);
+                            ui.label("/");
+                            let widget =
+                                egui::TextEdit::singleline(path).desired_width(f32::INFINITY);
+                            ui.add(widget);
+                        });
 
-                    ui.end_row();
-                };
+                        ui.end_row();
+                    };
 
                 for (i, (user_qd, quick_diff_path)) in
                     keybindings.user_quick_diffs.iter_mut().enumerate()
                 {
                     ui_shortcut_row(ui, &format!("User Quick Diff {}", i + 1), user_qd);
-                    ui_quick_diff_path_row(ui, "Target Path", &mut quick_diff_path.target);
+                    let mut root = "".to_string();
+                    ui_quick_diff_path_row(
+                        ui,
+                        "Target Path",
+                        &mut quick_diff_path.target_root,
+                        &mut quick_diff_path.target,
+                    );
 
                     let mut action_remove = false;
                     let mut action_add = false;

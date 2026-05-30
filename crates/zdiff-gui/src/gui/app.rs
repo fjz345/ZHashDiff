@@ -990,10 +990,22 @@ impl<'a> ZApp {
                     conflict_cursor: diff_ctx_conflict_cursor,
                     load_file_1_request: &mut None,
                     load_file_2_request: &mut None,
+                    set_file_1_root_request: &mut None,
+                    set_file_2_root_request: &mut None,
                     find_cursor,
                     pivot: diff_ctx_pivot,
                     file_source_path: file_1.get_path(),
                     file_target_path: file_2.get_path(),
+                    file_source_root: file_1.get_root(),
+                    file_target_root: file_2.get_root(),
+                    file_source_root_valid: FileProcessor::is_root_valid(
+                        &file_1.get_root().unwrap_or_default(),
+                        &file_1.get_path(),
+                    ),
+                    file_target_root_valid: FileProcessor::is_root_valid(
+                        &file_1.get_root().unwrap_or_default(),
+                        &file_1.get_path(),
+                    ),
                 },
             };
 
@@ -1015,6 +1027,12 @@ impl<'a> ZApp {
             }
             if let Some(file_path) = behavior.ctx_file_diff.load_file_2_request.take() {
                 app_ctx.file_2.set_path(file_path);
+            }
+            if let Some(file_path) = behavior.ctx_file_diff.set_file_1_root_request.take() {
+                app_ctx.file_1.set_root(file_path);
+            }
+            if let Some(file_path) = behavior.ctx_file_diff.set_file_2_root_request.take() {
+                app_ctx.file_2.set_root(file_path);
             }
 
             drop(behavior);
@@ -1185,6 +1203,10 @@ impl<'a> ZApp {
                             i + 1,
                             kb.format()
                         );
+
+                        app_state_ctx
+                            .file_2
+                            .set_root(UniversalPath::from(&path.target_root));
 
                         app_state_ctx
                             .file_2

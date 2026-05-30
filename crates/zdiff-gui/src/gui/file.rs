@@ -26,6 +26,9 @@ pub struct FileProcessor {
     file_path: UniversalPath,
 
     #[cfg_attr(feature = "serde", serde(skip))]
+    root_path: Option<UniversalPath>,
+
+    #[cfg_attr(feature = "serde", serde(skip))]
     cached_file: Option<Arc<CachedFile<RawToken>>>,
     diff_lexer_mode: u8,
 
@@ -41,6 +44,7 @@ impl Default for FileProcessor {
             cached_file: None,
             diff_lexer_mode: LEXER_MODE_DEFAULT,
             cached_file_path: None,
+            root_path: None,
         }
     }
 }
@@ -77,6 +81,19 @@ impl FileProcessor {
 
     pub fn get_path(&mut self) -> UniversalPath {
         self.poll_path_channel();
+
+        if let Some(root) = &self.root_path {
+            if let Some(stripped_path) = Self::strip_root_prefix(root, &self.file_path) {
+                return stripped_path;
+            }
+        }
+
+        self.file_path.clone()
+    }
+
+    pub fn get_full_path(&mut self) -> UniversalPath {
+        self.poll_path_channel();
+
         self.file_path.clone()
     }
 
@@ -85,8 +102,75 @@ impl FileProcessor {
     }
 
     pub fn set_path(&mut self, path: UniversalPath) {
+        let old_path = self.file_path.clone();
+
+        if let Some(root) = &self.root_path {
+            if Self::is_root_valid(&root, &path) {
+                let mut new_path = root.clone();
+                new_path.append(path.clone());
+                self.file_path = new_path
+            }
+        }
+
         self.file_path = path;
-        self.invalidate_cache_file();
+        if old_path != self.file_path {
+            self.invalidate_cache_file();
+        }
+    }
+
+    pub fn set_root(&mut self, root: UniversalPath) {
+        self.root_path = Some(root);
+    }
+    pub fn get_root(&mut self) -> Option<UniversalPath> {
+        self.root_path.clone()
+    }
+
+    pub fn strip_root_prefix(root: &UniversalPath, path: &UniversalPath) -> Option<UniversalPath> {
+        match (root, path) {
+            (UniversalPath::Local(root_local), UniversalPath::Local(path_local)) => {
+                let norm_root = Self::normalize_path(root_local);
+                let norm_path = Self::normalize_path(path_local);
+
+                norm_path
+                    .strip_prefix(&norm_root)
+                    .ok()
+                    .map(|p| UniversalPath::Local(p.to_path_buf()))
+            }
+            (UniversalPath::Depot(root_depot, _), UniversalPath::Depot(path_depot, rev)) => {
+                path_depot.strip_prefix(root_depot).map(|stripped| {
+                    UniversalPath::Depot(stripped.trim_start_matches('/').to_string(), *rev)
+                })
+            }
+            _ => Some(path.clone()),
+        }
+    }
+
+    pub fn is_root_valid(root: &UniversalPath, path: &UniversalPath) -> bool {
+        match (root, path) {
+            (UniversalPath::Local(root_local), UniversalPath::Local(path_local)) => {
+                let norm_root = Self::normalize_path(root_local);
+                let norm_path = Self::normalize_path(path_local);
+                norm_path.starts_with(norm_root)
+            }
+            (UniversalPath::Depot(root_depot, _), UniversalPath::Depot(path_depot, _)) => {
+                path_depot.starts_with(root_depot)
+            }
+            _ => true,
+        }
+    }
+
+    fn normalize_path(path: &std::path::Path) -> PathBuf {
+        let mut normalized = PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                std::path::Component::CurDir => {}
+                _ => normalized.push(component),
+            }
+        }
+        normalized
     }
 
     pub fn invalidate_cache_file(&mut self) {
@@ -96,7 +180,7 @@ impl FileProcessor {
     }
 
     pub fn get_cached_file(&mut self) -> Option<Arc<CachedFile<RawToken>>> {
-        let path = &self.get_path();
+        let path = &self.get_full_path();
 
         if !path.is_empty() && self.cached_file_path.as_ref() != Some(path) {
             self.cached_file_path = Some(path.clone());
@@ -173,5 +257,50 @@ impl FileProcessor {
         self.get_cached_file()
             .as_ref()
             .and_then(|f| Some(f.hash.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_is_root_valid_local() {
+        let root = UniversalPath::Local(PathBuf::from(r"E:\Github\ZHashDiff\crates"));
+
+        let valid = UniversalPath::Local(PathBuf::from(
+            r"E:\Github\ZHashDiff\crates\zdiff-gui\src\main.rs",
+        ));
+        let invalid = UniversalPath::Local(PathBuf::from(r"C:\Other\Project\src\main.rs"));
+        let escaped = UniversalPath::Local(PathBuf::from(
+            r"E:\Github\ZHashDiff\crates\zdiff-gui\..\..\test\rust_files_diff_1\advanced_rust.rs",
+        ));
+
+        assert!(FileProcessor::is_root_valid(&root, &valid));
+        assert!(!FileProcessor::is_root_valid(&root, &invalid));
+        assert!(!FileProcessor::is_root_valid(&root, &escaped));
+    }
+
+    #[test]
+    fn test_is_root_valid_depot() {
+        let root = UniversalPath::Depot(String::from("//depot/folder"), None);
+
+        let valid_no_rev = UniversalPath::Depot(String::from("//depot/folder/file.rs"), None);
+        let valid_with_rev = UniversalPath::Depot(String::from("//depot/folder/file.rs"), Some(5));
+        let invalid = UniversalPath::Depot(String::from("//depot/other/file.rs"), None);
+
+        assert!(FileProcessor::is_root_valid(&root, &valid_no_rev));
+        assert!(FileProcessor::is_root_valid(&root, &valid_with_rev));
+        assert!(!FileProcessor::is_root_valid(&root, &invalid));
+    }
+
+    #[test]
+    fn test_is_root_valid_mixed() {
+        let local = UniversalPath::Local(PathBuf::from(r"E:\Github\ZHashDiff"));
+        let depot = UniversalPath::Depot(String::from("//depot/folder/file.rs"), Some(2));
+
+        assert!(FileProcessor::is_root_valid(&local, &depot));
+        assert!(FileProcessor::is_root_valid(&depot, &local));
     }
 }
