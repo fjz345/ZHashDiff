@@ -266,18 +266,6 @@ impl FileDiffPane {
                                     .unwrap_or_else(|| original_path.clone())
                             });
 
-                            let frame = egui::Frame::NONE
-                                .fill(if !is_valid {
-                                    egui::Color32::from_rgb(45, 10, 10)
-                                } else {
-                                    ui.visuals().extreme_bg_color
-                                })
-                                .stroke(if !is_valid {
-                                    egui::Stroke::new(1.0, egui::Color32::RED)
-                                } else {
-                                    ui.visuals().widgets.inactive.bg_stroke
-                                });
-
                             let response = ui
                                 .scope(|ui| {
                                     if !is_valid {
@@ -302,7 +290,7 @@ impl FileDiffPane {
 
                                     ui.add_sized(
                                         [ui.available_width(), ui.spacing().interact_size.y],
-                                        egui::TextEdit::singleline(&mut text),
+                                        egui::TextEdit::singleline(&mut text).id(id),
                                     )
                                 })
                                 .inner;
@@ -311,11 +299,12 @@ impl FileDiffPane {
                                 ui.memory_mut(|mem| mem.data.insert_temp(id, text.clone()));
                             }
 
-                            if response.lost_focus() {
+                            // lost_focus not called correctly, quick fix: https://github.com/emilk/egui/issues/2142
+                            // Does not handle holding down mouse on another text field.....
+                            if response.lost_focus() || response.clicked_elsewhere() {
                                 ui.memory_mut(|mem| mem.data.remove::<String>(id));
 
-                                let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                                if !cancelled && text != original_path {
+                                if text != original_path {
                                     return Some(UniversalPath::from(&text));
                                 }
                             }
@@ -343,14 +332,14 @@ impl FileDiffPane {
                                     ui.vertical(|ui| {
                                         *ctx.set_file_1_root_request = editable_path_test(
                                             ui,
-                                            ui.id().with("file_path_editor_path"),
+                                            "file_1_path_editor_path".into(),
                                             &ctx.file_source_root.clone().unwrap_or_default(),
                                             ctx.file_source_root_valid,
                                         );
                                         ui.separator();
                                         *ctx.load_file_1_request = editable_path_test(
                                             ui,
-                                            ui.id().with("file_path_editor"),
+                                            "file_1_path_editor".into(),
                                             &ctx.file_source_path,
                                             ctx.file_source.is_some(),
                                         );
@@ -362,14 +351,14 @@ impl FileDiffPane {
                                     ui.vertical(|ui| {
                                         *ctx.set_file_2_root_request = editable_path_test(
                                             ui,
-                                            ui.id().with("file_path_editor_path"),
+                                            "file_2_path_editor_path".into(),
                                             &ctx.file_target_root.clone().unwrap_or_default(),
                                             ctx.file_target_root_valid,
                                         );
                                         ui.separator();
                                         *ctx.load_file_2_request = editable_path_test(
                                             ui,
-                                            ui.id().with("file_path_editor"),
+                                            "file_2_path_editor".into(),
                                             &ctx.file_target_path,
                                             ctx.file_target.is_some(),
                                         );

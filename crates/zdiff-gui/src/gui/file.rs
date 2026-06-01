@@ -103,16 +103,22 @@ impl FileProcessor {
 
     pub fn set_path(&mut self, path: UniversalPath) {
         let old_path = self.file_path.clone();
+        log::debug!("{:?}", self.root_path);
 
         if let Some(root) = &self.root_path {
             if Self::is_root_valid(&root, &path) {
+                log::debug!("is_root_valid {:?}", true);
+                log::debug!("is_root_depot {:?}", root.is_depot());
                 let mut new_path = root.clone();
                 new_path.append(path.clone());
                 self.file_path = new_path
+            } else {
+                self.file_path = path;
             }
+        } else {
+            self.file_path = path;
         }
 
-        self.file_path = path;
         if old_path != self.file_path {
             self.invalidate_cache_file();
         }
@@ -136,11 +142,19 @@ impl FileProcessor {
                     .ok()
                     .map(|p| UniversalPath::Local(p.to_path_buf()))
             }
+
             (UniversalPath::Depot(root_depot, _), UniversalPath::Depot(path_depot, rev)) => {
-                path_depot.strip_prefix(root_depot).map(|stripped| {
-                    UniversalPath::Depot(stripped.trim_start_matches('/').to_string(), *rev)
-                })
+                let root = root_depot.trim_end_matches('/');
+
+                if path_depot == root {
+                    Some(UniversalPath::Depot(String::new(), *rev))
+                } else {
+                    path_depot
+                        .strip_prefix(&(root.to_owned() + "/"))
+                        .map(|s| UniversalPath::Depot(s.to_string(), *rev))
+                }
             }
+
             _ => Some(path.clone()),
         }
     }
@@ -152,9 +166,13 @@ impl FileProcessor {
                 let norm_path = Self::normalize_path(path_local);
                 norm_path.starts_with(norm_root)
             }
+
             (UniversalPath::Depot(root_depot, _), UniversalPath::Depot(path_depot, _)) => {
-                path_depot.starts_with(root_depot)
+                let root = root_depot.trim_end_matches('/');
+
+                path_depot == root || path_depot.starts_with(&(root.to_owned() + "/"))
             }
+
             _ => true,
         }
     }
@@ -264,41 +282,88 @@ impl FileProcessor {
 mod tests {
     use super::*;
     use std::path::PathBuf;
-
     #[test]
     fn test_is_root_valid_local() {
         let root = UniversalPath::Local(PathBuf::from(r"E:\Github\ZHashDiff\crates"));
 
-        let valid = UniversalPath::Local(PathBuf::from(
-            r"E:\Github\ZHashDiff\crates\zdiff-gui\src\main.rs",
-        ));
-        let invalid = UniversalPath::Local(PathBuf::from(r"C:\Other\Project\src\main.rs"));
-        let escaped = UniversalPath::Local(PathBuf::from(
-            r"E:\Github\ZHashDiff\crates\zdiff-gui\..\..\test\rust_files_diff_1\advanced_rust.rs",
+        assert!(FileProcessor::is_root_valid(
+            &root,
+            &UniversalPath::Local(PathBuf::from(
+                r"E:\Github\ZHashDiff\crates\zdiff-gui\src\main.rs",
+            ))
         ));
 
-        assert!(FileProcessor::is_root_valid(&root, &valid));
-        assert!(!FileProcessor::is_root_valid(&root, &invalid));
-        assert!(!FileProcessor::is_root_valid(&root, &escaped));
+        assert!(!FileProcessor::is_root_valid(
+            &root,
+            &UniversalPath::Local(PathBuf::from(r"C:\Other\Project\src\main.rs"))
+        ));
+
+        assert!(!FileProcessor::is_root_valid(
+            &root,
+            &UniversalPath::Local(PathBuf::from(
+                r"E:\Github\ZHashDiff\crates\zdiff-gui\..\..\test\rust_files_diff_1\advanced_rust.rs",
+            ))
+        ));
     }
 
     #[test]
     fn test_is_root_valid_depot() {
-        let root = UniversalPath::Depot(String::from("//depot/folder"), None);
+        let cases = [
+            (
+                UniversalPath::Depot("//depot/folder".into(), None),
+                UniversalPath::Depot("//depot/folder/file.rs".into(), None),
+                true,
+            ),
+            (
+                UniversalPath::Depot("//depot/folder".into(), None),
+                UniversalPath::Depot("//depot/folder/file.rs".into(), Some(5)),
+                true,
+            ),
+            (
+                UniversalPath::Depot("//depot/folder".into(), None),
+                UniversalPath::Depot("//depot/other/file.rs".into(), None),
+                false,
+            ),
+            (
+                UniversalPath::Depot("//depot_2/one_deeper".into(), None),
+                UniversalPath::Depot("//depot_2/one_deeper/test_folder/test_2.txt".into(), None),
+                true,
+            ),
+            (
+                UniversalPath::Depot("//depot_2/one_deeper/".into(), None),
+                UniversalPath::Depot("//depot_2/one_deeper/test_folder/test_2.txt".into(), None),
+                true,
+            ),
+            (
+                UniversalPath::Depot("//depot_2/one_deeper".into(), None),
+                UniversalPath::Depot("//depot_2/one_deeper".into(), None),
+                true,
+            ),
+            (
+                UniversalPath::Depot("//depot_2/one_deeper/".into(), None),
+                UniversalPath::Depot("//depot_2/one_deeper/file.rs".into(), None),
+                true,
+            ),
+            (
+                UniversalPath::Depot("//depot/folder".into(), None),
+                UniversalPath::Depot("//depot/folder2/file.rs".into(), None),
+                false,
+            ),
+        ];
 
-        let valid_no_rev = UniversalPath::Depot(String::from("//depot/folder/file.rs"), None);
-        let valid_with_rev = UniversalPath::Depot(String::from("//depot/folder/file.rs"), Some(5));
-        let invalid = UniversalPath::Depot(String::from("//depot/other/file.rs"), None);
-
-        assert!(FileProcessor::is_root_valid(&root, &valid_no_rev));
-        assert!(FileProcessor::is_root_valid(&root, &valid_with_rev));
-        assert!(!FileProcessor::is_root_valid(&root, &invalid));
+        for (root, path, expected) in cases {
+            assert_eq!(
+                FileProcessor::is_root_valid(&root, &path),
+                expected,
+                "root={root:?}, path={path:?}"
+            );
+        }
     }
 
     #[test]
     fn test_is_root_valid_mixed() {
         let local = UniversalPath::Local(PathBuf::from(r"E:\Github\ZHashDiff"));
-        let depot = UniversalPath::Depot(String::from("//depot/folder/file.rs"), Some(2));
+        let depot = UniversalPath::Depot("//depot/folder/file.rs".into(), Some(2));
 
         assert!(FileProcessor::is_root_valid(&local, &depot));
         assert!(FileProcessor::is_root_valid(&depot, &local));

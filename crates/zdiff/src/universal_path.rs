@@ -34,13 +34,13 @@ impl From<&String> for UniversalPath {
 }
 impl From<PathBuf> for UniversalPath {
     fn from(path: PathBuf) -> Self {
-        UniversalPath::Local(path)
+        UniversalPath::new(path.as_os_str())
     }
 }
 
-impl From<&std::path::Path> for UniversalPath {
-    fn from(path: &std::path::Path) -> Self {
-        UniversalPath::Local(path.to_path_buf())
+impl From<&Path> for UniversalPath {
+    fn from(path: &Path) -> Self {
+        UniversalPath::new(path.as_os_str())
     }
 }
 

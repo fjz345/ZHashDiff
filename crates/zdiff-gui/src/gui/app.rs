@@ -1000,11 +1000,11 @@ impl<'a> ZApp {
                     file_target_root: file_2.get_root(),
                     file_source_root_valid: FileProcessor::is_root_valid(
                         &file_1.get_root().unwrap_or_default(),
-                        &file_1.get_path(),
+                        &&file_1.get_full_path(),
                     ),
                     file_target_root_valid: FileProcessor::is_root_valid(
                         &file_1.get_root().unwrap_or_default(),
-                        &file_1.get_path(),
+                        &file_1.get_full_path(),
                     ),
                 },
             };
@@ -1022,17 +1022,22 @@ impl<'a> ZApp {
                 }
             }
 
-            if let Some(file_path) = behavior.ctx_file_diff.load_file_1_request.take() {
-                app_ctx.file_1.set_path(file_path);
-            }
-            if let Some(file_path) = behavior.ctx_file_diff.load_file_2_request.take() {
-                app_ctx.file_2.set_path(file_path);
-            }
             if let Some(file_path) = behavior.ctx_file_diff.set_file_1_root_request.take() {
+                log::debug!("Set new root from root_request_1: {:?}", file_path);
                 app_ctx.file_1.set_root(file_path);
             }
             if let Some(file_path) = behavior.ctx_file_diff.set_file_2_root_request.take() {
+                log::debug!("Set new root from root_request_2: {:?}", file_path);
                 app_ctx.file_2.set_root(file_path);
+            }
+
+            if let Some(file_path) = behavior.ctx_file_diff.load_file_1_request.take() {
+                log::debug!("Set new path from file_1_request: {:?}", file_path);
+                app_ctx.file_1.set_path(file_path);
+            }
+            if let Some(file_path) = behavior.ctx_file_diff.load_file_2_request.take() {
+                log::debug!("Set new path from file_1_request: {:?}", file_path);
+                app_ctx.file_2.set_path(file_path);
             }
 
             drop(behavior);
@@ -1211,6 +1216,7 @@ impl<'a> ZApp {
                         app_state_ctx
                             .file_2
                             .set_path(UniversalPath::from(&path.target));
+
                         if let Some(source) = &path.source {
                             app_state_ctx.file_1.set_path(UniversalPath::from(source));
                         }
@@ -1218,13 +1224,13 @@ impl<'a> ZApp {
                         if path.source.is_some() {
                             log::info!(
                                 "User Quick Diff Shortcut set paths:\nSource: {:?}\nTarget: {:?}",
-                                app_state_ctx.file_1.get_path(),
-                                app_state_ctx.file_2.get_path()
+                                app_state_ctx.file_1.get_full_path(),
+                                app_state_ctx.file_2.get_full_path()
                             );
                         } else {
                             log::info!(
                                 "User Quick Diff Shortcut set paths:\nTarget: {:?}",
-                                app_state_ctx.file_2.get_path()
+                                app_state_ctx.file_2.get_full_path()
                             );
                         }
                     });

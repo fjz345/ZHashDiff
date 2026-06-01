@@ -1,4 +1,4 @@
-# ZHashDiff-GUI
+# ZDiff-GUI
 
 ![alt text](img/showcase.png)
 
@@ -20,7 +20,13 @@ GUI for zdiff crate
         + Inline ghost tokens
         + Syntax highlight (only hardcoded keywords for now)
 
+## Known bugs
+* lost_focus not called correctly on paths when holding down mouse: https://github.com/emilk/egui/issues/2142
+
 ## Todo
+* Add ZDiff-GUI images to front .readme
+* Add platform image for .exe
+
 * Syncronized scroll bar (like p4)
 * Batch DiffRow performance optimzation
 * Quick Diff /w multiple p4 repositories
