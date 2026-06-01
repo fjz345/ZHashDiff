@@ -49,6 +49,8 @@ pub struct FileProcessor {
         mpsc::Sender<(UniversalPath, Option<Arc<CachedFile<RawToken>>>)>,
         mpsc::Receiver<(UniversalPath, Option<Arc<CachedFile<RawToken>>>)>,
     ),
+    #[cfg_attr(feature = "serde", serde(skip))]
+    loading_path: Option<UniversalPath>,
 }
 
 impl Default for FileProcessor {
@@ -61,6 +63,7 @@ impl Default for FileProcessor {
             cached_file_path: None,
             root_path: None,
             channel_cached_file: default_channel_cached_file(),
+            loading_path: None,
         }
     }
 }
@@ -213,10 +216,15 @@ impl FileProcessor {
         self.cached_file_path = None;
     }
 
+    pub fn get_loading_path(&self) -> Option<&UniversalPath> {
+        self.loading_path.as_ref()
+    }
+
     pub fn get_cached_file(&mut self) -> Option<Arc<CachedFile<RawToken>>> {
         while let Ok((loaded_path, file_opt)) = self.channel_cached_file.1.try_recv() {
             if self.cached_file_path.as_ref() == Some(&loaded_path) {
                 self.cached_file = file_opt;
+                self.loading_path = None;
             }
         }
 
@@ -225,6 +233,7 @@ impl FileProcessor {
         if !path.is_empty() && self.cached_file_path.as_ref() != Some(path) {
             self.cached_file_path = Some(path.clone());
             self.cached_file = None;
+            self.loading_path = Some(path.clone());
 
             log::debug!(
                 "Constructing CachedFile asynchronously: {:?} with lexer mode {:?}",

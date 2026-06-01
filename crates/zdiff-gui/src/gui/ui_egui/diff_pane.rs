@@ -27,6 +27,8 @@ pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
     pub file_target_root: Option<UniversalPath>,
     pub file_source_root_valid: bool,
     pub file_target_root_valid: bool,
+    pub file_source_path_valid: bool,
+    pub file_target_path_valid: bool,
 
     pub file_source: Option<Arc<CachedFile<T>>>,
     pub file_target: Option<Arc<CachedFile<T>>>,
@@ -341,7 +343,7 @@ impl FileDiffPane {
                                             ui,
                                             "file_1_path_editor".into(),
                                             &ctx.file_source_path,
-                                            ctx.file_source.is_some(),
+                                            ctx.file_source_path_valid,
                                         );
                                         ui.separator();
                                     });
@@ -360,7 +362,7 @@ impl FileDiffPane {
                                             ui,
                                             "file_2_path_editor".into(),
                                             &ctx.file_target_path,
-                                            ctx.file_target.is_some(),
+                                            ctx.file_target_path_valid,
                                         );
                                         ui.separator();
                                     });

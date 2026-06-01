@@ -1000,14 +1000,20 @@ impl<'a> ZApp {
                     file_target_path: file_2.get_path(),
                     file_source_root: file_1.get_root(),
                     file_target_root: file_2.get_root(),
-                    file_source_root_valid: FileProcessor::is_root_valid(
-                        &file_1.get_root().unwrap_or_default(),
-                        &&file_1.get_full_path(),
-                    ),
-                    file_target_root_valid: FileProcessor::is_root_valid(
-                        &file_1.get_root().unwrap_or_default(),
-                        &file_1.get_full_path(),
-                    ),
+                    file_source_root_valid: file_1.get_loading_path().is_some()
+                        || FileProcessor::is_root_valid(
+                            &file_1.get_root().unwrap_or_default(),
+                            &&file_1.get_full_path(),
+                        ),
+                    file_target_root_valid: file_2.get_loading_path().is_some()
+                        || FileProcessor::is_root_valid(
+                            &file_1.get_root().unwrap_or_default(),
+                            &file_1.get_full_path(),
+                        ),
+                    file_source_path_valid: file_1.get_loading_path().is_some()
+                        || file_1.get_cached_file().clone().is_some(),
+                    file_target_path_valid: file_2.get_loading_path().is_some()
+                        || file_2.get_cached_file().clone().is_some(),
                 },
             };
 
