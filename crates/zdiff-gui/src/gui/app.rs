@@ -766,6 +766,8 @@ impl<'a> ZApp {
                             if ui.button(label).clicked() {
                                 let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
 
+                                file_1.set_root("".into());
+                                file_2.set_root("".into());
                                 file_1.set_path(UniversalPath::from(base.join(p1)));
                                 file_2.set_path(UniversalPath::from(base.join(p2)));
 
