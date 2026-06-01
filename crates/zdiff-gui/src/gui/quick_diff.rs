@@ -1,9 +1,4 @@
-use std::io::Write;
-use std::path::PathBuf;
-
 use eframe::egui::{self};
-use tempfile::NamedTempFile;
-use zdiff::universal_path::UniversalPath;
 
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

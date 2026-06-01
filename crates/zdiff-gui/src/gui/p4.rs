@@ -1,6 +1,7 @@
 use std::process::Command;
 use std::{env, str};
 
+#[allow(dead_code)]
 pub struct P4Revision {
     pub rev: u32,
     pub change: u32,
@@ -35,6 +36,7 @@ pub fn get_p4_file_content(path: &str) -> Result<String, String> {
     }
 }
 
+#[allow(dead_code)]
 pub fn get_revision_history(path: &str) -> Result<Vec<P4Revision>, String> {
     let (program, args) = if cfg!(target_os = "windows") {
         (

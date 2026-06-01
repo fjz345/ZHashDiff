@@ -1,8 +1,6 @@
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 
-use tempfile::NamedTempFile;
 use zdiff::cached_file::CachedFile;
 use zdiff::lexer::{LEXER_MODE_DEFAULT, RawToken};
 use zdiff::universal_path::UniversalPath;

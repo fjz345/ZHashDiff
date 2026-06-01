@@ -9,10 +9,7 @@ use std::{
         mpsc::{self, Receiver, channel},
     },
 };
-use zcommon::{
-    hash::{hash_contents, hash_file_mmap},
-    ui_egui::common::show_custom_popup,
-};
+use zcommon::{hash::hash_contents, ui_egui::common::show_custom_popup};
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
@@ -869,8 +866,8 @@ impl<'a> ZApp {
                 universal_path_config,
                 myers_diff_algorithm,
                 diff_ctx_in_progress_input: _,
-                diffpane_file_1_buffer,
-                diffpane_file_2_buffer,
+                diffpane_file_1_buffer: _,
+                diffpane_file_2_buffer: _,
             } = app_ctx;
             self.show_menu(
                 ui,
@@ -1198,7 +1195,7 @@ impl<'a> ZApp {
                                 Err(e) => log::error!("Failed to open revision graph: {e}"),
                             }
                         }
-                        UniversalPath::Local(path_buf) => {
+                        UniversalPath::Local(_path_buf) => {
                             log::info!("Can not open revision graph for local path {}", path);
                             return;
                         }

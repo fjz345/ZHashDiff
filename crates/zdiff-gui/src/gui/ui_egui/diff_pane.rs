@@ -1,15 +1,9 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPane};
-use eframe::egui::{
-    self, Layout, TextEdit, UiBuilder, Vec2,
-    scroll_area::{ScrollAreaOutput, ScrollBarVisibility},
-};
+use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
-use zcommon::{
-    hash::{hash_contents, hash_file_mmap},
-    ui_egui::common::draw_persistent_hint_text_edit,
-};
+use zcommon::hash::hash_contents;
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, LineContent},

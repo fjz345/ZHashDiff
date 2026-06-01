@@ -1,4 +1,4 @@
-use eframe::egui::{self, Key, Modifiers, Vec2};
+use eframe::egui::{self, Key, Modifiers};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -328,7 +328,6 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                     keybindings.user_quick_diffs.iter_mut().enumerate()
                 {
                     ui_shortcut_row(ui, &format!("User Quick Diff {}", i + 1), user_qd);
-                    let mut root = "".to_string();
                     ui_quick_diff_path_row(
                         ui,
                         "Target Path",
