@@ -449,6 +449,7 @@ mod tests {
                 (text, *line_num, debug_tokens.join(" "))
             }
             LineContent::Void => ("VOID".to_string(), -1, "VOID".to_string()),
+            LineContent::Collapsed => ("COLLAPSED".to_string(), -1, "COLLAPSED".to_string()),
         };
 
         let (act_l_text, act_l_num, act_l_debug) = extract_details(&row.left);
