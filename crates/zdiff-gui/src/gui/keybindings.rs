@@ -31,12 +31,13 @@ impl Shortcut {
     }
 }
 
+type RootAndPath = (String, String);
+
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuickDiffPaths {
-    pub target: String,
-    pub target_root: String,
-    pub source: Option<String>,
+    pub target: RootAndPath,
+    pub source: Option<RootAndPath>,
 }
 
 #[derive(Debug, Clone)]
@@ -167,7 +168,7 @@ impl Default for Keybindings {
                         },
                     }),
                     QuickDiffPaths {
-                        target: "".into(),
+                        target: Default::default(),
                         source: None,
                         ..Default::default()
                     },
@@ -180,7 +181,7 @@ impl Default for Keybindings {
                         },
                     }),
                     QuickDiffPaths {
-                        target: "".into(),
+                        target: Default::default(),
                         source: None,
                         ..Default::default()
                     },
@@ -193,7 +194,7 @@ impl Default for Keybindings {
                         },
                     }),
                     QuickDiffPaths {
-                        target: "".into(),
+                        target: Default::default(),
                         source: None,
                         ..Default::default()
                     },
@@ -206,7 +207,7 @@ impl Default for Keybindings {
                         },
                     }),
                     QuickDiffPaths {
-                        target: "".into(),
+                        target: Default::default(),
                         source: None,
                         ..Default::default()
                     },
@@ -331,19 +332,26 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                     ui_quick_diff_path_row(
                         ui,
                         "Target Path",
-                        &mut quick_diff_path.target_root,
-                        &mut quick_diff_path.target,
+                        &mut quick_diff_path.target.0,
+                        &mut quick_diff_path.target.1,
                     );
 
                     let mut action_remove = false;
                     let mut action_add = false;
 
                     match &mut quick_diff_path.source {
-                        Some(source_str) => {
+                        Some((root, path)) => {
                             if ui.button("Remove").clicked() {
                                 action_remove = true;
                             }
-                            ui.text_edit_singleline(source_str);
+                            ui.horizontal(|ui| {
+                                let widget = egui::TextEdit::singleline(root).desired_width(150.0);
+                                ui.add(widget);
+                                ui.label("/");
+                                let widget =
+                                    egui::TextEdit::singleline(path).desired_width(f32::INFINITY);
+                                ui.add(widget);
+                            });
                         }
                         None => {
                             ui.label("Source Path");
@@ -357,7 +365,7 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                     if action_remove {
                         quick_diff_path.source = None;
                     } else if action_add {
-                        quick_diff_path.source = Some(String::new());
+                        quick_diff_path.source = Some((String::new(), String::new()));
                     }
                 }
 

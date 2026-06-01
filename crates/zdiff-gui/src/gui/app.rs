@@ -1216,23 +1216,32 @@ impl<'a> ZApp {
                             kb.format()
                         );
 
-                        if let Some(source) = &path.source {
-                            app_state_ctx.file_1.set_path(UniversalPath::from(source));
+                        if let Some((source_root, source_path)) = &path.source {
+                            app_state_ctx
+                                .file_1
+                                .set_root(UniversalPath::from(source_root));
+
+                            app_state_ctx
+                                .file_1
+                                .set_path(UniversalPath::from(source_path));
                         }
 
-                        app_state_ctx
-                            .file_2
-                            .set_root(UniversalPath::from(&path.target_root));
+                        // Don't set any target paths if root & path is ""
+                        if !path.target.0.is_empty() && !path.target.1.is_empty() {
+                            let target_path = if !path.target.1.is_empty() {
+                                &path.target.1
+                            } else {
+                                // Use sources file path split from root
+                                &app_state_ctx.file_1.get_path().to_string()
+                            };
 
-                        let target_path = if !path.target.is_empty() {
-                            &path.target
-                        } else {
-                            // Use sources file path split from root
-                            &app_state_ctx.file_1.get_path().to_string()
-                        };
-                        app_state_ctx
-                            .file_2
-                            .set_path(UniversalPath::from(target_path));
+                            app_state_ctx
+                                .file_2
+                                .set_root(UniversalPath::from(&path.target.0));
+                            app_state_ctx
+                                .file_2
+                                .set_path(UniversalPath::from(target_path));
+                        }
 
                         if path.source.is_some() {
                             log::info!(
