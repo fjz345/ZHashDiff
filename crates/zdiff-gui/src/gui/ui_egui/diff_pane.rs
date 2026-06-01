@@ -87,7 +87,8 @@ impl FileDiffPane {
                 let toggle_btn = |ui: &mut egui::Ui,
                                   value: &mut bool,
                                   label: egui::WidgetText,
-                                  tooltip: &str| {
+                                  tooltip: &str|
+                 -> bool {
                     let btn = egui::Button::new(label).selected(*value);
 
                     if ui
@@ -96,7 +97,9 @@ impl FileDiffPane {
                         .clicked()
                     {
                         *value = !*value;
+                        return true;
                     }
+                    false
                 };
                 toggle_btn(
                     ui,
@@ -122,14 +125,31 @@ impl FileDiffPane {
                     egui::RichText::new("K").strong().into(),
                     "Keyword Highlight",
                 );
+
                 let mut active = ctx.diff_options.diff_only_with_extra_rows.is_some();
-                toggle_btn(
+                if toggle_btn(
                     ui,
                     &mut active,
                     egui::RichText::new("D").strong().into(),
                     "Diff Only",
-                );
-                ctx.diff_options.diff_only_with_extra_rows = active.then_some(2);
+                ) {
+                    ctx.diff_options.diff_only_with_extra_rows = active.then_some(2);
+                }
+                match &mut ctx.diff_options.diff_only_with_extra_rows {
+                    Some(diff_rows_num) => {
+                        if ui.button("<").clicked() {
+                            *diff_rows_num = diff_rows_num.saturating_sub(1);
+                        }
+                        if ui
+                            .button(format!("{}", diff_rows_num.to_string(),))
+                            .clicked()
+                        {}
+                        if ui.button(">").clicked() {
+                            *diff_rows_num = (*diff_rows_num + 1).min(99);
+                        }
+                    }
+                    None => {}
+                }
             });
             ui.separator();
 

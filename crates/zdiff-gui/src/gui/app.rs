@@ -446,10 +446,12 @@ impl AppStateCtx {
                     filtered_rows.push(row);
                     in_gap = false;
                 } else if !in_gap {
-                    let mut void_row = row.clone();
-                    void_row.left = LineContent::Collapsed;
-                    void_row.right = LineContent::Collapsed;
-                    filtered_rows.push(void_row);
+                    if diff_only_rows > 0 {
+                        let mut void_row = row.clone();
+                        void_row.left = LineContent::Collapsed;
+                        void_row.right = LineContent::Collapsed;
+                        filtered_rows.push(void_row);
+                    }
                     in_gap = true;
                 }
             }
