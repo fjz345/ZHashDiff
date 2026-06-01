@@ -409,7 +409,7 @@ impl AppStateCtx {
             return None;
         }
 
-        let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
+        let mut precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
 
         if cancel_flag.load(Ordering::Relaxed) {
             log::debug!("cancel_flag: precomputed_diffs");
@@ -438,12 +438,25 @@ impl AppStateCtx {
                 }
             }
 
-            let mut idx = 0;
-            diff_rows.retain(|_| {
-                let keep = keep_indices[idx];
-                idx += 1;
-                keep
-            });
+            let mut filtered_rows = Vec::with_capacity(diff_rows.len());
+            let mut in_gap = false;
+
+            for (idx, row) in diff_rows.into_iter().enumerate() {
+                if keep_indices[idx] {
+                    filtered_rows.push(row);
+                    in_gap = false;
+                } else if !in_gap {
+                    let mut void_row = row.clone();
+                    void_row.left = LineContent::Collapsed;
+                    void_row.right = LineContent::Collapsed;
+                    filtered_rows.push(void_row);
+                    in_gap = true;
+                }
+            }
+            diff_rows = filtered_rows;
+
+            // recompute precomputed_diffs
+            precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
         }
 
         if cancel_flag.load(Ordering::Relaxed) {

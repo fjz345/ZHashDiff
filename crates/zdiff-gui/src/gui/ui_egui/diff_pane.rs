@@ -480,7 +480,10 @@ impl FileDiffPane {
 
                                                         symbol(contains_delete, contains_insert)
                                                     }
-
+                                                    (
+                                                        LineContent::Collapsed,
+                                                        LineContent::Collapsed,
+                                                    ) => "...",
                                                     _ => " ",
                                                 };
                                                 ui.centered_and_justified(|ui| {
@@ -661,6 +664,37 @@ impl FileDiffPane {
                     egui::Color32::from_gray(30)
                 };
                 ui.painter().rect_filled(extended_rect, 0.0, fill);
+            }
+            LineContent::Collapsed => {
+                let fill = if is_highlighted {
+                    egui::Color32::from_rgba_unmultiplied(38, 79, 120, 100) // Clear blue highlight
+                } else {
+                    egui::Color32::from_rgb(37, 43, 54) // Subdued slate/steel background
+                };
+                ui.painter().rect_filled(extended_rect, 0.0, fill);
+
+                ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let gutter_width = 35.0;
+
+                        ui.add_sized(
+                            [gutter_width, row_h],
+                            egui::Label::new(
+                            egui::RichText::new("|") // Mid-line ellipsis fits a gutter better than "-"
+                            .color(egui::Color32::from_gray(100))
+                            .size(12.0))
+                        );
+
+                        ui.add_space(4.0);
+
+                        ui.label(
+                            egui::RichText::new("Collapsed context")
+                                .color(egui::Color32::from_gray(130))
+                                .size(11.0),
+                        );
+                    });
+                });
             }
         }
     }

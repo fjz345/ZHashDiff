@@ -33,6 +33,7 @@ pub enum LineContent {
         bg: Color32,
     },
     Void,
+    Collapsed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
