@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPane};
 use eframe::egui::{
-    self, Layout, TextEdit, UiBuilder,
+    self, Layout, TextEdit, UiBuilder, Vec2,
     scroll_area::{ScrollAreaOutput, ScrollBarVisibility},
 };
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,8 @@ pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
     pub file_target_root_valid: bool,
     pub file_source_path_valid: bool,
     pub file_target_path_valid: bool,
+    pub file_source_loading: bool,
+    pub file_target_loading: bool,
 
     pub file_source: Option<Arc<CachedFile<T>>>,
     pub file_target: Option<Arc<CachedFile<T>>>,
@@ -258,7 +260,8 @@ impl FileDiffPane {
                         let editable_path_test = |ui: &mut egui::Ui,
                                                   id: egui::Id,
                                                   file: &UniversalPath,
-                                                  is_valid: bool|
+                                                  is_valid: bool,
+                                                  spinner_active: bool|
                          -> Option<UniversalPath> {
                             let original_path = file.to_string();
 
@@ -290,10 +293,29 @@ impl FileDiffPane {
                                         visuals.active.bg_stroke = stroke;
                                     }
 
-                                    ui.add_sized(
-                                        [ui.available_width(), ui.spacing().interact_size.y],
-                                        egui::TextEdit::singleline(&mut text).id(id),
-                                    )
+                                    let response = ui.horizontal(|ui| {
+                                        let spinner = egui::Spinner::new();
+                                        let res = ui.add_sized(
+                                            [ui.available_width(), ui.spacing().interact_size.y],
+                                            egui::TextEdit::singleline(&mut text).id(id),
+                                        );
+                                        if spinner_active {
+                                            let spinner_size = res.rect.size().y * 0.5;
+                                            let spinner_x = res.rect.right() - spinner_size;
+                                            let spinner_pos = egui::Pos2::new(
+                                                spinner_x,
+                                                res.rect.top() + spinner_size,
+                                            );
+                                            let spinner_rect = egui::Rect::from_center_size(
+                                                spinner_pos,
+                                                Vec2::new(spinner_size, spinner_size),
+                                            );
+                                            spinner.paint_at(ui, spinner_rect);
+                                        }
+
+                                        res
+                                    });
+                                    response.inner
                                 })
                                 .inner;
 
@@ -337,6 +359,7 @@ impl FileDiffPane {
                                             "file_1_path_editor_path".into(),
                                             &ctx.file_source_root.clone().unwrap_or_default(),
                                             ctx.file_source_root_valid,
+                                            ctx.file_source_loading,
                                         );
                                         ui.separator();
                                         *ctx.load_file_1_request = editable_path_test(
@@ -344,6 +367,7 @@ impl FileDiffPane {
                                             "file_1_path_editor".into(),
                                             &ctx.file_source_path,
                                             ctx.file_source_path_valid,
+                                            ctx.file_source_loading,
                                         );
                                         ui.separator();
                                     });
@@ -356,6 +380,7 @@ impl FileDiffPane {
                                             "file_2_path_editor_path".into(),
                                             &ctx.file_target_root.clone().unwrap_or_default(),
                                             ctx.file_target_root_valid,
+                                            ctx.file_target_loading,
                                         );
                                         ui.separator();
                                         *ctx.load_file_2_request = editable_path_test(
@@ -363,6 +388,7 @@ impl FileDiffPane {
                                             "file_2_path_editor".into(),
                                             &ctx.file_target_path,
                                             ctx.file_target_path_valid,
+                                            ctx.file_target_loading,
                                         );
                                         ui.separator();
                                     });

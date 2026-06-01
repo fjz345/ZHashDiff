@@ -622,7 +622,6 @@ impl<'a> ZApp {
         keybindings: &mut Keybindings,
         universal_path_config: &mut UniversalPathConfig,
         myers_diff_algorithm: &mut MyersDiffAlgorithm,
-        is_loading_file: bool,
     ) {
         ui.horizontal(|ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -817,9 +816,6 @@ impl<'a> ZApp {
                         );
                     }
                 });
-                if is_loading_file {
-                    ui.spinner();
-                }
             });
         });
 
@@ -889,7 +885,6 @@ impl<'a> ZApp {
                 keybindings,
                 universal_path_config,
                 myers_diff_algorithm,
-                file_1.get_loading_path().is_some() || file_2.get_loading_path().is_some(),
             );
 
             let mut goto_window_open = *goto_open;
@@ -1019,6 +1014,8 @@ impl<'a> ZApp {
                         || file_1.get_cached_file().clone().is_some(),
                     file_target_path_valid: file_2.get_loading_path().is_some()
                         || file_2.get_cached_file().clone().is_some(),
+                    file_source_loading: file_1.get_loading_path().is_some(),
+                    file_target_loading: file_2.get_loading_path().is_some(),
                 },
             };
 
