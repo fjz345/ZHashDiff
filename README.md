@@ -1,7 +1,7 @@
 # ZHashDiff
 
-![alt text](crates/zhashdiff-gui/img/showcase2.png)
 ![alt text](crates/zdiff-gui/img/showcase.png)
+![alt text](crates/zhashdiff-gui/img/showcase2.png)
 ![alt text](crates/zhashdiff-gui/img/showcase.png)
 
 Tool I created in order to resolve and delete duplicated files with different file names.

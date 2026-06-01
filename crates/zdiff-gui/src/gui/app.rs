@@ -1320,19 +1320,22 @@ impl eframe::App for ZApp {
                     myers_diff_algorithm: state.myers_diff_algorithm.clone(),
                 };
 
-                let diff_ctx_invalidated =
-                    if let Some(in_progress_input) = &state.diff_ctx_in_progress_input {
-                        *in_progress_input != update_input
-                    } else if let Some(diff_ctx) = &state.diff_ctx {
-                        let input_equal = update_input == diff_ctx.update_diff_rows_input;
+                let diff_ctx_invalidated = if state.file_1.get_loading_path().is_some()
+                    || state.file_2.get_loading_path().is_some()
+                {
+                    false
+                } else if let Some(in_progress_input) = &state.diff_ctx_in_progress_input {
+                    *in_progress_input != update_input
+                } else if let Some(diff_ctx) = &state.diff_ctx {
+                    let input_equal = update_input == diff_ctx.update_diff_rows_input;
 
-                        if !input_equal && !state.diff_ctx_in_progress_input.is_some() {
-                            log::debug!("diff_ctx invalidated!");
-                        }
-                        !input_equal
-                    } else {
-                        !state.diff_ctx_in_progress_input.is_some()
-                    };
+                    if !input_equal && !state.diff_ctx_in_progress_input.is_some() {
+                        log::debug!("diff_ctx invalidated!");
+                    }
+                    !input_equal
+                } else {
+                    !state.diff_ctx_in_progress_input.is_some()
+                };
 
                 if diff_ctx_invalidated && state.diff_ctx_in_progress_input.is_some() {
                     log::info!("diff_ctx invalidated && diff_ctx_in_progress");

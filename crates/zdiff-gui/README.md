@@ -26,7 +26,6 @@ GUI for zdiff crate
 ## Todo
 * Fix .p4config, .env code
 
-* Add ZDiff-GUI images to front .readme
 * Add platform image for .exe
 
 * Batch DiffRow performance optimzation
