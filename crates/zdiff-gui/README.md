@@ -29,7 +29,6 @@ GUI for zdiff crate
 * Add platform image for .exe
 
 * Batch DiffRow performance optimzation
-* Show diffs only Diff Option
 * Quick Diff /w multiple p4 repositories
 
 * Syncronized scroll bar (like p4)
