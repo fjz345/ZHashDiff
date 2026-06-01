@@ -1209,17 +1209,23 @@ impl<'a> ZApp {
                             kb.format()
                         );
 
+                        if let Some(source) = &path.source {
+                            app_state_ctx.file_1.set_path(UniversalPath::from(source));
+                        }
+
                         app_state_ctx
                             .file_2
                             .set_root(UniversalPath::from(&path.target_root));
 
+                        let target_path = if !path.target.is_empty() {
+                            &path.target
+                        } else {
+                            // Use sources file path split from root
+                            &app_state_ctx.file_1.get_path().to_string()
+                        };
                         app_state_ctx
                             .file_2
-                            .set_path(UniversalPath::from(&path.target));
-
-                        if let Some(source) = &path.source {
-                            app_state_ctx.file_1.set_path(UniversalPath::from(source));
-                        }
+                            .set_path(UniversalPath::from(target_path));
 
                         if path.source.is_some() {
                             log::info!(
