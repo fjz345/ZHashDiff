@@ -12,6 +12,12 @@ use crate::p4::get_p4_file_content;
 fn default_channel() -> (mpsc::Sender<UniversalPath>, mpsc::Receiver<UniversalPath>) {
     mpsc::channel()
 }
+fn default_channel_cached_file() -> (
+    mpsc::Sender<(UniversalPath, Option<Arc<CachedFile<RawToken>>>)>,
+    mpsc::Receiver<(UniversalPath, Option<Arc<CachedFile<RawToken>>>)>,
+) {
+    mpsc::channel()
+}
 
 fn default_file_path() -> UniversalPath {
     UniversalPath::new("")
@@ -34,6 +40,15 @@ pub struct FileProcessor {
 
     #[cfg_attr(feature = "serde", serde(skip))]
     cached_file_path: Option<UniversalPath>, // only process once the path
+
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip, default = "default_channel_cached_file")
+    )]
+    channel_cached_file: (
+        mpsc::Sender<(UniversalPath, Option<Arc<CachedFile<RawToken>>>)>,
+        mpsc::Receiver<(UniversalPath, Option<Arc<CachedFile<RawToken>>>)>,
+    ),
 }
 
 impl Default for FileProcessor {
@@ -45,6 +60,7 @@ impl Default for FileProcessor {
             diff_lexer_mode: LEXER_MODE_DEFAULT,
             cached_file_path: None,
             root_path: None,
+            channel_cached_file: default_channel_cached_file(),
         }
     }
 }
@@ -198,19 +214,30 @@ impl FileProcessor {
     }
 
     pub fn get_cached_file(&mut self) -> Option<Arc<CachedFile<RawToken>>> {
+        while let Ok((loaded_path, file_opt)) = self.channel_cached_file.1.try_recv() {
+            if self.cached_file_path.as_ref() == Some(&loaded_path) {
+                self.cached_file = file_opt;
+            }
+        }
+
         let path = &self.get_full_path();
 
         if !path.is_empty() && self.cached_file_path.as_ref() != Some(path) {
             self.cached_file_path = Some(path.clone());
+            self.cached_file = None;
 
-            if self.cached_file.is_none() {
-                log::debug!(
-                    "Constructing CachedFile: {:?} with lexer mode {:?}",
-                    path,
-                    self.diff_lexer_mode
-                );
+            log::debug!(
+                "Constructing CachedFile asynchronously: {:?} with lexer mode {:?}",
+                path,
+                self.diff_lexer_mode
+            );
 
-                let target_path = match &path {
+            let tx = self.channel_cached_file.0.clone();
+            let path_clone = path.clone();
+            let diff_lexer_mode = self.diff_lexer_mode;
+
+            std::thread::spawn(move || {
+                let target_path = match &path_clone {
                     UniversalPath::Local(p) => p.clone(),
                     UniversalPath::Depot(depot_str, rev) => {
                         let sanitized = depot_str.trim_start_matches('/');
@@ -230,42 +257,46 @@ impl FileProcessor {
                                     depot_str,
                                     e
                                 );
-                                return None;
+                                let _ = tx.send((path_clone, None));
+                                return;
                             }
                         }
 
-                        let p4_path = path.to_p4_string();
+                        let p4_path = path_clone.to_p4_string();
                         let content = match get_p4_file_content(&p4_path) {
                             Ok(c) => c,
                             Err(e) => {
                                 log::error!("P4 command failed for {}: {}", p4_path, e);
-                                return None;
+                                let _ = tx.send((path_clone, None));
+                                return;
                             }
                         };
 
                         if let Err(e) = std::fs::write(&temp_path, content.as_bytes()) {
                             log::error!("Failed to write P4 content to temp file: {}", e);
-                            return None;
+                            let _ = tx.send((path_clone, None));
+                            return;
                         }
 
                         temp_path
                     }
                 };
 
-                match CachedFile::new(path.clone(), &target_path, self.diff_lexer_mode) {
-                    Ok(r) => {
-                        self.cached_file = Some(Arc::new(r));
-                    }
-                    Err(e) => {
-                        log::error!("Cannot find file {}, Error: {e}", target_path.display());
-                        self.cached_file = None;
-                    }
-                }
+                let cached_file_opt =
+                    match CachedFile::new(path_clone.clone(), &target_path, diff_lexer_mode) {
+                        Ok(r) => Some(Arc::new(r)),
+                        Err(e) => {
+                            log::error!("Cannot find file {}, Error: {e}", target_path.display());
+                            None
+                        }
+                    };
 
-                if path.is_depot() {
+                if path_clone.is_depot() {
                     let _ = std::fs::remove_file(&target_path);
                 }
-            }
+
+                let _ = tx.send((path_clone, cached_file_opt));
+            });
         }
 
         self.cached_file.clone()
