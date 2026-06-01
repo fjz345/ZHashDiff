@@ -405,16 +405,49 @@ impl AppStateCtx {
         }
 
         if cancel_flag.load(Ordering::Relaxed) {
-            log::debug!("cancel_flag: precompute_diff_spans");
+            log::debug!("cancel_flag: pivot_lines");
             return None;
         }
 
         let precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            log::debug!("cancel_flag: precomputed_diffs");
+            return None;
+        }
+
         let precomputed_file_rows =
             Self::precompute_file_rows(&diff_rows, line_count_1, line_count_2);
 
         if cancel_flag.load(Ordering::Relaxed) {
             log::debug!("cancel_flag: precompute_file_rows");
+            return None;
+        }
+
+        if let Some(diff_only_rows) = options.diff_only_with_extra_rows {
+            let mut keep_indices = vec![false; diff_rows.len()];
+
+            for &(start, end) in &precomputed_diffs {
+                let bound_start = start.saturating_sub(diff_only_rows);
+                let bound_end = (end + diff_only_rows).min(diff_rows.len().saturating_sub(1));
+
+                for idx in bound_start..=bound_end {
+                    if idx < keep_indices.len() {
+                        keep_indices[idx] = true;
+                    }
+                }
+            }
+
+            let mut idx = 0;
+            diff_rows.retain(|_| {
+                let keep = keep_indices[idx];
+                idx += 1;
+                keep
+            });
+        }
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            log::debug!("cancel_flag: diff_only_with_extra_rows");
             return None;
         }
 

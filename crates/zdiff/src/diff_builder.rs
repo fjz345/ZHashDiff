@@ -43,6 +43,7 @@ pub struct DiffBuilderOptions {
     pub ghost_rows: bool,
     pub keyword_highlight: bool,
     pub pivot_lines: Option<(usize, usize)>,
+    pub diff_only_with_extra_rows: Option<usize>,
 }
 impl Default for DiffBuilderOptions {
     fn default() -> Self {
@@ -52,6 +53,7 @@ impl Default for DiffBuilderOptions {
             ghost_rows: true,
             keyword_highlight: true,
             pivot_lines: None,
+            diff_only_with_extra_rows: None,
         }
     }
 }

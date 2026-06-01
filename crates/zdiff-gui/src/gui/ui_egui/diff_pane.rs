@@ -122,6 +122,14 @@ impl FileDiffPane {
                     egui::RichText::new("K").strong().into(),
                     "Keyword Highlight",
                 );
+                let mut active = ctx.diff_options.diff_only_with_extra_rows.is_some();
+                toggle_btn(
+                    ui,
+                    &mut active,
+                    egui::RichText::new("D").strong().into(),
+                    "Diff Only",
+                );
+                ctx.diff_options.diff_only_with_extra_rows = active.then_some(2);
             });
             ui.separator();
 
