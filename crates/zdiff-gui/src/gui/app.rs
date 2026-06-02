@@ -1275,12 +1275,12 @@ impl<'a> ZApp {
                         }
 
                         // Don't set any target paths if root & path is ""
-                        if !path.target.0.is_empty() && !path.target.1.is_empty() {
-                            let target_path = if !path.target.1.is_empty() {
-                                &path.target.1
-                            } else {
+                        if !(path.target.0.is_empty() && path.target.1.is_empty()) {
+                            let target_path = if path.target.1.is_empty() {
                                 // Use sources file path split from root
                                 &app_state_ctx.file_1.get_path().to_string()
+                            } else {
+                                &path.target.1
                             };
 
                             app_state_ctx
