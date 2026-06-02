@@ -28,7 +28,7 @@ use egui_tiles::Tile;
 
 use crate::{
     clamped_cursor::ClampedCursor,
-    diff_ctx::{DiffCtx, UpdateDiffRowsInput},
+    diff_ctx::{DiffCtx, DiffProcessor, UpdateDiffRowsInput},
     file::FileProcessor,
     keybindings::{Keybindings, Shortcut, ui_keybindings},
     p4::{P4Command, get_p4_config, ui_p4config, update_p4_config},
@@ -49,15 +49,11 @@ pub struct AppStateCtx {
     pub diff_lexer_mode: u8,
     pub diff_options: DiffBuilderOptions,
 
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub myers_diff_algorithm: MyersDiffAlgorithm,
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub diff_ctx: Option<DiffCtx>,
-    #[cfg_attr(feature = "serde", serde(skip))]
-    diff_ctx_rx: Option<Receiver<DiffCtx>>,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub diff_processor: DiffProcessor,
 
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub diff_ctx_in_progress_input: Option<UpdateDiffRowsInput>,
+    pub myers_diff_algorithm: MyersDiffAlgorithm,
 
     pub scroll_left: f32,
     pub scroll_right: f32,
@@ -72,18 +68,9 @@ pub struct AppStateCtx {
     #[cfg_attr(feature = "serde", serde(skip))]
     pub find_input: String,
     #[cfg_attr(feature = "serde", serde(skip))]
-    pub find_cursor: ClampedCursor,
-    #[cfg_attr(feature = "serde", serde(skip))]
     pub find_found_lines_1: Vec<usize>,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub find_found_lines_2: Vec<usize>,
-
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub diff_ctx_conflict_cursor: ClampedCursor,
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub diff_ctx_active_highlights: Vec<usize>,
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub diff_ctx_pivot: (Option<usize>, Option<usize>),
 
     // ### Keybindings
     pub keybindings: Keybindings,
@@ -97,8 +84,7 @@ impl Default for AppStateCtx {
             diffpane_file_1_buffer: Default::default(),
             diffpane_file_2_buffer: Default::default(),
             diff_options: Default::default(),
-            diff_ctx: Default::default(),
-            diff_ctx_rx: Default::default(),
+            diff_processor: Default::default(),
             scroll_left: Default::default(),
             scroll_right: Default::default(),
             scroll_to_rows: Default::default(),
@@ -106,338 +92,12 @@ impl Default for AppStateCtx {
             find_open: Default::default(),
             goto_input: Default::default(),
             find_input: Default::default(),
-            diff_ctx_conflict_cursor: Default::default(),
-            diff_ctx_active_highlights: Default::default(),
             diff_lexer_mode: LEXER_MODE_DEFAULT,
-            find_cursor: Default::default(),
             find_found_lines_1: Default::default(),
             find_found_lines_2: Default::default(),
-            diff_ctx_pivot: Default::default(),
             keybindings: Default::default(),
             myers_diff_algorithm: Default::default(),
-            diff_ctx_in_progress_input: Default::default(),
         }
-    }
-}
-
-impl AppStateCtx {
-    fn precompute_diff_spans(diff_rows: &[DiffRow]) -> Vec<(usize, usize)> {
-        let has_change = |content: &LineContent| match content {
-            LineContent::Code { tokens, .. } => tokens
-                .iter()
-                .any(|(res, _)| !res.hide_in_diff && !matches!(res.operation, DiffOp::Equal(_))),
-            _ => false,
-        };
-
-        let diff_indices: Vec<usize> = diff_rows
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, row)| {
-                if has_change(&row.left) || has_change(&row.right) {
-                    Some(idx)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        diff_indices
-            .chunk_by(|&a, &b| b == a + 1)
-            .map(|chunk| (*chunk.first().unwrap(), *chunk.last().unwrap()))
-            .collect()
-    }
-
-    fn precompute_file_rows(
-        diff_rows: &[DiffRow],
-        file_1_line_count: usize,
-        file_2_line_count: usize,
-    ) -> (Vec<usize>, Vec<usize>) {
-        let mut file_1_to_diff = vec![usize::MAX; file_1_line_count];
-        let mut file_2_to_diff = vec![usize::MAX; file_2_line_count];
-
-        for (row_idx, row) in diff_rows.iter().enumerate() {
-            if let LineContent::Code { line_num, .. } = row.left {
-                if line_num > 0 {
-                    let idx = line_num as usize - 1;
-                    if idx < file_1_line_count && file_1_to_diff[idx] == usize::MAX {
-                        file_1_to_diff[idx] = row_idx;
-                    }
-                }
-            }
-
-            if let LineContent::Code { line_num, .. } = row.right {
-                if line_num > 0 {
-                    let idx = line_num as usize - 1;
-                    if idx < file_2_line_count && file_2_to_diff[idx] == usize::MAX {
-                        file_2_to_diff[idx] = row_idx;
-                    }
-                }
-            }
-        }
-
-        for val in file_1_to_diff.iter_mut() {
-            if *val == usize::MAX {
-                *val = 0;
-            }
-        }
-        for val in file_2_to_diff.iter_mut() {
-            if *val == usize::MAX {
-                *val = 0;
-            }
-        }
-
-        (file_1_to_diff, file_2_to_diff)
-    }
-
-    fn apply_pivot(
-        diff_rows: &mut Vec<DiffRow>,
-        pivot_lines: (usize, usize),
-        precomputed_file_rows: &(Vec<usize>, Vec<usize>),
-    ) {
-        log::debug!("pivot: {:?}", pivot_lines);
-        let found_diff_row_pivot_index_1 =
-            precomputed_file_rows.0.get(pivot_lines.0.saturating_sub(1));
-        let found_diff_row_pivot_index_2 =
-            precomputed_file_rows.1.get(pivot_lines.1.saturating_sub(1));
-        log::debug!(
-            "found_diff_row_pivot_index_1: {:?}",
-            found_diff_row_pivot_index_1
-        );
-        log::debug!(
-            "found_diff_row_pivot_index_2: {:?}",
-            found_diff_row_pivot_index_2
-        );
-        if let (Some(pivot_1), Some(pivot_2)) =
-            (found_diff_row_pivot_index_1, found_diff_row_pivot_index_2)
-        {
-            // +: pad right side
-            // -: pad left side
-            let diff = if pivot_1 > pivot_2 {
-                (pivot_1 - pivot_2) as isize
-            } else {
-                -((pivot_2 - pivot_1) as isize)
-            };
-            let offset = diff.abs() as usize;
-            log::debug!("pivot diff: {}", diff);
-
-            let dummy_diff_row = DiffRow {
-                left: LineContent::Void,
-                right: LineContent::Void,
-            };
-            diff_rows.splice(0..0, std::iter::repeat(dummy_diff_row).take(offset));
-
-            if diff > 0 {
-                // Move LEFT side "up" (Left pivot was further down)
-                for i in 0..diff_rows.len() {
-                    if i + offset < diff_rows.len() {
-                        // Take the 'left' from a later row and bring it here
-                        diff_rows[i].left = diff_rows[i + offset].left.clone();
-                    } else {
-                        // No more data to pull from, fill with Void
-                        diff_rows[i].left = LineContent::Void;
-                    }
-                }
-            } else if diff < 0 {
-                // Move RIGHT side "up" (Right pivot was further down)
-                for i in 0..diff_rows.len() {
-                    if i + offset < diff_rows.len() {
-                        diff_rows[i].right = diff_rows[i + offset].right.clone();
-                    } else {
-                        diff_rows[i].right = LineContent::Void;
-                    }
-                }
-            }
-        }
-    }
-
-    fn update_diff_rows(
-        input: UpdateDiffRowsInput,
-        cancel_flag: Arc<AtomicBool>,
-    ) -> Option<DiffCtx> {
-        let UpdateDiffRowsInput {
-            file_1,
-            file_2,
-            options,
-            myers_diff_algorithm,
-        } = input;
-
-        #[cfg(feature = "debug_alloc")]
-        let mut reg = stats_alloc::Region::new(&crate::STATS_ALLOC);
-        #[cfg(feature = "debug_alloc")]
-        log::log!("Allocations update_diff_rows: {:?}", reg.change_and_reset());
-
-        let file_1_clone = file_1.clone();
-        let file_2_clone = file_2.clone();
-
-        let (c1, c2, one_sided_diff_is_left) = match (&file_1_clone, &file_2_clone) {
-            (Some(c1), Some(c2)) => (c1, c2, None),
-            (Some(c1), None) => (c1, c1, Some(true)),
-            (None, Some(c2)) => (c2, c2, Some(false)),
-            (None, None) => panic!("Only call this function with one of two files valid"),
-        };
-
-        let t1 = &c1.tokens;
-        let t2 = &c2.tokens;
-        let cmp = |a: &RawToken, b: &RawToken| {
-            if a.as_ref().kind != b.as_ref().kind {
-                return false;
-            }
-
-            let a_span = &a.span;
-            let b_span = &b.span;
-
-            let a_len = a_span.end - a_span.start;
-            let b_len = b_span.end - b_span.start;
-
-            if a_len != b_len {
-                return false;
-            }
-
-            let a_bytes = &c1.contents.as_bytes()[a_span.start..a_span.end];
-            let b_bytes = &c2.contents.as_bytes()[b_span.start..b_span.end];
-
-            a_bytes == b_bytes
-        };
-
-        #[cfg(feature = "debug_alloc")]
-        log::log!(
-            "Allocations before myers_diff: {:?}",
-            reg.change_and_reset()
-        );
-        let myers_path = myers_diff_path(myers_diff_algorithm, t1, t2, cmp, cancel_flag.clone())?;
-        #[cfg(feature = "debug_alloc")]
-        log::log!("Allocations myers_diff: {:?}", reg.change_and_reset());
-
-        if cancel_flag.load(Ordering::Relaxed) {
-            log::debug!("cancel_flag: myers_diff_path");
-            return None;
-        }
-
-        let is_equal_left = one_sided_diff_is_left.unwrap_or(true);
-        let diff_ir = DiffIR::new(&myers_path, is_equal_left, cancel_flag.clone())?;
-
-        #[cfg(feature = "debug_alloc")]
-        log::log!("Allocations DiffIR::new(): {:?}", reg.change_and_reset());
-
-        if cancel_flag.load(Ordering::Relaxed) {
-            log::debug!("cancel_flag: DiffIR::new");
-            return None;
-        }
-
-        let hash1 = hash_contents(&c1.contents.as_bytes());
-        let hash2 = hash_contents(&c2.contents.as_bytes());
-
-        #[cfg(feature = "debug_alloc")]
-        log::log!("Allocations hash_file: {:?}", reg.change_and_reset());
-        let mut diff_rows: Vec<DiffRow> = build_diff_rows(
-            diff_ir,
-            Some(&t1),
-            Some(&t2),
-            &options,
-            c1.metadata.num_lines().max(c2.metadata.num_lines()),
-        );
-        #[cfg(feature = "debug_alloc")]
-        log::log!("Allocations build_diff_rows: {:?}", reg.change_and_reset());
-
-        if cancel_flag.load(Ordering::Relaxed) {
-            log::debug!("cancel_flag: build_diff_rows");
-            return None;
-        }
-
-        let line_count_1 = c1.metadata.line_starts.len();
-        let line_count_2 = c2.metadata.line_starts.len();
-
-        if let Some(pivot_lines) = options.pivot_lines {
-            if pivot_lines.0 > 0 && pivot_lines.1 > 0 {
-                let precomputed_file_rows =
-                    Self::precompute_file_rows(&diff_rows, line_count_1, line_count_2);
-                Self::apply_pivot(&mut diff_rows, pivot_lines, &precomputed_file_rows);
-            }
-        }
-
-        if cancel_flag.load(Ordering::Relaxed) {
-            log::debug!("cancel_flag: pivot_lines");
-            return None;
-        }
-
-        let mut precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
-
-        if cancel_flag.load(Ordering::Relaxed) {
-            log::debug!("cancel_flag: precomputed_diffs");
-            return None;
-        }
-
-        let precomputed_file_rows =
-            Self::precompute_file_rows(&diff_rows, line_count_1, line_count_2);
-
-        if cancel_flag.load(Ordering::Relaxed) {
-            log::debug!("cancel_flag: precompute_file_rows");
-            return None;
-        }
-
-        if let Some(diff_only_rows) = options.diff_only_with_extra_rows {
-            let mut keep_indices = vec![false; diff_rows.len()];
-
-            for &(start, end) in &precomputed_diffs {
-                let bound_start = start.saturating_sub(diff_only_rows);
-                let bound_end = (end + diff_only_rows).min(diff_rows.len().saturating_sub(1));
-
-                for idx in bound_start..=bound_end {
-                    if idx < keep_indices.len() {
-                        keep_indices[idx] = true;
-                    }
-                }
-            }
-
-            let mut filtered_rows = Vec::with_capacity(diff_rows.len());
-            let mut in_gap = false;
-
-            for (idx, row) in diff_rows.into_iter().enumerate() {
-                if keep_indices[idx] {
-                    filtered_rows.push(row);
-                    in_gap = false;
-                } else if !in_gap {
-                    if diff_only_rows > 0 {
-                        let mut void_row = row.clone();
-                        void_row.left = LineContent::Collapsed;
-                        void_row.right = LineContent::Collapsed;
-                        filtered_rows.push(void_row);
-                    }
-                    in_gap = true;
-                }
-            }
-            diff_rows = filtered_rows;
-
-            // recompute precomputed_diffs
-            precomputed_diffs = Self::precompute_diff_spans(&diff_rows);
-        }
-
-        if cancel_flag.load(Ordering::Relaxed) {
-            log::debug!("cancel_flag: diff_only_with_extra_rows");
-            return None;
-        }
-
-        let input = UpdateDiffRowsInput {
-            file_1,
-            file_2,
-            options: options.clone(),
-            myers_diff_algorithm,
-        };
-        Some(DiffCtx {
-            file_1_hash: hash1,
-            file_2_hash: hash2,
-            diff_option: options.clone(),
-            diff_rows,
-            num_add_deletes: myers_count_add_deletes(&myers_path),
-            one_sided_diff_is_left,
-            precomputed_diffs,
-            precomputed_file_rows,
-            #[cfg(debug_assertions)]
-            debug_file_1_path: c1.path.clone(),
-            #[cfg(debug_assertions)]
-            debug_file_2_path: c2.path.clone(),
-            update_diff_rows_input: input,
-        })
     }
 }
 
@@ -590,18 +250,9 @@ impl<'a> ZApp {
         });
     }
 
-    fn refresh_file_contents(
-        file_1: &mut FileProcessor,
-        file_2: &mut FileProcessor,
-        diff_ctx: &mut Option<DiffCtx>,
-    ) {
+    fn refresh_file_contents(file_1: &mut FileProcessor, file_2: &mut FileProcessor) {
         file_1.invalidate_cache_file();
         file_2.invalidate_cache_file();
-        *diff_ctx = None;
-    }
-
-    fn refresh_diff_rows(diff_ctx: &mut Option<DiffCtx>) {
-        *diff_ctx = None;
     }
 
     fn show_menu(
@@ -609,7 +260,7 @@ impl<'a> ZApp {
         ui: &mut egui::Ui,
         file_1: &mut FileProcessor,
         file_2: &mut FileProcessor,
-        diff_ctx: &mut Option<DiffCtx>,
+        diff_processor: &mut DiffProcessor,
         find_open: &mut bool,
         goto_open: &mut bool,
         scroll_left: &mut f32,
@@ -650,7 +301,7 @@ impl<'a> ZApp {
                         std::mem::swap(file_1, file_2);
                         std::mem::swap(scroll_left, scroll_right);
 
-                        *diff_ctx = None;
+                        diff_processor.reset_ctx();
                     }
                     if ui
                         .button(format!(
@@ -723,7 +374,7 @@ impl<'a> ZApp {
                     if ui.button("Clear File Paths").clicked() {
                         file_1.set_path(UniversalPath::default());
                         file_2.set_path(UniversalPath::default());
-                        *diff_ctx = None;
+                        diff_processor.reset_ctx();
                     }
                     if ui
                         .button(format!(
@@ -735,7 +386,8 @@ impl<'a> ZApp {
                         ))
                         .clicked()
                     {
-                        Self::refresh_file_contents(file_1, file_2, diff_ctx);
+                        diff_processor.reset_ctx();
+                        Self::refresh_file_contents(file_1, file_2);
                     }
                     if ui
                         .button(format!(
@@ -747,7 +399,7 @@ impl<'a> ZApp {
                         ))
                         .clicked()
                     {
-                        Self::refresh_diff_rows(diff_ctx);
+                        diff_processor.reset_ctx();
                     }
                     #[cfg(debug_assertions)]
                     {
@@ -755,7 +407,7 @@ impl<'a> ZApp {
                                         label: &str,
                                         file_1: &mut FileProcessor,
                                         file_2: &mut FileProcessor,
-                                        diff_ctx: &mut Option<_>,
+                                        diff_processor: &mut DiffProcessor,
                                         p1: &str,
                                         p2: &str| {
                             if ui.button(label).clicked() {
@@ -766,7 +418,7 @@ impl<'a> ZApp {
                                 file_1.set_path(UniversalPath::from(base.join(p1)));
                                 file_2.set_path(UniversalPath::from(base.join(p2)));
 
-                                *diff_ctx = None;
+                                diff_processor.reset_ctx();
                             }
                         };
 
@@ -775,7 +427,7 @@ impl<'a> ZApp {
                             "Load $A",
                             file_1,
                             file_2,
-                            diff_ctx,
+                            diff_processor,
                             "../../test/rust_files_diff_1/advanced_rust.rs",
                             "../../test/rust_files_diff_1/advanced_rust_2.rs",
                         );
@@ -785,7 +437,7 @@ impl<'a> ZApp {
                             "Load $B",
                             file_1,
                             file_2,
-                            diff_ctx,
+                            diff_processor,
                             "../../test/rust_files_diff_1/imgui.1.91.1.h",
                             "../../test/rust_files_diff_1/imgui.h",
                         );
@@ -795,7 +447,7 @@ impl<'a> ZApp {
                             "Load $C",
                             file_1,
                             file_2,
-                            diff_ctx,
+                            diff_processor,
                             "../../test/test_ignore_whitespace_simple/1.txt",
                             "../../test/test_ignore_whitespace_simple/2.txt",
                         );
@@ -805,7 +457,7 @@ impl<'a> ZApp {
                             "Load $D",
                             file_1,
                             file_2,
-                            diff_ctx,
+                            diff_processor,
                             "../../test/test_ignore_whitespace_extreme_simple/1.txt",
                             "../../test/test_ignore_whitespace_extreme_simple/2.txt",
                         );
@@ -849,7 +501,6 @@ impl<'a> ZApp {
             let AppStateCtx {
                 scroll_left,
                 scroll_right,
-                diff_ctx,
                 diff_options,
                 file_1,
                 file_2,
@@ -858,25 +509,20 @@ impl<'a> ZApp {
                 find_open,
                 goto_input,
                 find_input,
-                diff_ctx_conflict_cursor,
-                diff_ctx_active_highlights,
-                diff_ctx_rx: _,
                 diff_lexer_mode: lexer_mode,
-                find_cursor,
                 find_found_lines_1,
                 find_found_lines_2,
-                diff_ctx_pivot,
                 keybindings,
                 myers_diff_algorithm,
-                diff_ctx_in_progress_input: _,
                 diffpane_file_1_buffer: _,
                 diffpane_file_2_buffer: _,
+                diff_processor,
             } = app_ctx;
             self.show_menu(
                 ui,
                 file_1,
                 file_2,
-                diff_ctx,
+                diff_processor,
                 find_open,
                 goto_open,
                 scroll_left,
@@ -885,6 +531,8 @@ impl<'a> ZApp {
                 keybindings,
                 myers_diff_algorithm,
             );
+
+            ui.separator();
 
             let mut goto_window_open = *goto_open;
             show_custom_popup(ctx, &mut goto_window_open, "Goto", true, |ui| {
@@ -920,7 +568,7 @@ impl<'a> ZApp {
                 response.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     log::info!("Finding line: {}", find_input);
-                    if let Some(diff) = diff_ctx {
+                    if let Some(diff) = diff_processor.get_diff_ctx() {
                         *find_found_lines_1 = file_1
                             .get_cached_file()
                             .as_ref()
@@ -952,9 +600,11 @@ impl<'a> ZApp {
                         all_found_lines.extend(find_found_lines_2.clone());
                         all_found_lines.dedup();
                         all_found_lines.sort();
-                        find_cursor.set_max(all_found_lines.len().saturating_sub(1));
-                        find_cursor.set(0);
-                        find_cursor.invalidate_ack();
+                        diff_processor
+                            .find_cursor
+                            .set_max(all_found_lines.len().saturating_sub(1));
+                        diff_processor.find_cursor.set(0);
+                        diff_processor.find_cursor.invalidate_ack();
                     }
 
                     find_input.clear();
@@ -965,36 +615,50 @@ impl<'a> ZApp {
                 *find_open = find_window_open;
             }
 
-            let diff_ctx_ref = diff_ctx.as_ref();
+            // let DiffProcessor {
+            //     in_progress_input,
+            //     conflict_cursor,
+            //     active_highlights,
+            //     pivot,
+            //     ..
+            // } = diff_processor;
 
-            ui.separator();
+            let mut conflict_cursor = diff_processor.conflict_cursor.clone();
+            let mut active_highlights = diff_processor.active_highlights.clone();
+            let mut pivot: (Option<usize>, Option<usize>) = diff_processor.pivot;
+            let mut find_cursor = diff_processor.find_cursor.clone();
 
             if let Some((start, maybe_end)) = &mut scroll_to_rows.as_ref() {
-                diff_ctx_active_highlights.clear();
+                diff_processor.active_highlights.clear();
                 if let Some(end) = maybe_end {
-                    diff_ctx_active_highlights.extend(*start..=*end);
+                    diff_processor.active_highlights.extend(*start..=*end);
                 } else {
-                    diff_ctx_active_highlights.push(*start);
+                    diff_processor.active_highlights.push(*start);
+                }
+            }
+
+            if let Some((start, maybe_end)) = &mut scroll_to_rows.as_ref() {
+                active_highlights.clear();
+                if let Some(end) = maybe_end {
+                    active_highlights.extend(*start..=*end);
+                } else {
+                    active_highlights.push(*start);
                 }
             }
 
             let mut behavior = TreeBehavior {
                 ctx_file_diff: FileDiffPaneCtx {
-                    diff_ctx: diff_ctx_ref,
+                    diff_ctx: diff_processor.get_diff_ctx(),
                     scroll_left: scroll_left,
                     scroll_right: scroll_right,
                     diff_options: diff_options,
                     file_source: file_1.get_cached_file().clone(),
                     file_target: file_2.get_cached_file().clone(),
                     scroll_to_row_span: &scroll_to_rows,
-                    active_highlights: &diff_ctx_active_highlights,
-                    conflict_cursor: diff_ctx_conflict_cursor,
                     load_file_1_request: &mut None,
                     load_file_2_request: &mut None,
                     set_file_1_root_request: &mut None,
                     set_file_2_root_request: &mut None,
-                    find_cursor,
-                    pivot: diff_ctx_pivot,
                     file_source_path: file_1.get_path(),
                     file_target_path: file_2.get_path(),
                     file_source_root: file_1.get_root(),
@@ -1015,6 +679,10 @@ impl<'a> ZApp {
                         || file_2.get_cached_file().clone().is_some(),
                     file_source_loading: file_1.get_loading_path().is_some(),
                     file_target_loading: file_2.get_loading_path().is_some(),
+                    active_highlights: &active_highlights,
+                    conflict_cursor: &mut conflict_cursor,
+                    pivot: &mut pivot,
+                    find_cursor: &mut find_cursor,
                 },
             };
 
@@ -1022,14 +690,17 @@ impl<'a> ZApp {
                 self.tree.ui(&mut behavior, ui);
             });
 
-            if let (Some(pivot_1), Some(pivot_2)) = (
-                behavior.ctx_file_diff.pivot.0,
-                behavior.ctx_file_diff.pivot.1,
-            ) {
-                if pivot_1 > 0 && pivot_2 > 0 {
-                    behavior.ctx_file_diff.diff_options.pivot_lines = Some((pivot_1, pivot_2));
-                }
-            }
+            // if let (Some(pivot_1), Some(pivot_2)) = (
+            //     behavior.ctx_file_diff.pivot.0,
+            //     behavior.ctx_file_diff.pivot.1,
+            // ) {
+            //     if pivot_1 > 0 && pivot_2 > 0 {
+            //         behavior.ctx_file_diff.diff_options.pivot_lines = Some((pivot_1, pivot_2));
+            //     }
+            // }
+
+            let clone_find = behavior.ctx_file_diff.find_cursor.clone();
+            let clone_conflict = behavior.ctx_file_diff.conflict_cursor.clone();
 
             if let Some(file_path) = behavior.ctx_file_diff.set_file_1_root_request.take() {
                 log::debug!("Set new root from root_request_1: {:?}", file_path);
@@ -1050,6 +721,8 @@ impl<'a> ZApp {
             }
 
             drop(behavior);
+            diff_processor.find_cursor = clone_find;
+            diff_processor.conflict_cursor = clone_conflict;
 
             *scroll_to_rows = None;
 
@@ -1058,14 +731,15 @@ impl<'a> ZApp {
                     let source = app_ctx.file_1.get_path_as_string();
                     let target = app_ctx.file_2.get_path_as_string();
                     let total_adds = app_ctx
-                        .diff_ctx
+                        .diff_processor
+                        .get_diff_ctx()
                         .as_ref()
                         .and_then(|f| Some(f.num_add_deletes))
                         .unwrap_or_default()
                         .0;
                     let total_deletes = app_ctx
-                        .diff_ctx
-                        .as_ref()
+                        .diff_processor
+                        .get_diff_ctx()
                         .and_then(|f| Some(f.num_add_deletes))
                         .unwrap_or_default()
                         .1;
@@ -1113,19 +787,19 @@ impl<'a> ZApp {
                 if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num1))
                     || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowUp))
                 {
-                    app_state_ctx.diff_ctx_conflict_cursor.dec();
+                    app_state_ctx.diff_processor.conflict_cursor.dec();
                     log::info!(
                         "ConflictCursor-- @{}",
-                        app_state_ctx.diff_ctx_conflict_cursor.get()
+                        app_state_ctx.diff_processor.conflict_cursor.get()
                     );
                 }
                 if (r.modifiers.ctrl && r.key_pressed(egui::Key::Num2))
                     || (r.modifiers.alt && r.key_pressed(egui::Key::ArrowDown))
                 {
-                    app_state_ctx.diff_ctx_conflict_cursor.inc();
+                    app_state_ctx.diff_processor.conflict_cursor.inc();
                     log::info!(
                         "ConflictCursor++ @{}",
-                        app_state_ctx.diff_ctx_conflict_cursor.get()
+                        app_state_ctx.diff_processor.conflict_cursor.get()
                     );
                 }
 
@@ -1133,15 +807,21 @@ impl<'a> ZApp {
                     if app_state_ctx.find_found_lines_1.len() > 0
                         || app_state_ctx.find_found_lines_2.len() > 0
                     {
-                        app_state_ctx.find_cursor.dec();
-                        log::info!("FindCursor-- @{}", app_state_ctx.find_cursor.get());
+                        app_state_ctx.diff_processor.find_cursor.dec();
+                        log::info!(
+                            "FindCursor-- @{}",
+                            app_state_ctx.diff_processor.find_cursor.get()
+                        );
                     }
                 } else if r.key_pressed(egui::Key::Enter) {
                     if app_state_ctx.find_found_lines_1.len() > 0
                         || app_state_ctx.find_found_lines_2.len() > 0
                     {
-                        app_state_ctx.find_cursor.inc();
-                        log::info!("FindCursor++ @{}", app_state_ctx.find_cursor.get());
+                        app_state_ctx.diff_processor.find_cursor.inc();
+                        log::info!(
+                            "FindCursor++ @{}",
+                            app_state_ctx.diff_processor.find_cursor.get()
+                        );
                     }
                 }
 
@@ -1161,16 +841,16 @@ impl<'a> ZApp {
                     Self::open_file_picker(app_state_ctx.file_2.get_tx());
                 });
                 handle_kb(&app_state_ctx.keybindings.refresh_diff, &mut |_kb| {
+                    app_state_ctx.diff_processor.reset_ctx();
                     Self::refresh_file_contents(
                         &mut app_state_ctx.file_1,
                         &mut app_state_ctx.file_2,
-                        &mut app_state_ctx.diff_ctx,
                     );
                 });
                 handle_kb(
                     &app_state_ctx.keybindings.refresh_diff_rows_only,
                     &mut |_kb| {
-                        Self::refresh_diff_rows(&mut app_state_ctx.diff_ctx);
+                        app_state_ctx.diff_processor.reset_ctx();
                     },
                 );
                 handle_kb(
@@ -1310,11 +990,12 @@ impl eframe::App for ZApp {
                 .expect("State was not valid while processing inputs")
                 .ctx_mut();
             let conflict_max = app_ctx
-                .diff_ctx
+                .diff_processor
+                .get_diff_ctx()
                 .as_ref()
                 .and_then(|f| Some(f.precomputed_diffs.len()))
                 .unwrap_or_default();
-            app_ctx.diff_ctx_conflict_cursor.set_max(conflict_max);
+            app_ctx.diff_processor.conflict_cursor.set_max(conflict_max);
         }
 
         self.process_ctx_inputs(ctx, frame);
@@ -1348,132 +1029,36 @@ impl eframe::App for ZApp {
                     || state.file_2.get_loading_path().is_some()
                 {
                     false
-                } else if let Some(in_progress_input) = &state.diff_ctx_in_progress_input {
+                } else if let Some(in_progress_input) = &state.diff_processor.in_progress_input {
                     *in_progress_input != update_input
-                } else if let Some(diff_ctx) = &state.diff_ctx {
+                } else if let Some(diff_ctx) = state.diff_processor.get_diff_ctx() {
                     let input_equal = update_input == diff_ctx.update_diff_rows_input;
 
-                    if !input_equal && !state.diff_ctx_in_progress_input.is_some() {
+                    if !input_equal && !state.diff_processor.in_progress_input.is_some() {
                         log::debug!("diff_ctx invalidated!");
                     }
                     !input_equal
                 } else {
-                    !state.diff_ctx_in_progress_input.is_some()
+                    !state.diff_processor.in_progress_input.is_some()
                 };
 
-                if diff_ctx_invalidated && state.diff_ctx_in_progress_input.is_some() {
-                    log::info!("diff_ctx invalidated && diff_ctx_in_progress");
-                    self.update_diff_rows_cancel_flag
-                        .as_deref()
-                        .unwrap()
-                        .store(true, Ordering::Release);
-                    log::info!("thread cancel_flag set true");
-                    state.diff_ctx_in_progress_input = None;
-                } else if diff_ctx_invalidated && state.diff_ctx_in_progress_input.is_none() {
-                    let f1 = state.file_1.get_cached_file().clone();
-                    let f2 = state.file_2.get_cached_file().clone();
-
-                    state.diff_ctx = None;
-
-                    if f1.is_some() || f2.is_some() {
-                        let (tx, rx) = channel();
-                        state.diff_ctx_rx = Some(rx);
-
-                        let cancel_flag = Arc::new(AtomicBool::new(false));
-                        self.update_diff_rows_cancel_flag = Some(cancel_flag.clone());
-                        let input = UpdateDiffRowsInput {
-                            file_1: f1.clone(),
-                            file_2: f2.clone(),
-                            options: state.diff_options.clone(),
-                            myers_diff_algorithm: state.myers_diff_algorithm.clone(),
-                        };
-                        state.diff_ctx_in_progress_input = Some(input.clone());
-
-                        let builder = std::thread::Builder::new().name("DiffCtxTHREAD".into());
-                        let handle = builder.spawn(move || {
-                            log::info!(
-                                "Spawned thread for DiffCtx\nSource: {}, Target: {}",
-                                f1.as_ref()
-                                    .and_then(|f| Some(format!("{}", f.path)))
-                                    .unwrap_or_default(),
-                                f2.as_ref()
-                                    .and_then(|f| Some(format!("{}", f.path)))
-                                    .unwrap_or_default(),
-                            );
-                            let result = AppStateCtx::update_diff_rows(input, cancel_flag);
-                            log::info!(
-                                "Spawned thread for DiffCtx complete {:?}",
-                                result.is_some()
-                            );
-                            if let Some(result) = result {
-                                let _ = tx.send(result);
-                            }
-                        });
-                        match handle {
-                            Ok(h) => {
-                                self.update_diff_rows_thread_handle = Some(h);
-                            }
-                            Err(e) => {
-                                log::error!("Failed to spawn thread: {e}");
-                                state.diff_ctx_in_progress_input = None;
-                                state.diff_ctx_rx = None;
-                            }
-                        }
-                    }
+                if diff_ctx_invalidated
+                    && (state.file_1.get_cached_file().is_some()
+                        || state.file_2.get_cached_file().is_some())
+                {
+                    state.diff_processor.request_update(update_input);
                 }
 
-                if state.diff_ctx_in_progress_input.is_some() {
-                    if let Some(rx) = &state.diff_ctx_rx {
-                        match rx.try_recv() {
-                            Ok(r) => {
-                                log::info!("Recieved new diff_ctx from thread");
-                                self.update_diff_rows_thread_handle = None;
-                                state.diff_ctx_in_progress_input = None;
-                                state.diff_ctx = Some(r);
-                                ctx.request_repaint();
-                            }
-                            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                                log::error!("Channel error: Disconnected");
-                                self.update_diff_rows_thread_handle = None;
-                                state.diff_ctx_in_progress_input = None;
-                            }
-                        }
-                    }
+                state.diff_processor.poll_diff_channel();
+
+                if let Some(conflict_cursor) = state.diff_processor.update_conflict_cursor() {
+                    state.scroll_to_rows = Some(conflict_cursor);
                 }
-
-                if state.diff_ctx_conflict_cursor.has_changed() {
-                    state.diff_ctx_conflict_cursor.ack_change();
-                    if let Some(diff_ctx) = state.diff_ctx.as_ref() {
-                        if state.diff_ctx_conflict_cursor.get() > 0 {
-                            let conflict_idx_span = diff_ctx.precomputed_diffs
-                                [state.diff_ctx_conflict_cursor.get().saturating_sub(1)];
-                            state.scroll_to_rows =
-                                Some((conflict_idx_span.0, Some(conflict_idx_span.1)));
-                        } else {
-                            state.scroll_to_rows = None;
-                            state.diff_ctx_active_highlights.clear();
-                        }
-                    }
-                }
-
-                // FIND
-                if state.find_cursor.has_changed() {
-                    state.find_cursor.ack_change();
-
-                    let mut all_found_lines = state.find_found_lines_1.clone();
-                    all_found_lines.extend(state.find_found_lines_2.clone());
-                    all_found_lines.dedup();
-                    all_found_lines.sort();
-                    assert_eq!(
-                        state.find_cursor.get_max(),
-                        all_found_lines.len().saturating_sub(1)
-                    );
-
-                    let find_idx_1 = all_found_lines.get(state.find_cursor.get()).cloned();
-
-                    // TODO: Improve so that user can decide which 1/2 file search operates on
-                    state.scroll_to_rows = Some((find_idx_1.unwrap_or_default(), None));
+                if let Some(find_cursor) = state
+                    .diff_processor
+                    .update_find(&state.find_found_lines_1, &state.find_found_lines_2)
+                {
+                    state.scroll_to_rows = Some(find_cursor);
                 }
 
                 if let Some(scroll_to) = &state.scroll_to_rows {
