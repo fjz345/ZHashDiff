@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{app::DiffCtx, clamped_cursor::ClampedCursor, ui_egui::panes::ZAppPane};
+use crate::{clamped_cursor::ClampedCursor, diff_ctx::DiffCtx, ui_egui::panes::ZAppPane};
 use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
 use zcommon::hash::hash_contents;
