@@ -29,6 +29,8 @@ GUI for zdiff crate
 * lost_focus not called correctly on paths when holding down mouse: https://github.com/emilk/egui/issues/2142
 
 ## Todo
+* Split logic to avoid invalidate whole diff_ctx when doing DiffRow manipulations
+
 * Add platform image for .exe
 * show time it took to compute the diff
 
