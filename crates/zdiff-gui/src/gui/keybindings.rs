@@ -385,11 +385,7 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                     "Open Keybindings Options",
                     &mut keybindings.open_options_keybindings,
                 );
-                ui_shortcut_row(
-                    ui,
-                    "Open Universal Path",
-                    &mut keybindings.open_universal_path,
-                );
+                ui_shortcut_row(ui, "Open P4Config", &mut keybindings.open_universal_path);
                 ui_shortcut_row(ui, "Find", &mut keybindings.find);
                 ui_shortcut_row(ui, "Goto", &mut keybindings.goto);
                 ui_shortcut_row(ui, "Next Conflict", &mut keybindings.next_conflict);

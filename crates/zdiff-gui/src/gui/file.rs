@@ -270,7 +270,7 @@ impl FileProcessor {
                         }
 
                         let p4_path = path_clone.to_p4_string();
-                        let content = match P4Command::get_depot_file_content(&p4_path, None) {
+                        let content = match P4Command::get_depot_file_content(&p4_path) {
                             Ok(c) => c,
                             Err(e) => {
                                 log::error!("P4 command failed for {}: {}", p4_path, e);

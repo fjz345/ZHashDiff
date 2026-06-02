@@ -31,7 +31,7 @@ use crate::{
     clamped_cursor::ClampedCursor,
     file::FileProcessor,
     keybindings::{Keybindings, Shortcut, ui_keybindings},
-    p4::{P4Command, P4Config, ui_p4config},
+    p4::{P4Command, P4Config, get_p4_config, ui_p4config, update_p4_config},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},
@@ -107,8 +107,6 @@ pub struct AppStateCtx {
 
     // ### Keybindings
     pub keybindings: Keybindings,
-    // ### Universal Path
-    pub universal_path_config: P4Config,
 }
 
 impl Default for AppStateCtx {
@@ -136,7 +134,6 @@ impl Default for AppStateCtx {
             find_found_lines_2: Default::default(),
             diff_ctx_pivot: Default::default(),
             keybindings: Default::default(),
-            universal_path_config: Default::default(),
             myers_diff_algorithm: Default::default(),
             diff_ctx_in_progress_input: Default::default(),
         }
@@ -664,7 +661,6 @@ impl<'a> ZApp {
         scroll_right: &mut f32,
         lexer_mode: &mut u8,
         keybindings: &mut Keybindings,
-        universal_path_config: &mut P4Config,
         myers_diff_algorithm: &mut MyersDiffAlgorithm,
     ) {
         ui.horizontal(|ui| {
@@ -744,7 +740,7 @@ impl<'a> ZApp {
                     });
                     if ui
                         .button(format!(
-                            "[{}]Universal Path",
+                            "[{}]P4Config",
                             keybindings
                                 .open_universal_path
                                 .as_ref()
@@ -878,10 +874,16 @@ impl<'a> ZApp {
             show_custom_popup(
                 ui.ctx(),
                 &mut self.open_universal_path_window,
-                "Option - Universal Path",
+                "Option - P4Config",
                 true,
                 |ui| {
-                    ui_p4config(ui, universal_path_config);
+                    let mut p4_config = get_p4_config();
+                    let before_config = p4_config.clone();
+                    ui_p4config(ui, &mut p4_config);
+                    if p4_config != before_config {
+                        log::info!("P4 config changed: {:?}", p4_config);
+                        update_p4_config(p4_config);
+                    }
                 },
             );
         }
@@ -910,7 +912,6 @@ impl<'a> ZApp {
                 find_found_lines_2,
                 diff_ctx_pivot,
                 keybindings,
-                universal_path_config,
                 myers_diff_algorithm,
                 diff_ctx_in_progress_input: _,
                 diffpane_file_1_buffer: _,
@@ -927,7 +928,6 @@ impl<'a> ZApp {
                 scroll_right,
                 lexer_mode,
                 keybindings,
-                universal_path_config,
                 myers_diff_algorithm,
             );
 
@@ -1235,7 +1235,7 @@ impl<'a> ZApp {
                     &app_state_ctx.keybindings.revision_graph,
                     &mut |_kb| match &app_state_ctx.file_1.get_full_path() {
                         UniversalPath::Depot(path, _rev) => {
-                            match P4Command::open_revision_graph(path, None) {
+                            match P4Command::open_revision_graph(path) {
                                 Ok(_) => {
                                     log::info!("Revision graph returned Ok");
                                 }
@@ -1255,7 +1255,7 @@ impl<'a> ZApp {
                     &app_state_ctx.keybindings.timelapse_view,
                     &mut |_kb| match &app_state_ctx.file_1.get_full_path() {
                         UniversalPath::Depot(path, _rev) => {
-                            match P4Command::open_timelapse_view(path, None) {
+                            match P4Command::open_timelapse_view(path) {
                                 Ok(_) => {
                                     log::info!("Timelapse view returned Ok");
                                 }

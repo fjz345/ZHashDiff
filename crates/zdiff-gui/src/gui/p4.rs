@@ -3,12 +3,35 @@ use std::{env, str};
 
 use eframe::egui;
 
-#[derive(Debug, Clone, Default)]
+use std::sync::RwLock;
+
+static GLOBAL_P4_CONFIG: std::sync::OnceLock<RwLock<P4Config>> = std::sync::OnceLock::new();
+pub fn get_p4_config() -> P4Config {
+    let config = GLOBAL_P4_CONFIG
+        .get_or_init(|| RwLock::new(P4Config::default()))
+        .read()
+        .unwrap()
+        .clone();
+    log::trace!("Reading P4 config: {:?}", config);
+    config
+}
+pub fn update_p4_config(new_config: P4Config) {
+    log::trace!("Updating P4 config: {:?}", new_config);
+    if let Some(lock) = GLOBAL_P4_CONFIG.get() {
+        let mut w = lock.write().unwrap();
+        *w = new_config;
+    } else {
+        let _ = GLOBAL_P4_CONFIG.set(RwLock::new(new_config));
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct P4Config {
-    pub p4_port: String,   // e.g., "localhost:1666"
-    pub p4_user: String,   // e.g., "admin"
-    pub p4_client: String, // e.g., "my_workspace"
+    pub p4_port: String,    // e.g., "localhost:1666"
+    pub p4_user: String,    // e.g., "admin"
+    pub p4_client: String,  // e.g., "my_workspace"
+    pub p4_charset: String, // e.g., "utf8"
 }
 
 pub fn ui_p4config(ui: &mut egui::Ui, config: &mut P4Config) -> egui::Response {
@@ -39,6 +62,7 @@ pub fn ui_p4config(ui: &mut egui::Ui, config: &mut P4Config) -> egui::Response {
                 edit_row("P4PORT", &mut config.p4_port, "ssl:perforce:1666");
                 edit_row("P4USER", &mut config.p4_user, "username");
                 edit_row("P4CLIENT", &mut config.p4_client, "workspace_name");
+                edit_row("P4CHARSET", &mut config.p4_charset, "utf8");
             });
 
         ui.add_space(10.0);
@@ -49,7 +73,6 @@ pub fn ui_p4config(ui: &mut egui::Ui, config: &mut P4Config) -> egui::Response {
 }
 
 pub struct P4Command {
-    config: Option<P4Config>,
     exe_path: String,
     _is_gui: bool,
 }
@@ -62,34 +85,31 @@ impl P4Command {
         }
 
         Self {
-            config: None,
             exe_path,
             _is_gui: is_gui,
         }
     }
 
-    pub fn with_config(mut self, config: P4Config) -> Self {
-        self.config = Some(config);
-        self
-    }
-
     fn prepare_cmd(&self) -> Command {
         let mut cmd = Command::new(&self.exe_path);
 
-        if let Some(config) = &self.config {
-            if !config.p4_port.is_empty() {
-                cmd.env("P4PORT", &config.p4_port);
-            }
-            if !config.p4_user.is_empty() {
-                cmd.env("P4USER", &config.p4_user);
-            }
-            if !config.p4_client.is_empty() {
-                cmd.env("P4CLIENT", &config.p4_client);
-            }
-        }
         // Extremely important, will silently fail
         if env::var("P4CHARSET").is_err() {
             cmd.args(["-C", "utf8"]);
+        }
+
+        let config = get_p4_config();
+        if !config.p4_port.is_empty() {
+            cmd.env("P4PORT", &config.p4_port);
+        }
+        if !config.p4_user.is_empty() {
+            cmd.env("P4USER", &config.p4_user);
+        }
+        if !config.p4_client.is_empty() {
+            cmd.env("P4CLIENT", &config.p4_client);
+        }
+        if !config.p4_charset.is_empty() {
+            cmd.env("P4CHARSET", &config.p4_charset);
         }
         cmd
     }
@@ -115,36 +135,20 @@ impl P4Command {
             .map_err(|e| e.to_string())
     }
 
-    pub fn get_depot_file_content(path: &str, config: Option<P4Config>) -> Result<String, String> {
-        let mut cmd = P4Command::new(false);
-        if let Some(config) = config {
-            cmd = cmd.with_config(config);
-        }
-        cmd.output(&["print", "-q", path])
+    pub fn get_depot_file_content(path: &str) -> Result<String, String> {
+        P4Command::new(false).output(&["print", "-q", path])
     }
-    pub fn open_revision_graph(path: &str, config: Option<P4Config>) -> Result<(), String> {
-        let mut cmd = P4Command::new(true);
-        if let Some(config) = config {
-            cmd = cmd.with_config(config);
-        }
-        cmd.spawn(&["revisiongraph", path])?;
+    pub fn open_revision_graph(path: &str) -> Result<(), String> {
+        P4Command::new(true).spawn(&["revisiongraph", path])?;
         Ok(())
     }
-    pub fn open_timelapse_view(path: &str, config: Option<P4Config>) -> Result<(), String> {
-        let mut cmd = P4Command::new(true);
-        if let Some(config) = config {
-            cmd = cmd.with_config(config);
-        }
-        cmd.spawn(&["timelapse", path])?;
+    pub fn open_timelapse_view(path: &str) -> Result<(), String> {
+        P4Command::new(true).spawn(&["timelapse", path])?;
         Ok(())
     }
     #[allow(dead_code)]
-    pub fn get_revision_history(path: &str, config: Option<P4Config>) -> Result<String, String> {
-        let mut cmd = P4Command::new(false);
-        if let Some(config) = config {
-            cmd = cmd.with_config(config);
-        }
-        cmd.output(&["-ztag", "filelog", "-m", "10", path])
+    pub fn get_revision_history(path: &str) -> Result<String, String> {
+        P4Command::new(false).output(&["-ztag", "filelog", "-m", "10", path])
     }
 }
 
