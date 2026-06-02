@@ -690,17 +690,19 @@ impl<'a> ZApp {
                 self.tree.ui(&mut behavior, ui);
             });
 
-            // if let (Some(pivot_1), Some(pivot_2)) = (
-            //     behavior.ctx_file_diff.pivot.0,
-            //     behavior.ctx_file_diff.pivot.1,
-            // ) {
-            //     if pivot_1 > 0 && pivot_2 > 0 {
-            //         behavior.ctx_file_diff.diff_options.pivot_lines = Some((pivot_1, pivot_2));
-            //     }
-            // }
+            if let (Some(pivot_1), Some(pivot_2)) = (
+                behavior.ctx_file_diff.pivot.0,
+                behavior.ctx_file_diff.pivot.1,
+            ) {
+                if pivot_1 > 0 && pivot_2 > 0 {
+                    behavior.ctx_file_diff.diff_options.pivot_lines = Some((pivot_1, pivot_2));
+                }
+            }
 
+            // TODO: Remove clones
             let clone_find = behavior.ctx_file_diff.find_cursor.clone();
             let clone_conflict = behavior.ctx_file_diff.conflict_cursor.clone();
+            let clone_pivot = behavior.ctx_file_diff.pivot.clone();
 
             if let Some(file_path) = behavior.ctx_file_diff.set_file_1_root_request.take() {
                 log::debug!("Set new root from root_request_1: {:?}", file_path);
@@ -721,6 +723,7 @@ impl<'a> ZApp {
             }
 
             drop(behavior);
+            diff_processor.pivot = clone_pivot;
             diff_processor.find_cursor = clone_find;
             diff_processor.conflict_cursor = clone_conflict;
 
