@@ -5,7 +5,7 @@ use zdiff::cached_file::CachedFile;
 use zdiff::lexer::{LEXER_MODE_DEFAULT, RawToken};
 use zdiff::universal_path::UniversalPath;
 
-use crate::p4::get_p4_file_content;
+use crate::p4::P4Command;
 
 fn default_channel() -> (mpsc::Sender<UniversalPath>, mpsc::Receiver<UniversalPath>) {
     mpsc::channel()
@@ -270,7 +270,7 @@ impl FileProcessor {
                         }
 
                         let p4_path = path_clone.to_p4_string();
-                        let content = match get_p4_file_content(&p4_path) {
+                        let content = match P4Command::get_depot_file_content(&p4_path, None) {
                             Ok(c) => c,
                             Err(e) => {
                                 log::error!("P4 command failed for {}: {}", p4_path, e);

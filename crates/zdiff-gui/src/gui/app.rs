@@ -31,8 +31,7 @@ use crate::{
     clamped_cursor::ClampedCursor,
     file::FileProcessor,
     keybindings::{Keybindings, Shortcut, ui_keybindings},
-    p4::open_revision_graph,
-    quick_diff::{UniversalPathConfig, ui_universal_path},
+    p4::{P4Command, P4Config, ui_p4config},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},
@@ -109,7 +108,7 @@ pub struct AppStateCtx {
     // ### Keybindings
     pub keybindings: Keybindings,
     // ### Universal Path
-    pub universal_path_config: UniversalPathConfig,
+    pub universal_path_config: P4Config,
 }
 
 impl Default for AppStateCtx {
@@ -665,7 +664,7 @@ impl<'a> ZApp {
         scroll_right: &mut f32,
         lexer_mode: &mut u8,
         keybindings: &mut Keybindings,
-        universal_path_config: &mut UniversalPathConfig,
+        universal_path_config: &mut P4Config,
         myers_diff_algorithm: &mut MyersDiffAlgorithm,
     ) {
         ui.horizontal(|ui| {
@@ -882,7 +881,7 @@ impl<'a> ZApp {
                 "Option - Universal Path",
                 true,
                 |ui| {
-                    ui_universal_path(ui, universal_path_config);
+                    ui_p4config(ui, universal_path_config);
                 },
             );
         }
@@ -1232,23 +1231,26 @@ impl<'a> ZApp {
                 handle_kb(&app_state_ctx.keybindings.goto, &mut |_kb| {
                     app_state_ctx.goto_open = true
                 });
-                handle_kb(&app_state_ctx.keybindings.revision_graph, &mut |_kb| {
-                    let path = &app_state_ctx.file_1.get_path();
-                    match path {
-                        UniversalPath::Depot(_, _) => {
-                            match open_revision_graph(&path.to_p4_string()) {
+                handle_kb(
+                    &app_state_ctx.keybindings.revision_graph,
+                    &mut |_kb| match &app_state_ctx.file_1.get_full_path() {
+                        UniversalPath::Depot(path, _rev) => {
+                            match P4Command::open_revision_graph(path, None) {
                                 Ok(_) => {
                                     log::info!("Revision graph returned Ok");
                                 }
                                 Err(e) => log::error!("Failed to open revision graph: {e}"),
                             }
                         }
-                        UniversalPath::Local(_path_buf) => {
-                            log::info!("Can not open revision graph for local path {}", path);
+                        UniversalPath::Local(path_buf) => {
+                            log::info!(
+                                "Can not open revision graph for local path {}",
+                                path_buf.display()
+                            );
                             return;
                         }
-                    }
-                });
+                    },
+                );
                 handle_kb(&app_state_ctx.keybindings.timelapse_view, &mut |_kb| {});
 
                 for (i, (kb, path)) in app_state_ctx

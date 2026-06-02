@@ -1,5 +1,144 @@
-use std::process::Command;
+use std::process::{Child, Command};
 use std::{env, str};
+
+use eframe::egui;
+
+#[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct P4Config {
+    pub p4_port: String,   // e.g., "localhost:1666"
+    pub p4_user: String,   // e.g., "admin"
+    pub p4_client: String, // e.g., "my_workspace"
+}
+
+pub fn ui_p4config(ui: &mut egui::Ui, config: &mut P4Config) -> egui::Response {
+    ui.vertical(|ui| {
+        ui.heading("Perforce Configuration");
+        ui.label("Uses $P4PORT, $P4USER, and $P4CLIENT if not specified here");
+
+        if ui.button("Reset to Defaults").clicked() {
+            *config = P4Config::default();
+        }
+
+        ui.separator();
+
+        egui::Grid::new("p4_settings_grid")
+            .num_columns(2)
+            .spacing([40.0, 8.0])
+            .show(ui, |ui| {
+                let mut edit_row = |label: &str, value: &mut String, hint: &str| {
+                    ui.label(label);
+                    ui.add(
+                        egui::TextEdit::singleline(value)
+                            .hint_text(hint)
+                            .desired_width(200.0),
+                    );
+                    ui.end_row();
+                };
+
+                edit_row("P4PORT", &mut config.p4_port, "ssl:perforce:1666");
+                edit_row("P4USER", &mut config.p4_user, "username");
+                edit_row("P4CLIENT", &mut config.p4_client, "workspace_name");
+            });
+
+        ui.add_space(10.0);
+
+        ui.button("Save Settings")
+    })
+    .inner
+}
+
+pub struct P4Command {
+    config: Option<P4Config>,
+    exe_path: String,
+    _is_gui: bool,
+}
+
+impl P4Command {
+    pub fn new(is_gui: bool) -> Self {
+        let mut exe_path = env::var("P4PATH").unwrap_or_else(|_| "p4.exe".to_string());
+        if is_gui {
+            exe_path = exe_path.replace("p4.exe", "p4vc.bat")
+        }
+
+        Self {
+            config: None,
+            exe_path,
+            _is_gui: is_gui,
+        }
+    }
+
+    pub fn with_config(mut self, config: P4Config) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    fn prepare_cmd(&self) -> Command {
+        let mut cmd = Command::new(&self.exe_path);
+
+        if let Some(config) = &self.config {
+            if !config.p4_port.is_empty() {
+                cmd.env("P4PORT", &config.p4_port);
+            }
+            if !config.p4_user.is_empty() {
+                cmd.env("P4USER", &config.p4_user);
+            }
+            if !config.p4_client.is_empty() {
+                cmd.env("P4CLIENT", &config.p4_client);
+            }
+        }
+        // Extremely important, will silently fail
+        if env::var("P4CHARSET").is_err() {
+            cmd.args(["-C", "utf8"]);
+        }
+        cmd
+    }
+
+    pub fn output(&self, args: &[&str]) -> Result<String, String> {
+        let output = self
+            .prepare_cmd()
+            .args(args)
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        if output.status.success() {
+            String::from_utf8(output.stdout).map_err(|e| e.to_string())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).to_string())
+        }
+    }
+
+    pub fn spawn(&self, args: &[&str]) -> Result<Child, String> {
+        self.prepare_cmd()
+            .args(args)
+            .spawn()
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn get_depot_file_content(path: &str, config: Option<P4Config>) -> Result<String, String> {
+        let mut cmd = P4Command::new(false);
+        if let Some(config) = config {
+            cmd = cmd.with_config(config);
+        }
+        cmd.output(&["print", "-q", path])
+    }
+    pub fn open_revision_graph(path: &str, config: Option<P4Config>) -> Result<(), String> {
+        let mut cmd = P4Command::new(true);
+        if let Some(config) = config {
+            cmd = cmd.with_config(config);
+        }
+        cmd.spawn(&["revisiongraph", path])?;
+        Ok(())
+    }
+    #[allow(dead_code)]
+    pub fn get_revision_history(path: &str, config: Option<P4Config>) -> Result<String, String> {
+        let mut cmd = P4Command::new(false);
+        if let Some(config) = config {
+            cmd = cmd.with_config(config);
+        }
+        cmd.output(&["-ztag", "filelog", "-m", "10", path])
+    }
+}
 
 #[allow(dead_code)]
 pub struct P4Revision {
@@ -7,98 +146,4 @@ pub struct P4Revision {
     pub change: u32,
     pub action: String,
     pub date: String,
-}
-
-pub fn get_p4_file_content(path: &str) -> Result<String, String> {
-    let p4_exe = env::var("P4PATH").unwrap_or_else(|_| "p4".to_string());
-
-    let output = Command::new(&p4_exe)
-        .args(["print", "-q", path])
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    let stderr = str::from_utf8(&output.stderr).unwrap_or("").trim();
-
-    if output.status.success() && stderr.is_empty() {
-        Ok(str::from_utf8(&output.stdout)
-            .map_err(|e| e.to_string())?
-            .to_string())
-    } else {
-        let err_msg = if !stderr.is_empty() {
-            stderr.to_string()
-        } else if !output.status.success() {
-            format!("Process exited with status: {}", output.status)
-        } else {
-            "Unknown Perforce error".to_string()
-        };
-
-        Err(err_msg)
-    }
-}
-
-#[allow(dead_code)]
-pub fn get_revision_history(path: &str) -> Result<Vec<P4Revision>, String> {
-    let (program, args) = if cfg!(target_os = "windows") {
-        (
-            "cmd",
-            vec!["/C", "p4", "-ztag", "filelog", "-m", "10", path],
-        )
-    } else {
-        ("p4", vec!["-ztag", "filelog", "-m", "10", path])
-    };
-
-    let output = Command::new(program)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    let stdout = str::from_utf8(&output.stdout).map_err(|e| e.to_string())?;
-    let mut history = Vec::new();
-
-    let mut current_rev = 0;
-    let mut current_change = 0;
-    let mut current_action = String::new();
-
-    for line in stdout.lines() {
-        if line.starts_with("... rev ") {
-            current_rev = line["... rev ".len()..].parse().unwrap_or(0);
-        } else if line.starts_with("... change ") {
-            current_change = line["... change ".len()..].parse().unwrap_or(0);
-        } else if line.starts_with("... action ") {
-            current_action = line["... action ".len()..].to_string();
-        } else if line.starts_with("... time ") {
-            history.push(P4Revision {
-                rev: current_rev,
-                change: current_change,
-                action: current_action.clone(),
-                date: line["... time ".len()..].to_string(),
-            });
-        }
-    }
-
-    Ok(history)
-}
-
-pub fn open_revision_graph(path: &str) -> Result<(), String> {
-    let p4v_exe = env::var("P4VPATH").unwrap_or_else(|_| "p4v".to_string());
-
-    let p4v_cmd = format!("revgraph {}", path);
-
-    let program = p4v_exe;
-
-    let args = vec!["-cmd", &p4v_cmd];
-
-    log::info!(
-        "Opening revision graph for {} with command: {} {}",
-        path,
-        program,
-        args.join(" ")
-    );
-
-    Command::new(program)
-        .args(args)
-        .spawn()
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
 }
