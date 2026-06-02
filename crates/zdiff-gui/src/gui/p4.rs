@@ -130,6 +130,14 @@ impl P4Command {
         cmd.spawn(&["revisiongraph", path])?;
         Ok(())
     }
+    pub fn open_timelapse_view(path: &str, config: Option<P4Config>) -> Result<(), String> {
+        let mut cmd = P4Command::new(true);
+        if let Some(config) = config {
+            cmd = cmd.with_config(config);
+        }
+        cmd.spawn(&["timelapse", path])?;
+        Ok(())
+    }
     #[allow(dead_code)]
     pub fn get_revision_history(path: &str, config: Option<P4Config>) -> Result<String, String> {
         let mut cmd = P4Command::new(false);

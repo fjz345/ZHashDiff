@@ -1251,7 +1251,26 @@ impl<'a> ZApp {
                         }
                     },
                 );
-                handle_kb(&app_state_ctx.keybindings.timelapse_view, &mut |_kb| {});
+                handle_kb(
+                    &app_state_ctx.keybindings.timelapse_view,
+                    &mut |_kb| match &app_state_ctx.file_1.get_full_path() {
+                        UniversalPath::Depot(path, _rev) => {
+                            match P4Command::open_timelapse_view(path, None) {
+                                Ok(_) => {
+                                    log::info!("Timelapse view returned Ok");
+                                }
+                                Err(e) => log::error!("Failed to open timelapse view: {e}"),
+                            }
+                        }
+                        UniversalPath::Local(path_buf) => {
+                            log::info!(
+                                "Can not open timelapse view for local path {}",
+                                path_buf.display()
+                            );
+                            return;
+                        }
+                    },
+                );
 
                 for (i, (kb, path)) in app_state_ctx
                     .keybindings
