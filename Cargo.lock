@@ -4790,7 +4790,7 @@ dependencies = [
 
 [[package]]
 name = "zdiff"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "color-backtrace",
  "env_logger 0.11.9",
