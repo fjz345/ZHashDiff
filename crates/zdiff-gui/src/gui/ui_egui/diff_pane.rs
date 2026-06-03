@@ -278,7 +278,7 @@ impl FileDiffPane {
                         let mut table_builder = TableBuilder::new(ui);
 
                         if let Some((start, maybe_end)) = ctx.scroll_to_row_span {
-                            log::info!("scroll_to_row_span: ({:?}, {:?})", start, maybe_end);
+                            log::trace!("scroll_to_row_span: ({:?}, {:?})", start, maybe_end);
                             table_builder =
                                 table_builder.scroll_to_row(*start, Some(egui::Align::Min));
                         }

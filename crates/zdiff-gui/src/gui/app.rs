@@ -575,7 +575,6 @@ impl<'a> ZApp {
             let scroll_to_rows = diff_processor.get_scroll_to_row();
             if let Some(scroll_to) = scroll_to_rows {
                 log::info!("Navigating to line: {:?}", scroll_to);
-                diff_processor.set_last_scroll_to_row(scroll_to_rows);
             }
 
             let mut conflict_cursor = diff_processor.conflict_cursor.clone();
@@ -998,6 +997,8 @@ impl eframe::App for ZApp {
                 }
 
                 state.diff_processor.poll_diff_channel();
+
+                // state.diff_processor.update_conflict_cursor();
 
                 self.ui(ctx, frame, &mut state);
 

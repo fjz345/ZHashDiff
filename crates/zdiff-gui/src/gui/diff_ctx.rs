@@ -85,7 +85,9 @@ pub struct DiffProcessor {
     pub find_ctx: FindCtx,
     goto_line_number: Option<usize>,
 
-    last_scroll_to_row: Option<ScrollSpan>,
+    last_conflict_scroll_to_row: Option<ScrollSpan>,
+    last_goto_scroll_to_row: Option<ScrollSpan>,
+    last_find_scroll_to_row: Option<ScrollSpan>,
 }
 
 impl Default for DiffProcessor {
@@ -100,8 +102,10 @@ impl Default for DiffProcessor {
             cancel_flag: Arc::new(AtomicBool::new(false)),
             find_cursor: ClampedCursor::default(),
             find_ctx: FindCtx::default(),
-            last_scroll_to_row: None,
             goto_line_number: None,
+            last_conflict_scroll_to_row: None,
+            last_goto_scroll_to_row: None,
+            last_find_scroll_to_row: None,
         }
     }
 }
@@ -256,28 +260,6 @@ impl DiffProcessor {
         }
     }
 
-    pub fn update_conflict_cursor(&mut self) -> Option<ScrollSpan> {
-        let mut ret = None;
-        if self.conflict_cursor.has_changed() {
-            self.conflict_cursor.ack_change();
-            if let Some(diff_ctx) = self.get_diff_ctx() {
-                if self.conflict_cursor.get() > 0 {
-                    let conflict_idx_span =
-                        diff_ctx.precomputed_diffs[self.conflict_cursor.get().saturating_sub(1)];
-                    ret = Some((conflict_idx_span.0, Some(conflict_idx_span.1)));
-                    log::info!(
-                        "Conflict cursor moved to index: {}",
-                        self.conflict_cursor.get()
-                    );
-                } else {
-                    ret = None;
-                    self.active_highlights.clear();
-                }
-            }
-        }
-        ret
-    }
-
     pub fn update_goto(&mut self, line_number: Option<usize>) {
         log::info!("Goto to line: {:?}", line_number);
         self.goto_line_number = line_number;
@@ -289,32 +271,52 @@ impl DiffProcessor {
             self.find_cursor
                 .set_max(self.find_ctx.cached_found_lines.len().saturating_sub(1));
             self.find_cursor.set(0);
-            self.find_cursor.invalidate_ack();
-        }
-
-        if self.find_cursor.has_changed() {
-            self.find_cursor.ack_change();
         }
     }
 
-    pub fn set_last_scroll_to_row(&mut self, scroll_to_row: Option<ScrollSpan>) {
-        log::trace!("set_last_scroll_to_row: {:?}", scroll_to_row);
-        self.last_scroll_to_row = scroll_to_row;
-    }
-
-    pub fn get_scroll_to_row(&self) -> Option<ScrollSpan> {
-        let goto_scroll_to_rows: Option<ScrollSpan> = self
-            .goto_line_number
-            .and_then(|f| Some((f.saturating_sub(1), None)));
-        let find_scroll_to_rows: Option<ScrollSpan> = self.find_scroll_to_row();
-
-        let scroll_to_rows = goto_scroll_to_rows.or_else(|| find_scroll_to_rows);
-
-        if self.last_scroll_to_row != scroll_to_rows {
-            scroll_to_rows
+    pub fn get_scroll_to_row(&mut self) -> Option<ScrollSpan> {
+        let conflict_scroll_to_row = self.conflict_scroll_to_row();
+        let conflict_scroll_to_row = if conflict_scroll_to_row != self.last_conflict_scroll_to_row {
+            self.last_conflict_scroll_to_row = conflict_scroll_to_row;
+            conflict_scroll_to_row
         } else {
             None
+        };
+        let goto_scroll_to_rows = self
+            .goto_line_number
+            .and_then(|f| Some((f.saturating_sub(1), None)));
+        let goto_scroll_to_rows = if goto_scroll_to_rows != self.last_goto_scroll_to_row {
+            self.last_goto_scroll_to_row = goto_scroll_to_rows;
+            goto_scroll_to_rows
+        } else {
+            None
+        };
+        let find_scroll_to_rows = self.find_scroll_to_row();
+        let find_scroll_to_rows = if find_scroll_to_rows != self.last_find_scroll_to_row {
+            self.last_find_scroll_to_row = find_scroll_to_rows;
+            find_scroll_to_rows
+        } else {
+            None
+        };
+
+        let scroll_to_rows =
+            find_scroll_to_rows.or_else(|| goto_scroll_to_rows.or_else(|| conflict_scroll_to_row));
+
+        scroll_to_rows
+    }
+
+    pub fn conflict_scroll_to_row(&self) -> Option<ScrollSpan> {
+        let mut ret = None;
+        if let Some(diff_ctx) = self.get_diff_ctx() {
+            if self.conflict_cursor.get() > 0 {
+                let conflict_idx_span =
+                    diff_ctx.precomputed_diffs[self.conflict_cursor.get().saturating_sub(1)];
+                ret = Some((conflict_idx_span.0, Some(conflict_idx_span.1)));
+            } else {
+                ret = None;
+            }
         }
+        ret
     }
 
     pub fn find_scroll_to_row(&self) -> Option<ScrollSpan> {
