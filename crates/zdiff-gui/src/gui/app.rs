@@ -28,7 +28,7 @@ use egui_tiles::Tile;
 
 use crate::{
     clamped_cursor::ClampedCursor,
-    diff_ctx::{DiffCtx, DiffProcessor, UpdateDiffRowsInput},
+    diff_ctx::{DiffCtx, DiffProcessor, FindCtx, ScrollSpan, UpdateDiffRowsInput},
     file::FileProcessor,
     keybindings::{Keybindings, Shortcut, ui_keybindings},
     p4::{P4Command, get_p4_config, ui_p4config, update_p4_config},
@@ -57,8 +57,7 @@ pub struct AppStateCtx {
 
     pub scroll_left: f32,
     pub scroll_right: f32,
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub scroll_to_rows: Option<(usize, Option<usize>)>,
+
     #[cfg_attr(feature = "serde", serde(skip))]
     pub goto_open: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -67,10 +66,6 @@ pub struct AppStateCtx {
     pub find_open: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub find_input: String,
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub find_found_lines_1: Vec<usize>,
-    #[cfg_attr(feature = "serde", serde(skip))]
-    pub find_found_lines_2: Vec<usize>,
 
     // ### Keybindings
     pub keybindings: Keybindings,
@@ -87,14 +82,11 @@ impl Default for AppStateCtx {
             diff_processor: Default::default(),
             scroll_left: Default::default(),
             scroll_right: Default::default(),
-            scroll_to_rows: Default::default(),
             goto_open: Default::default(),
             find_open: Default::default(),
             goto_input: Default::default(),
             find_input: Default::default(),
             diff_lexer_mode: LEXER_MODE_DEFAULT,
-            find_found_lines_1: Default::default(),
-            find_found_lines_2: Default::default(),
             keybindings: Default::default(),
             myers_diff_algorithm: Default::default(),
         }
@@ -504,14 +496,11 @@ impl<'a> ZApp {
                 diff_options,
                 file_1,
                 file_2,
-                scroll_to_rows,
                 goto_open,
                 find_open,
                 goto_input,
                 find_input,
                 diff_lexer_mode: lexer_mode,
-                find_found_lines_1,
-                find_found_lines_2,
                 keybindings,
                 myers_diff_algorithm,
                 diffpane_file_1_buffer: _,
@@ -545,17 +534,13 @@ impl<'a> ZApp {
                 response.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     if let Ok(line_number) = goto_input.parse::<usize>() {
-                        log::info!("Goto to line: {}", line_number);
+                        diff_processor.update_goto(Some(line_number));
                         *goto_open = false;
-                        *scroll_to_rows = goto_input
-                            .parse::<usize>()
-                            .ok()
-                            .map(|f| (f.saturating_sub(1), None));
-                        goto_input.clear();
                     }
                 }
             });
             if !goto_window_open {
+                goto_input.clear();
                 *goto_open = goto_window_open;
             }
             let mut find_window_open = *find_open;
@@ -566,45 +551,16 @@ impl<'a> ZApp {
                         .hint_text(""),
                 );
                 response.request_focus();
+
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    log::info!("Finding line: {}", find_input);
-                    if let Some(diff) = diff_processor.get_diff_ctx() {
-                        *find_found_lines_1 = file_1
-                            .get_cached_file()
-                            .as_ref()
-                            .map(|f| {
-                                f.content_search(&find_input)
-                                    .into_iter()
-                                    .map(|f| diff.precomputed_file_rows.0[f])
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-
-                        *find_found_lines_2 = file_2
-                            .get_cached_file()
-                            .as_ref()
-                            .map(|f| {
-                                f.content_search(&find_input)
-                                    .into_iter()
-                                    .map(|f| diff.precomputed_file_rows.0[f])
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                    }
-
-                    log::info!("Found (in #1): {:?}", find_found_lines_1);
-                    log::info!("Found (in #2): {:?}", find_found_lines_2);
-
-                    if find_found_lines_1.len() > 0 || find_found_lines_2.len() > 0 {
-                        let mut all_found_lines = find_found_lines_1.clone();
-                        all_found_lines.extend(find_found_lines_2.clone());
-                        all_found_lines.dedup();
-                        all_found_lines.sort();
-                        diff_processor
-                            .find_cursor
-                            .set_max(all_found_lines.len().saturating_sub(1));
-                        diff_processor.find_cursor.set(0);
-                        diff_processor.find_cursor.invalidate_ack();
+                    if let Some(ctx) = diff_processor.get_diff_ctx() {
+                        let cached_file_1 = file_1.get_cached_file().clone();
+                        let cached_file_2 = file_2.get_cached_file().clone();
+                        let file_1 = cached_file_1.as_deref();
+                        let file_2 = cached_file_2.as_deref();
+                        let find_ctx =
+                            FindCtx::new(find_input, file_1, file_2, &ctx.precomputed_file_rows);
+                        diff_processor.update_find(find_ctx);
                     }
 
                     find_input.clear();
@@ -612,16 +568,15 @@ impl<'a> ZApp {
                 }
             });
             if !find_window_open {
+                find_input.clear();
                 *find_open = find_window_open;
             }
 
-            let DiffProcessor {
-                in_progress_input,
-                conflict_cursor,
-                active_highlights,
-                pivot,
-                ..
-            } = diff_processor;
+            let scroll_to_rows = diff_processor.get_scroll_to_row();
+            if let Some(scroll_to) = scroll_to_rows {
+                log::info!("Navigating to line: {:?}", scroll_to);
+                diff_processor.set_last_scroll_to_row(scroll_to_rows);
+            }
 
             let mut conflict_cursor = diff_processor.conflict_cursor.clone();
             let mut active_highlights = diff_processor.active_highlights.clone();
@@ -727,8 +682,6 @@ impl<'a> ZApp {
             diff_processor.find_cursor = clone_find;
             diff_processor.conflict_cursor = clone_conflict;
 
-            *scroll_to_rows = None;
-
             for (_tile_id, tile) in self.tree.tiles.iter() {
                 if let Tile::Pane(Pane::FileDiff(..)) = tile {
                     let source = app_ctx.file_1.get_path_as_string();
@@ -807,25 +760,17 @@ impl<'a> ZApp {
                 }
 
                 if r.modifiers.shift && r.key_pressed(egui::Key::Enter) {
-                    if app_state_ctx.find_found_lines_1.len() > 0
-                        || app_state_ctx.find_found_lines_2.len() > 0
-                    {
-                        app_state_ctx.diff_processor.find_cursor.dec();
-                        log::info!(
-                            "FindCursor-- @{}",
-                            app_state_ctx.diff_processor.find_cursor.get()
-                        );
-                    }
+                    app_state_ctx.diff_processor.find_cursor.dec();
+                    log::info!(
+                        "FindCursor-- @{}",
+                        app_state_ctx.diff_processor.find_cursor.get()
+                    );
                 } else if r.key_pressed(egui::Key::Enter) {
-                    if app_state_ctx.find_found_lines_1.len() > 0
-                        || app_state_ctx.find_found_lines_2.len() > 0
-                    {
-                        app_state_ctx.diff_processor.find_cursor.inc();
-                        log::info!(
-                            "FindCursor++ @{}",
-                            app_state_ctx.diff_processor.find_cursor.get()
-                        );
-                    }
+                    app_state_ctx.diff_processor.find_cursor.inc();
+                    log::info!(
+                        "FindCursor++ @{}",
+                        app_state_ctx.diff_processor.find_cursor.get()
+                    );
                 }
 
                 // ### KEYBINDINGS ###
@@ -1053,20 +998,6 @@ impl eframe::App for ZApp {
                 }
 
                 state.diff_processor.poll_diff_channel();
-
-                if let Some(conflict_cursor) = state.diff_processor.update_conflict_cursor() {
-                    state.scroll_to_rows = Some(conflict_cursor);
-                }
-                if let Some(find_cursor) = state
-                    .diff_processor
-                    .update_find(&state.find_found_lines_1, &state.find_found_lines_2)
-                {
-                    state.scroll_to_rows = Some(find_cursor);
-                }
-
-                if let Some(scroll_to) = &state.scroll_to_rows {
-                    log::info!("Navigating to line: {:?}", scroll_to);
-                }
 
                 self.ui(ctx, frame, &mut state);
 

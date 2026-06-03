@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use crate::{clamped_cursor::ClampedCursor, diff_ctx::DiffCtx, ui_egui::panes::ZAppPane};
+use crate::{
+    clamped_cursor::ClampedCursor,
+    diff_ctx::{DiffCtx, ScrollSpan},
+    ui_egui::panes::ZAppPane,
+};
 use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
 use zcommon::hash::hash_contents;
@@ -34,7 +38,7 @@ pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
     pub scroll_left: &'a mut f32,
     pub scroll_right: &'a mut f32,
 
-    pub scroll_to_row_span: &'a Option<(usize, Option<usize>)>,
+    pub scroll_to_row_span: &'a Option<ScrollSpan>,
     pub active_highlights: &'a Vec<usize>,
     pub conflict_cursor: &'a mut ClampedCursor,
     pub find_cursor: &'a mut ClampedCursor,

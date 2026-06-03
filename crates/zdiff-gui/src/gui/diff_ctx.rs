@@ -42,6 +42,9 @@ impl PartialEq for UpdateDiffRowsInput {
     }
 }
 
+pub type PrecomputedFileRows = (Vec<usize>, Vec<usize>); // line mapping from DiffRow index to DiffRow line number
+pub type ScrollSpan = (usize, Option<usize>); // Span with optional end
+
 #[derive(Debug, Default)]
 pub struct DiffCtx {
     pub file_1_hash: String,
@@ -54,7 +57,7 @@ pub struct DiffCtx {
     pub one_sided_diff_is_left: Option<bool>,
     pub diff_option: DiffBuilderOptions,
     pub precomputed_diffs: Vec<(usize, usize)>, // list indicies of diff_rows of DiffOp != Equal from diff_rows
-    pub precomputed_file_rows: (Vec<usize>, Vec<usize>), // line mapping from DiffRow index to DiffRow line number
+    pub precomputed_file_rows: PrecomputedFileRows,
     // Myers
     pub diff_rows: Vec<DiffRow>,
     pub num_add_deletes: (u32, u32),
@@ -79,6 +82,10 @@ pub struct DiffProcessor {
     pub active_highlights: Vec<usize>,
     pub pivot: (Option<usize>, Option<usize>),
     pub find_cursor: ClampedCursor,
+    pub find_ctx: FindCtx,
+    goto_line_number: Option<usize>,
+
+    last_scroll_to_row: Option<ScrollSpan>,
 }
 
 impl Default for DiffProcessor {
@@ -92,7 +99,73 @@ impl Default for DiffProcessor {
             in_progress_input: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
             find_cursor: ClampedCursor::default(),
+            find_ctx: FindCtx::default(),
+            last_scroll_to_row: None,
+            goto_line_number: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FindCtx {
+    found_lines_1: Vec<usize>,
+    found_lines_2: Vec<usize>,
+    cached_found_lines: Vec<usize>,
+}
+impl FindCtx {
+    pub fn new(
+        find_input: &str,
+        file_1: Option<&CachedFile<RawToken>>,
+        file_2: Option<&CachedFile<RawToken>>,
+        precomputed_file_rows: &PrecomputedFileRows,
+    ) -> Self {
+        Self::create_find_ctx(find_input, file_1, file_2, precomputed_file_rows)
+    }
+
+    fn get_all_found_lines(found_lines_1: &Vec<usize>, found_lines_2: &Vec<usize>) -> Vec<usize> {
+        let mut all_found_lines = found_lines_1.clone();
+        all_found_lines.extend(found_lines_2.clone());
+        all_found_lines.dedup();
+        all_found_lines.sort();
+        all_found_lines
+    }
+
+    fn create_find_ctx(
+        find_input: &str,
+        file_1: Option<&CachedFile<RawToken>>,
+        file_2: Option<&CachedFile<RawToken>>,
+        precomputed_file_rows: &PrecomputedFileRows,
+    ) -> Self {
+        let mut find_found_lines_1: Vec<usize> = Vec::new();
+        let mut find_found_lines_2: Vec<usize> = Vec::new();
+
+        if let Some(file) = file_1 {
+            find_found_lines_1 = file
+                .content_search(&find_input)
+                .into_iter()
+                .map(|f| precomputed_file_rows.0[f])
+                .collect()
+        }
+
+        if let Some(file) = file_2 {
+            find_found_lines_2 = file
+                .content_search(&find_input)
+                .into_iter()
+                .map(|f| precomputed_file_rows.0[f])
+                .collect()
+        }
+        log::debug!("Found (in #1): {:?}", find_found_lines_1);
+        log::debug!("Found (in #2): {:?}", find_found_lines_2);
+
+        let cached_found_lines =
+            Self::get_all_found_lines(&find_found_lines_1, &find_found_lines_2);
+        let find_ctx = Self {
+            found_lines_1: find_found_lines_1,
+            found_lines_2: find_found_lines_2,
+            cached_found_lines,
+        };
+        log::debug!("create_find_ctx: {:?}", find_ctx);
+        find_ctx
     }
 }
 
@@ -183,7 +256,7 @@ impl DiffProcessor {
         }
     }
 
-    pub fn update_conflict_cursor(&mut self) -> Option<(usize, Option<usize>)> {
+    pub fn update_conflict_cursor(&mut self) -> Option<ScrollSpan> {
         let mut ret = None;
         if self.conflict_cursor.has_changed() {
             self.conflict_cursor.ack_change();
@@ -205,32 +278,62 @@ impl DiffProcessor {
         ret
     }
 
-    // TODO: FIX find_found_lines_1: Vec<usize>,
-    pub fn update_find(
-        &mut self,
-        find_found_lines_1: &Vec<usize>,
-        find_found_lines_2: &Vec<usize>,
-    ) -> Option<(usize, Option<usize>)> {
-        let mut ret = None;
-        // FIND
+    pub fn update_goto(&mut self, line_number: Option<usize>) {
+        log::info!("Goto to line: {:?}", line_number);
+        self.goto_line_number = line_number;
+    }
+
+    pub fn update_find(&mut self, find_ctx: FindCtx) {
+        self.find_ctx = find_ctx;
+        if self.find_ctx.cached_found_lines.len() > 0 {
+            self.find_cursor
+                .set_max(self.find_ctx.cached_found_lines.len().saturating_sub(1));
+            self.find_cursor.set(0);
+            self.find_cursor.invalidate_ack();
+        }
+
         if self.find_cursor.has_changed() {
             self.find_cursor.ack_change();
-
-            let mut all_found_lines = find_found_lines_1.clone();
-            all_found_lines.extend(find_found_lines_2.clone());
-            all_found_lines.dedup();
-            all_found_lines.sort();
-            assert_eq!(
-                self.find_cursor.get_max(),
-                all_found_lines.len().saturating_sub(1)
-            );
-
-            let find_idx_1 = all_found_lines.get(self.find_cursor.get()).cloned();
-
-            // TODO: Improve so that user can decide which 1/2 file search operates on
-            ret = Some((find_idx_1.unwrap_or_default(), None));
-            log::info!("Find cursor moved to index: {}", self.find_cursor.get());
         }
+    }
+
+    pub fn set_last_scroll_to_row(&mut self, scroll_to_row: Option<ScrollSpan>) {
+        log::trace!("set_last_scroll_to_row: {:?}", scroll_to_row);
+        self.last_scroll_to_row = scroll_to_row;
+    }
+
+    pub fn get_scroll_to_row(&self) -> Option<ScrollSpan> {
+        let goto_scroll_to_rows: Option<ScrollSpan> = self
+            .goto_line_number
+            .and_then(|f| Some((f.saturating_sub(1), None)));
+        let find_scroll_to_rows: Option<ScrollSpan> = self.find_scroll_to_row();
+
+        let scroll_to_rows = goto_scroll_to_rows.or_else(|| find_scroll_to_rows);
+
+        if self.last_scroll_to_row != scroll_to_rows {
+            scroll_to_rows
+        } else {
+            None
+        }
+    }
+
+    pub fn find_scroll_to_row(&self) -> Option<ScrollSpan> {
+        let mut ret = None;
+
+        assert_eq!(
+            self.find_cursor.get_max(),
+            self.find_ctx.cached_found_lines.len().saturating_sub(1)
+        );
+
+        let find_idx_1 = self
+            .find_ctx
+            .cached_found_lines
+            .get(self.find_cursor.get())
+            .cloned();
+
+        // TODO: Improve so that user can decide which 1/2 file search operates on
+        ret = Some((find_idx_1.unwrap_or_default(), None));
+
         ret
     }
 
