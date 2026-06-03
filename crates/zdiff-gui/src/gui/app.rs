@@ -528,12 +528,7 @@ impl<'a> ZApp {
 
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     if let Some(ctx) = diff_processor.get_diff_ctx() {
-                        let cached_file_1 = file_1.get_cached_file().clone();
-                        let cached_file_2 = file_2.get_cached_file().clone();
-                        let file_1 = cached_file_1.as_deref();
-                        let file_2 = cached_file_2.as_deref();
-                        let find_ctx =
-                            FindCtx::new(find_input, file_1, file_2, &ctx.precomputed_file_rows);
+                        let find_ctx = FindCtx::new(find_input, ctx);
                         diff_processor.update_find(find_ctx);
                     }
 

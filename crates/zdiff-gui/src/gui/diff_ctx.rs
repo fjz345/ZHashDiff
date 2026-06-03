@@ -42,6 +42,59 @@ impl PartialEq for UpdateDiffRowsInput {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct FindCtx {
+    _found_lines_1: Vec<usize>,
+    _found_lines_2: Vec<usize>,
+    cached_found_lines: Vec<usize>,
+}
+impl FindCtx {
+    pub fn new(find_input: &str, diff_ctx: &DiffCtx) -> Self {
+        Self::create_find_ctx(find_input, diff_ctx)
+    }
+
+    fn get_all_found_lines(found_lines_1: &Vec<usize>, found_lines_2: &Vec<usize>) -> Vec<usize> {
+        let mut all_found_lines = found_lines_1.clone();
+        all_found_lines.extend(found_lines_2.clone());
+        all_found_lines.dedup();
+        all_found_lines.sort();
+        all_found_lines
+    }
+
+    fn create_find_ctx(find_input: &str, diff_ctx: &DiffCtx) -> Self {
+        let mut find_found_lines_1: Vec<usize> = Vec::new();
+        let mut find_found_lines_2: Vec<usize> = Vec::new();
+
+        if let Some(file) = &diff_ctx.update_diff_rows_input.file_1 {
+            find_found_lines_1 = file
+                .content_search(&find_input)
+                .into_iter()
+                .map(|f| diff_ctx.precomputed_file_rows.0[f])
+                .collect()
+        }
+
+        if let Some(file) = &diff_ctx.update_diff_rows_input.file_2 {
+            find_found_lines_2 = file
+                .content_search(&find_input)
+                .into_iter()
+                .map(|f| diff_ctx.precomputed_file_rows.1[f])
+                .collect()
+        }
+        log::debug!("Found (in #1): {:?}", find_found_lines_1);
+        log::debug!("Found (in #2): {:?}", find_found_lines_2);
+
+        let cached_found_lines =
+            Self::get_all_found_lines(&find_found_lines_1, &find_found_lines_2);
+        let find_ctx = Self {
+            _found_lines_1: find_found_lines_1,
+            _found_lines_2: find_found_lines_2,
+            cached_found_lines,
+        };
+        log::debug!("create_find_ctx: {:?}", find_ctx);
+        find_ctx
+    }
+}
+
 pub type PrecomputedFileRows = (Vec<usize>, Vec<usize>); // line mapping from DiffRow index to DiffRow line number
 pub type ScrollSpan = (usize, Option<usize>); // Span with optional end
 
@@ -107,69 +160,6 @@ impl Default for DiffProcessor {
             last_goto_scroll_to_row: None,
             last_find_scroll_to_row: None,
         }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct FindCtx {
-    _found_lines_1: Vec<usize>,
-    _found_lines_2: Vec<usize>,
-    cached_found_lines: Vec<usize>,
-}
-impl FindCtx {
-    pub fn new(
-        find_input: &str,
-        file_1: Option<&CachedFile<RawToken>>,
-        file_2: Option<&CachedFile<RawToken>>,
-        precomputed_file_rows: &PrecomputedFileRows,
-    ) -> Self {
-        Self::create_find_ctx(find_input, file_1, file_2, precomputed_file_rows)
-    }
-
-    fn get_all_found_lines(found_lines_1: &Vec<usize>, found_lines_2: &Vec<usize>) -> Vec<usize> {
-        let mut all_found_lines = found_lines_1.clone();
-        all_found_lines.extend(found_lines_2.clone());
-        all_found_lines.dedup();
-        all_found_lines.sort();
-        all_found_lines
-    }
-
-    fn create_find_ctx(
-        find_input: &str,
-        file_1: Option<&CachedFile<RawToken>>,
-        file_2: Option<&CachedFile<RawToken>>,
-        precomputed_file_rows: &PrecomputedFileRows,
-    ) -> Self {
-        let mut find_found_lines_1: Vec<usize> = Vec::new();
-        let mut find_found_lines_2: Vec<usize> = Vec::new();
-
-        if let Some(file) = file_1 {
-            find_found_lines_1 = file
-                .content_search(&find_input)
-                .into_iter()
-                .map(|f| precomputed_file_rows.0[f])
-                .collect()
-        }
-
-        if let Some(file) = file_2 {
-            find_found_lines_2 = file
-                .content_search(&find_input)
-                .into_iter()
-                .map(|f| precomputed_file_rows.0[f])
-                .collect()
-        }
-        log::debug!("Found (in #1): {:?}", find_found_lines_1);
-        log::debug!("Found (in #2): {:?}", find_found_lines_2);
-
-        let cached_found_lines =
-            Self::get_all_found_lines(&find_found_lines_1, &find_found_lines_2);
-        let find_ctx = Self {
-            _found_lines_1: find_found_lines_1,
-            _found_lines_2: find_found_lines_2,
-            cached_found_lines,
-        };
-        log::debug!("create_find_ctx: {:?}", find_ctx);
-        find_ctx
     }
 }
 
@@ -252,6 +242,7 @@ impl DiffProcessor {
             if self.in_progress_input.as_ref() == Some(&new_ctx.update_diff_rows_input) {
                 self.ctx = Some(new_ctx);
                 self.in_progress_input = None;
+                self.update_find(FindCtx::default());
             }
         }
     }
@@ -263,11 +254,9 @@ impl DiffProcessor {
 
     pub fn update_find(&mut self, find_ctx: FindCtx) {
         self.find_ctx = find_ctx;
-        if self.find_ctx.cached_found_lines.len() > 0 {
-            self.find_cursor
-                .set_max(self.find_ctx.cached_found_lines.len().saturating_sub(1));
-            self.find_cursor.set(0);
-        }
+        self.find_cursor
+            .set_max(self.find_ctx.cached_found_lines.len().saturating_sub(1));
+        self.find_cursor.set(0);
     }
 
     pub fn get_scroll_to_row(&mut self) -> Option<ScrollSpan> {
