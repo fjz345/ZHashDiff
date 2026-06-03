@@ -243,6 +243,13 @@ impl DiffProcessor {
                 self.ctx = Some(new_ctx);
                 self.in_progress_input = None;
                 self.update_find(FindCtx::default());
+                self.conflict_cursor.set(0);
+                self.goto_line_number = None;
+                self.pivot = (None, None);
+                self.active_highlights.clear();
+                self.last_conflict_scroll_to_row = None;
+                self.last_goto_scroll_to_row = None;
+                self.last_find_scroll_to_row = None;
             }
         }
     }
