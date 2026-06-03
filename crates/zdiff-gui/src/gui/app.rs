@@ -31,18 +31,19 @@ use crate::{
 pub struct AppStateCtx {
     pub file_1: FileProcessor,
     pub file_2: FileProcessor,
-    pub diffpane_file_1_buffer: String,
-    pub diffpane_file_2_buffer: String,
-
-    pub diff_lexer_mode: u8,
-    pub diff_options: DiffBuilderOptions,
 
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub diff_processor: DiffProcessor,
 
-    #[cfg_attr(feature = "serde", serde(skip))]
+    pub diff_lexer_mode: u8,
+    pub diff_options: DiffBuilderOptions,
+
     pub myers_diff_algorithm: MyersDiffAlgorithm,
 
+    // ### Keybindings
+    pub keybindings: Keybindings,
+
+    // ### UI TEMP
     pub scroll_left: f32,
     pub scroll_right: f32,
 
@@ -54,9 +55,6 @@ pub struct AppStateCtx {
     pub find_open: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub find_input: String,
-
-    // ### Keybindings
-    pub keybindings: Keybindings,
 }
 
 impl Default for AppStateCtx {
@@ -64,8 +62,6 @@ impl Default for AppStateCtx {
         Self {
             file_1: Default::default(),
             file_2: Default::default(),
-            diffpane_file_1_buffer: Default::default(),
-            diffpane_file_2_buffer: Default::default(),
             diff_options: Default::default(),
             diff_processor: Default::default(),
             scroll_left: Default::default(),
@@ -130,7 +126,6 @@ pub struct ZApp {
 
     #[serde(skip)]
     open_shortcuts_window: bool,
-
     #[serde(skip)]
     open_universal_path_window: bool,
 }
@@ -484,8 +479,6 @@ impl<'a> ZApp {
                 diff_lexer_mode: lexer_mode,
                 keybindings,
                 myers_diff_algorithm,
-                diffpane_file_1_buffer: _,
-                diffpane_file_2_buffer: _,
                 diff_processor,
             } = app_ctx;
             self.show_menu(

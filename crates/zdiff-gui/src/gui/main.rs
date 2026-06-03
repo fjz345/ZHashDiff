@@ -11,7 +11,6 @@ mod diff_ctx;
 mod file;
 mod keybindings;
 mod p4;
-mod quick_diff;
 pub mod ui_egui;
 
 #[cfg(feature = "debug_alloc")]
