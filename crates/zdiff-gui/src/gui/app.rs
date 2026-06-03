@@ -577,28 +577,10 @@ impl<'a> ZApp {
                 log::info!("Navigating to line: {:?}", scroll_to);
             }
 
+            let active_highlights = diff_processor.active_highlights.clone();
             let mut conflict_cursor = diff_processor.conflict_cursor.clone();
-            let mut active_highlights = diff_processor.active_highlights.clone();
             let mut pivot: (Option<usize>, Option<usize>) = diff_processor.pivot;
             let mut find_cursor = diff_processor.find_cursor.clone();
-
-            if let Some((start, maybe_end)) = &mut scroll_to_rows.as_ref() {
-                diff_processor.active_highlights.clear();
-                if let Some(end) = maybe_end {
-                    diff_processor.active_highlights.extend(*start..=*end);
-                } else {
-                    diff_processor.active_highlights.push(*start);
-                }
-            }
-
-            if let Some((start, maybe_end)) = &mut scroll_to_rows.as_ref() {
-                active_highlights.clear();
-                if let Some(end) = maybe_end {
-                    active_highlights.extend(*start..=*end);
-                } else {
-                    active_highlights.push(*start);
-                }
-            }
 
             let mut behavior = TreeBehavior {
                 ctx_file_diff: FileDiffPaneCtx {
@@ -997,8 +979,6 @@ impl eframe::App for ZApp {
                 }
 
                 state.diff_processor.poll_diff_channel();
-
-                // state.diff_processor.update_conflict_cursor();
 
                 self.ui(ctx, frame, &mut state);
 

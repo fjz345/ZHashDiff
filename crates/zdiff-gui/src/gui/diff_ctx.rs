@@ -302,6 +302,15 @@ impl DiffProcessor {
         let scroll_to_rows =
             find_scroll_to_rows.or_else(|| goto_scroll_to_rows.or_else(|| conflict_scroll_to_row));
 
+        if let Some((start, maybe_end)) = &scroll_to_rows {
+            self.active_highlights.clear();
+            if let Some(end) = maybe_end {
+                self.active_highlights.extend(*start..=*end);
+            } else {
+                self.active_highlights.push(*start);
+            }
+        }
+
         scroll_to_rows
     }
 
