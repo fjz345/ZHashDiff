@@ -112,8 +112,8 @@ impl Default for DiffProcessor {
 
 #[derive(Debug, Clone, Default)]
 pub struct FindCtx {
-    found_lines_1: Vec<usize>,
-    found_lines_2: Vec<usize>,
+    _found_lines_1: Vec<usize>,
+    _found_lines_2: Vec<usize>,
     cached_found_lines: Vec<usize>,
 }
 impl FindCtx {
@@ -164,8 +164,8 @@ impl FindCtx {
         let cached_found_lines =
             Self::get_all_found_lines(&find_found_lines_1, &find_found_lines_2);
         let find_ctx = Self {
-            found_lines_1: find_found_lines_1,
-            found_lines_2: find_found_lines_2,
+            _found_lines_1: find_found_lines_1,
+            _found_lines_2: find_found_lines_2,
             cached_found_lines,
         };
         log::debug!("create_find_ctx: {:?}", find_ctx);
@@ -174,10 +174,6 @@ impl FindCtx {
 }
 
 impl DiffProcessor {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn reset_ctx(&mut self) {
         self.ctx = None;
     }
@@ -329,8 +325,6 @@ impl DiffProcessor {
     }
 
     pub fn find_scroll_to_row(&self) -> Option<ScrollSpan> {
-        let mut ret = None;
-
         assert_eq!(
             self.find_cursor.get_max(),
             self.find_ctx.cached_found_lines.len().saturating_sub(1)
@@ -343,9 +337,7 @@ impl DiffProcessor {
             .cloned();
 
         // TODO: Improve so that user can decide which 1/2 file search operates on
-        ret = Some((find_idx_1.unwrap_or_default(), None));
-
-        ret
+        Some((find_idx_1.unwrap_or_default(), None))
     }
 
     pub fn get_diff_ctx(&self) -> Option<&DiffCtx> {

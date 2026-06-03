@@ -1,22 +1,11 @@
 use eframe::egui::{self, Layout, PointerButton};
 use serde::{Deserialize, Serialize};
-use std::{
-    env,
-    path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, channel},
-    },
-};
-use zcommon::{hash::hash_contents, ui_egui::common::show_custom_popup};
+use std::{env, path::PathBuf, sync::mpsc};
+use zcommon::ui_egui::common::show_custom_popup;
 use zdiff::{
-    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
-    diff_ir::{DiffIR, DiffOp},
-    lexer::{
-        LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE, RawToken,
-    },
-    myers::{MyersDiffAlgorithm, myers_count_add_deletes, myers_diff_path},
+    diff_builder::DiffBuilderOptions,
+    lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
+    myers::MyersDiffAlgorithm,
     universal_path::UniversalPath,
 };
 
@@ -27,8 +16,7 @@ use eframe::{
 use egui_tiles::Tile;
 
 use crate::{
-    clamped_cursor::ClampedCursor,
-    diff_ctx::{DiffCtx, DiffProcessor, FindCtx, ScrollSpan, UpdateDiffRowsInput},
+    diff_ctx::{DiffProcessor, FindCtx, UpdateDiffRowsInput},
     file::FileProcessor,
     keybindings::{Keybindings, Shortcut, ui_keybindings},
     p4::{P4Command, get_p4_config, ui_p4config, update_p4_config},
@@ -141,11 +129,6 @@ pub struct ZApp {
     tree: egui_tiles::Tree<Pane>,
 
     #[serde(skip)]
-    update_diff_rows_thread_handle: Option<std::thread::JoinHandle<()>>,
-    #[serde(skip)]
-    update_diff_rows_cancel_flag: Option<Arc<AtomicBool>>,
-
-    #[serde(skip)]
     open_shortcuts_window: bool,
 
     #[serde(skip)]
@@ -198,8 +181,6 @@ impl<'a> ZApp {
             tree: Self::create_tree(),
             open_shortcuts_window: false,
             open_universal_path_window: false,
-            update_diff_rows_thread_handle: None,
-            update_diff_rows_cancel_flag: None,
         }
     }
 

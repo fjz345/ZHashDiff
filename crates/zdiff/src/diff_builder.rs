@@ -532,7 +532,7 @@ mod integration_tests {
     use super::*;
     use crate::cached_file::CachedFile;
     use crate::diff_ir::DiffIR;
-    use crate::lexer::{LEXER_MODE_DEFAULT, LexerDefault, RawToken};
+    use crate::lexer::{LEXER_MODE_DEFAULT, RawToken};
     use crate::myers::{
         myers_backtrack, myers_diff_linear, myers_diff_linear_mt, myers_diff_trace,
     };
