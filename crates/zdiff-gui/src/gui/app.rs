@@ -615,13 +615,13 @@ impl<'a> ZApp {
                 *find_open = find_window_open;
             }
 
-            // let DiffProcessor {
-            //     in_progress_input,
-            //     conflict_cursor,
-            //     active_highlights,
-            //     pivot,
-            //     ..
-            // } = diff_processor;
+            let DiffProcessor {
+                in_progress_input,
+                conflict_cursor,
+                active_highlights,
+                pivot,
+                ..
+            } = diff_processor;
 
             let mut conflict_cursor = diff_processor.conflict_cursor.clone();
             let mut active_highlights = diff_processor.active_highlights.clone();

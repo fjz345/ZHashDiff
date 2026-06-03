@@ -28,16 +28,18 @@ pub fn update_p4_config(new_config: P4Config) {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct P4Config {
-    pub p4_port: String,    // e.g., "localhost:1666"
-    pub p4_user: String,    // e.g., "admin"
-    pub p4_client: String,  // e.g., "my_workspace"
-    pub p4_charset: String, // e.g., "utf8"
+    pub port: String,     // e.g., "localhost:1666"
+    pub user: String,     // e.g., "admin"
+    pub client: String,   // e.g., "my_workspace"
+    pub charset: String,  // e.g., "utf8"
+    pub password: String, // e.g., "secret"
 }
 
-pub fn ui_p4config(ui: &mut egui::Ui, config: &mut P4Config) -> egui::Response {
+pub fn ui_p4config(ui: &mut egui::Ui, config: &mut P4Config) {
     ui.vertical(|ui| {
         ui.heading("Perforce Configuration");
         ui.label("Uses $P4PORT, $P4USER, and $P4CLIENT if not specified here");
+        ui.label("# to unset an env var for the command");
 
         if ui.button("Reset to Defaults").clicked() {
             *config = P4Config::default();
@@ -59,17 +61,14 @@ pub fn ui_p4config(ui: &mut egui::Ui, config: &mut P4Config) -> egui::Response {
                     ui.end_row();
                 };
 
-                edit_row("P4PORT", &mut config.p4_port, "ssl:perforce:1666");
-                edit_row("P4USER", &mut config.p4_user, "username");
-                edit_row("P4CLIENT", &mut config.p4_client, "workspace_name");
-                edit_row("P4CHARSET", &mut config.p4_charset, "utf8");
+                edit_row("P4PORT", &mut config.port, "ssl:perforce:1666");
+                edit_row("P4USER", &mut config.user, "username");
+                edit_row("P4CLIENT", &mut config.client, "workspace_name");
+                edit_row("P4CHARSET", &mut config.charset, "utf8");
             });
 
         ui.add_space(10.0);
-
-        ui.button("Save Settings")
-    })
-    .inner
+    });
 }
 
 pub struct P4Command {
@@ -93,24 +92,21 @@ impl P4Command {
     fn prepare_cmd(&self) -> Command {
         let mut cmd = Command::new(&self.exe_path);
 
-        // Extremely important, will silently fail
-        if env::var("P4CHARSET").is_err() {
-            cmd.args(["-C", "utf8"]);
-        }
+        let apply_cmd_env = |cmd: &mut Command, str: &str, env_var: &'static str| {
+            if !str.is_empty() {
+                cmd.env(env_var, &str);
+            } else if str == "#" {
+                cmd.env(env_var, "");
+            }
+        };
 
         let config = get_p4_config();
-        if !config.p4_port.is_empty() {
-            cmd.env("P4PORT", &config.p4_port);
-        }
-        if !config.p4_user.is_empty() {
-            cmd.env("P4USER", &config.p4_user);
-        }
-        if !config.p4_client.is_empty() {
-            cmd.env("P4CLIENT", &config.p4_client);
-        }
-        if !config.p4_charset.is_empty() {
-            cmd.env("P4CHARSET", &config.p4_charset);
-        }
+        apply_cmd_env(&mut cmd, &config.port, "P4PORT");
+        apply_cmd_env(&mut cmd, &config.user, "P4USER");
+        apply_cmd_env(&mut cmd, &config.password, "P4PASSWORD");
+        apply_cmd_env(&mut cmd, &config.client, "P4CLIENT");
+        apply_cmd_env(&mut cmd, &config.charset, "P4CHARSET");
+
         cmd
     }
 
