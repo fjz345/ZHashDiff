@@ -95,6 +95,7 @@ impl FindCtx {
     }
 }
 
+pub type PrecomputedDiffs = Vec<(usize, usize)>; // list spans with indicies of diff_rows of DiffOp != Equal from diff_rows
 pub type PrecomputedFileRows = (Vec<usize>, Vec<usize>); // line mapping from DiffRow index to DiffRow line number
 pub type ScrollSpan = (usize, Option<usize>); // Span with optional end
 
@@ -111,7 +112,7 @@ pub struct DiffCtx {
     pub diff_rows: Vec<DiffRow>,
     pub num_add_deletes: (u32, u32),
 
-    pub precomputed_diffs: Vec<(usize, usize)>, // list indicies of diff_rows of DiffOp != Equal from diff_rows
+    pub precomputed_diffs: PrecomputedDiffs,
     pub precomputed_file_rows: PrecomputedFileRows,
 }
 
@@ -344,7 +345,7 @@ impl DiffProcessor {
     }
 }
 
-fn precompute_diff_spans(diff_rows: &[DiffRow]) -> Vec<(usize, usize)> {
+fn precompute_diff_spans(diff_rows: &[DiffRow]) -> PrecomputedDiffs {
     let has_change = |content: &LineContent| match content {
         LineContent::Code { tokens, .. } => tokens
             .iter()
