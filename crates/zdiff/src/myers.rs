@@ -3,6 +3,8 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+type MyersPath = Vec<(i32, i32)>;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MyersDiffAlgorithm {
@@ -18,7 +20,7 @@ pub fn myers_diff_path<T, F>(
     target: &[T],
     cmp: F,
     cancel_flag: Arc<AtomicBool>,
-) -> Option<Vec<(i32, i32)>>
+) -> Option<MyersPath>
 where
     T: Sync,
     F: Fn(&T, &T) -> bool + Sync,
@@ -136,7 +138,7 @@ pub fn myers_backtrack(
     source_len: i32,
     target_len: i32,
     cancel_flag: Arc<AtomicBool>,
-) -> Option<Vec<(i32, i32)>> {
+) -> Option<MyersPath> {
     let mut path = Vec::with_capacity((source_len + target_len) as usize + 1);
     let mut current_x = source_len;
     let mut current_y = target_len;
@@ -392,7 +394,7 @@ fn find_path<T, F>(
     target: &[T],
     cmp: &mut F,
     bufs: &mut SearchBuffers,
-    path: &mut Vec<(i32, i32)>,
+    path: &mut MyersPath,
     cancel_flag: Arc<AtomicBool>,
 ) where
     F: FnMut(&T, &T) -> bool,
@@ -450,7 +452,7 @@ pub fn myers_diff_linear<T, F>(
     target: &[T],
     mut cmp: F,
     cancel_flag: Arc<AtomicBool>,
-) -> Option<Vec<(i32, i32)>>
+) -> Option<MyersPath>
 where
     F: FnMut(&T, &T) -> bool,
 {
@@ -521,7 +523,7 @@ fn find_path_mt<T, F>(
     source: &[T],
     target: &[T],
     cmp: &F,
-    path: &mut Vec<(i32, i32)>,
+    path: &mut MyersPath,
     cancel_flag: Arc<AtomicBool>,
 ) where
     T: Sync,
@@ -728,7 +730,7 @@ pub fn myers_diff_linear_mt<T, F>(
     target: &[T],
     cmp: F,
     cancel_flag: Arc<AtomicBool>,
-) -> Option<Vec<(i32, i32)>>
+) -> Option<MyersPath>
 where
     T: Sync,
     F: Fn(&T, &T) -> bool + Sync,
