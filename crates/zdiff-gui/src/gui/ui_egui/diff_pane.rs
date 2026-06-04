@@ -243,19 +243,7 @@ impl FileDiffPane {
                 waiting_for_diff = true;
                 true
             }
-            (Some(_), Some(_), Some(_)) => {
-                let mut do_not_render = false;
-                if let (Some(f1), Some(diff_ctx)) = (&ctx.file_source, &ctx.diff_ctx) {
-                    let hash = hash_contents(&f1.contents.as_bytes());
-                    do_not_render |= diff_ctx.file_1_hash != hash;
-                }
-                if let (Some(f2), Some(diff_ctx)) = (&ctx.file_target, &ctx.diff_ctx) {
-                    let hash = hash_contents(&f2.contents.as_bytes());
-                    do_not_render |= diff_ctx.file_2_hash != hash;
-                }
-                waiting_for_diff = do_not_render;
-                if do_not_render { true } else { false }
-            }
+            (Some(_), Some(_), Some(_)) => false,
         };
 
         ui.add_space(4.0);

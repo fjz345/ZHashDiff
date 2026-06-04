@@ -100,23 +100,22 @@ pub type ScrollSpan = (usize, Option<usize>); // Span with optional end
 
 #[derive(Debug, Default)]
 pub struct DiffCtx {
-    pub file_1_hash: String,
-    pub file_2_hash: String,
+    pub update_diff_rows_input: UpdateDiffRowsInput,
+
     #[cfg(debug_assertions)]
     pub debug_file_1_path: UniversalPath,
     #[cfg(debug_assertions)]
     pub debug_file_2_path: UniversalPath,
 
-    pub one_sided_diff_is_left: Option<bool>,
-    pub diff_option: DiffBuilderOptions,
-    pub precomputed_diffs: Vec<(usize, usize)>, // list indicies of diff_rows of DiffOp != Equal from diff_rows
-    pub precomputed_file_rows: PrecomputedFileRows,
     // Myers
     pub diff_rows: Vec<DiffRow>,
     pub num_add_deletes: (u32, u32),
 
-    pub update_diff_rows_input: UpdateDiffRowsInput,
+    pub precomputed_diffs: Vec<(usize, usize)>, // list indicies of diff_rows of DiffOp != Equal from diff_rows
+    pub precomputed_file_rows: PrecomputedFileRows,
 }
+
+impl DiffCtx {}
 
 fn default_result_channel() -> (mpsc::Sender<DiffCtx>, mpsc::Receiver<DiffCtx>) {
     mpsc::channel()
@@ -543,9 +542,6 @@ fn update_diff_rows(input: UpdateDiffRowsInput, cancel_flag: Arc<AtomicBool>) ->
         return None;
     }
 
-    let hash1 = hash_contents(&c1.contents.as_bytes());
-    let hash2 = hash_contents(&c2.contents.as_bytes());
-
     #[cfg(feature = "debug_alloc")]
     log::log!("Allocations hash_file: {:?}", reg.change_and_reset());
     let mut diff_rows: Vec<DiffRow> = build_diff_rows(
@@ -642,12 +638,8 @@ fn update_diff_rows(input: UpdateDiffRowsInput, cancel_flag: Arc<AtomicBool>) ->
         myers_diff_algorithm,
     };
     Some(DiffCtx {
-        file_1_hash: hash1,
-        file_2_hash: hash2,
-        diff_option: options.clone(),
         diff_rows,
         num_add_deletes: myers_count_add_deletes(&myers_path),
-        one_sided_diff_is_left,
         precomputed_diffs,
         precomputed_file_rows,
         #[cfg(debug_assertions)]

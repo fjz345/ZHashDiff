@@ -37,6 +37,7 @@ GUI for zdiff crate
 * Batch DiffRow performance optimzation
 * Quick Diff /w multiple p4 repositories
 
+* Color/style customization
 * Syncronized scroll bar (like p4)
 * user defined comparison per file format
 * better horizontal scrolling
