@@ -11,7 +11,7 @@ use crate::{
     universal_path::UniversalPath,
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct FileMetadata {
     pub line_starts: Vec<usize>,
 }
@@ -49,6 +49,15 @@ pub struct CachedFile<T: RawTokenTrait> {
     pub tokens: Vec<T>,
     pub metadata: FileMetadata,
     pub lexer_mode: u8,
+}
+
+impl<T: RawTokenTrait> PartialEq for CachedFile<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path
+            && self.lexer_mode == other.lexer_mode
+            && self.hash == other.hash
+            && self.metadata == other.metadata
+    }
 }
 
 impl<T: RawTokenTrait> CachedFile<T> {

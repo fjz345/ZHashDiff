@@ -4,6 +4,8 @@ debug
 target
 
 test
+.vscode
+.vs
 
 .env
 .p4config

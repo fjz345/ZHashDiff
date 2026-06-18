@@ -36,6 +36,13 @@ pub enum LineContent {
     Collapsed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PivotLines {
+    pub left: usize,
+    pub right: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DiffBuilderOptions {
@@ -43,7 +50,7 @@ pub struct DiffBuilderOptions {
     pub highlight_rows: bool,
     pub ghost_rows: bool,
     pub keyword_highlight: bool,
-    pub pivot_lines: Option<(usize, usize)>,
+    pub pivot_lines: Option<PivotLines>,
     pub diff_only_with_extra_rows: Option<usize>,
 }
 impl Default for DiffBuilderOptions {
@@ -66,7 +73,7 @@ impl DiffBuilderOptions {
             || old.ignore_whitespace != new.ignore_whitespace
             || old.keyword_highlight != new.keyword_highlight;
         if !ret {
-            ret = matches!(new.pivot_lines, Some((p1, p2)) if p1 > 0 && p2 > 0)
+            ret = matches!(new.pivot_lines, Some(PivotLines{left: p1, right: p2 }) if p1 > 0 && p2 > 0)
                 && old.pivot_lines != new.pivot_lines;
         }
 

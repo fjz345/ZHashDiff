@@ -1,14 +1,13 @@
 use eframe::egui::{self};
 use serde::{Deserialize, Serialize};
-use zdiff::lexer::RawTokenTrait;
 
 use crate::ui_egui::diff_pane::{FileDiffPane, FileDiffPaneCtx};
 
-pub struct TreeBehavior<'a, T: RawTokenTrait> {
-    pub ctx_file_diff: FileDiffPaneCtx<'a, T>,
+pub struct TreeBehavior<'a> {
+    pub ctx_file_diff: FileDiffPaneCtx<'a>,
 }
 
-impl<'a, T: RawTokenTrait> egui_tiles::Behavior<Pane> for TreeBehavior<'a, T> {
+impl<'a> egui_tiles::Behavior<Pane> for TreeBehavior<'a> {
     fn tab_title_for_pane(&mut self, pane: &Pane) -> egui::WidgetText {
         pane.title().into()
     }

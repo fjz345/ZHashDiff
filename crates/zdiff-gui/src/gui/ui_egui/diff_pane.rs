@@ -2,12 +2,11 @@ use std::sync::Arc;
 
 use crate::{
     clamped_cursor::ClampedCursor,
-    diff_ctx::{DiffCtx, ScrollSpan},
+    diff_ctx::{MinimalDiffCtx, ScrollSpan},
     ui_egui::panes::ZAppPane,
 };
 use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
-use zcommon::hash::hash_contents;
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, LineContent},
@@ -16,7 +15,7 @@ use zdiff::{
     universal_path::UniversalPath,
 };
 
-pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
+pub struct FileDiffPaneCtx<'a> {
     // need this because file_source can be none and we want to keep displaying
     // the text edit with the old path if even if it could not load a cachedfile
     pub file_source_path: UniversalPath,
@@ -29,11 +28,9 @@ pub struct FileDiffPaneCtx<'a, T: RawTokenTrait> {
     pub file_target_path_valid: bool,
     pub file_source_loading: bool,
     pub file_target_loading: bool,
+    pub diff_loading: bool,
 
-    pub file_source: Option<Arc<CachedFile<T>>>,
-    pub file_target: Option<Arc<CachedFile<T>>>,
-
-    pub diff_ctx: Option<&'a DiffCtx>,
+    pub diff_ctx: Option<&'a MinimalDiffCtx>,
     pub diff_options: &'a mut DiffBuilderOptions,
     pub scroll_left: &'a mut f32,
     pub scroll_right: &'a mut f32,
@@ -65,11 +62,7 @@ impl FileDiffPane {
         Self { title }
     }
 
-    pub fn ui<T: RawTokenTrait>(
-        &mut self,
-        ui: &mut egui::Ui,
-        ctx: &mut FileDiffPaneCtx<T>,
-    ) -> egui_tiles::UiResponse {
+    pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut FileDiffPaneCtx) -> egui_tiles::UiResponse {
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta.x + i.raw_scroll_delta.x);
         if scroll_delta != 0.0 {
             *ctx.scroll_left = (*ctx.scroll_left - scroll_delta).max(0.0);
@@ -230,11 +223,17 @@ impl FileDiffPane {
         });
 
         let diff_rows = ctx.diff_ctx.as_ref().and_then(|f| Some(&f.diff_rows));
-        let source_path = ctx.file_source.as_ref().and_then(|f| Some(&f.path));
-        let target_path = ctx.file_target.as_ref().and_then(|f| Some(&f.path));
+        let source_path = ctx
+            .diff_ctx
+            .map(|f| f.input.file_1.as_ref().and_then(|f| Some(&f.path)))
+            .unwrap_or_default();
+        let target_path = ctx
+            .diff_ctx
+            .map(|f| f.input.file_2.as_ref().and_then(|f| Some(&f.path)))
+            .unwrap_or_default();
 
         let mut waiting_for_diff = false;
-        let do_not_render_diff = match (&diff_rows, source_path, target_path) {
+        let mut do_not_render_diff = match (&diff_rows, source_path, target_path) {
             (Some(_), None, None) | (None, None, None) => true,
             (None, Some(_), None) => true,
             (None, None, Some(_)) => true,
@@ -245,6 +244,9 @@ impl FileDiffPane {
             }
             (Some(_), Some(_), Some(_)) => false,
         };
+        waiting_for_diff |= ctx.diff_loading;
+        do_not_render_diff |= waiting_for_diff;
+        let diff_rows_len = diff_rows.map(|f| f.len()).unwrap_or_else(|| 0);
 
         ui.add_space(4.0);
         ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
@@ -257,202 +259,215 @@ impl FileDiffPane {
         let mut right_rect = egui::Rect::NOTHING;
         ui.vertical(|ui| {
             ui.set_min_width(available_width);
-            ui.allocate_ui(egui::vec2(ui.available_width(), table_height), |ui| {
-                egui::Frame::default()
-                    .fill(egui::Color32::from_gray(15))
-                    .show(ui, |ui| {
-                        use egui_extras::{Column, TableBuilder};
 
-                        let mut table_builder = TableBuilder::new(ui);
+            if table_height > 0.0 && diff_rows_len > 0 {
+                ui.allocate_ui(egui::vec2(ui.available_width(), table_height), |ui| {
+                    egui::Frame::default()
+                        .fill(egui::Color32::from_gray(15))
+                        .show(ui, |ui| {
+                            use egui_extras::{Column, TableBuilder};
 
-                        if let Some((start, maybe_end)) = ctx.scroll_to_row_span {
-                            log::trace!("scroll_to_row_span: ({:?}, {:?})", start, maybe_end);
-                            table_builder =
-                                table_builder.scroll_to_row(*start, Some(egui::Align::Min));
-                        }
+                            let mut table_builder = TableBuilder::new(ui);
 
-                        let editable_path_test = |ui: &mut egui::Ui,
-                                                  id: egui::Id,
-                                                  file: &UniversalPath,
-                                                  is_valid: bool,
-                                                  spinner_active: bool|
-                         -> Option<UniversalPath> {
-                            let original_path = file.to_string();
+                            if let Some(ScrollSpan { start, maybe_end }) = &ctx.scroll_to_row_span {
+                                log::trace!("scroll_to_row_span: ({:?}, {:?})", start, maybe_end);
+                                table_builder =
+                                    table_builder.scroll_to_row(*start, Some(egui::Align::Min));
+                            }
 
-                            let mut text = ui.memory_mut(|mem| {
-                                mem.data
-                                    .get_temp::<String>(id)
-                                    .unwrap_or_else(|| original_path.clone())
-                            });
+                            let editable_path_test =
+                                |ui: &mut egui::Ui,
+                                 id: egui::Id,
+                                 file: &UniversalPath,
+                                 is_valid: bool,
+                                 spinner_active: bool|
+                                 -> Option<UniversalPath> {
+                                    let original_path = file.to_string();
 
-                            let response = ui
-                                .scope(|ui| {
-                                    if !is_valid {
-                                        let bg = egui::Color32::from_rgb(45, 10, 10);
-                                        let stroke = egui::Stroke::new(1.0, egui::Color32::RED);
+                                    let mut text = ui.memory_mut(|mem| {
+                                        mem.data
+                                            .get_temp::<String>(id)
+                                            .unwrap_or_else(|| original_path.clone())
+                                    });
 
-                                        {
-                                            let visuals = &mut ui.visuals_mut();
-                                            visuals.text_edit_bg_color = Some(bg);
-                                        }
-                                        let visuals = &mut ui.visuals_mut().widgets;
+                                    let response = ui
+                                        .scope(|ui| {
+                                            if !is_valid {
+                                                let bg = egui::Color32::from_rgb(45, 10, 10);
+                                                let stroke =
+                                                    egui::Stroke::new(1.0, egui::Color32::RED);
 
-                                        visuals.inactive.bg_fill = bg;
-                                        visuals.inactive.bg_stroke = stroke;
+                                                {
+                                                    let visuals = &mut ui.visuals_mut();
+                                                    visuals.text_edit_bg_color = Some(bg);
+                                                }
+                                                let visuals = &mut ui.visuals_mut().widgets;
 
-                                        visuals.hovered.bg_fill = bg;
-                                        visuals.hovered.bg_stroke = stroke;
+                                                visuals.inactive.bg_fill = bg;
+                                                visuals.inactive.bg_stroke = stroke;
 
-                                        visuals.active.bg_fill = bg;
-                                        visuals.active.bg_stroke = stroke;
+                                                visuals.hovered.bg_fill = bg;
+                                                visuals.hovered.bg_stroke = stroke;
+
+                                                visuals.active.bg_fill = bg;
+                                                visuals.active.bg_stroke = stroke;
+                                            }
+
+                                            let response = ui.horizontal(|ui| {
+                                                let spinner = egui::Spinner::new();
+                                                let res = ui.add_sized(
+                                                    [
+                                                        ui.available_width(),
+                                                        ui.spacing().interact_size.y,
+                                                    ],
+                                                    egui::TextEdit::singleline(&mut text).id(id),
+                                                );
+                                                if spinner_active {
+                                                    let spinner_size = res.rect.size().y * 0.5;
+                                                    let spinner_x = res.rect.right() - spinner_size;
+                                                    let spinner_pos = egui::Pos2::new(
+                                                        spinner_x,
+                                                        res.rect.top() + spinner_size,
+                                                    );
+                                                    let spinner_rect = egui::Rect::from_center_size(
+                                                        spinner_pos,
+                                                        Vec2::new(spinner_size, spinner_size),
+                                                    );
+                                                    spinner.paint_at(ui, spinner_rect);
+                                                }
+
+                                                res
+                                            });
+                                            response.inner
+                                        })
+                                        .inner;
+
+                                    if response.changed() {
+                                        ui.memory_mut(|mem| mem.data.insert_temp(id, text.clone()));
                                     }
 
-                                    let response = ui.horizontal(|ui| {
-                                        let spinner = egui::Spinner::new();
-                                        let res = ui.add_sized(
-                                            [ui.available_width(), ui.spacing().interact_size.y],
-                                            egui::TextEdit::singleline(&mut text).id(id),
-                                        );
-                                        if spinner_active {
-                                            let spinner_size = res.rect.size().y * 0.5;
-                                            let spinner_x = res.rect.right() - spinner_size;
-                                            let spinner_pos = egui::Pos2::new(
-                                                spinner_x,
-                                                res.rect.top() + spinner_size,
-                                            );
-                                            let spinner_rect = egui::Rect::from_center_size(
-                                                spinner_pos,
-                                                Vec2::new(spinner_size, spinner_size),
-                                            );
-                                            spinner.paint_at(ui, spinner_rect);
+                                    // lost_focus not called correctly, quick fix: https://github.com/emilk/egui/issues/2142
+                                    // Does not handle holding down mouse on another text field.....
+                                    if response.lost_focus() || response.clicked_elsewhere() {
+                                        ui.memory_mut(|mem| mem.data.remove::<String>(id));
+
+                                        if text != original_path {
+                                            return Some(UniversalPath::from(&text));
                                         }
+                                    }
 
-                                        res
+                                    if !is_valid {
+                                        response.on_hover_text("Invalid path");
+                                    }
+
+                                    None
+                                };
+                            table_builder
+                                .id_salt("file_diff_table")
+                                .striped(false)
+                                .resizable(true)
+                                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                .column(
+                                    Column::initial(available_width * 0.48)
+                                        .at_least(100.0)
+                                        .clip(false),
+                                )
+                                .column(Column::exact(12.0)) // "≠"
+                                .column(Column::remainder().clip(false))
+                                .header(20.0, |mut header| {
+                                    header.col(|ui| {
+                                        ui.vertical(|ui| {
+                                            *ctx.set_file_1_root_request = editable_path_test(
+                                                ui,
+                                                "file_1_path_editor_path".into(),
+                                                &ctx.file_source_root.clone().unwrap_or_default(),
+                                                ctx.file_source_root_valid,
+                                                ctx.file_source_loading,
+                                            );
+                                            ui.separator();
+                                            *ctx.load_file_1_request = editable_path_test(
+                                                ui,
+                                                "file_1_path_editor".into(),
+                                                &ctx.file_source_path,
+                                                ctx.file_source_path_valid,
+                                                ctx.file_source_loading,
+                                            );
+                                            ui.separator();
+                                        });
                                     });
-                                    response.inner
+                                    header.col(|_| {});
+                                    header.col(|ui| {
+                                        ui.vertical(|ui| {
+                                            *ctx.set_file_2_root_request = editable_path_test(
+                                                ui,
+                                                "file_2_path_editor_path".into(),
+                                                &ctx.file_target_root.clone().unwrap_or_default(),
+                                                ctx.file_target_root_valid,
+                                                ctx.file_target_loading,
+                                            );
+                                            ui.separator();
+                                            *ctx.load_file_2_request = editable_path_test(
+                                                ui,
+                                                "file_2_path_editor".into(),
+                                                &ctx.file_target_path,
+                                                ctx.file_target_path_valid,
+                                                ctx.file_target_loading,
+                                            );
+                                            ui.separator();
+                                        });
+                                    });
                                 })
-                                .inner;
+                                .body(|body| {
+                                    if do_not_render_diff {
+                                        return Default::default();
+                                    }
 
-                            if response.changed() {
-                                ui.memory_mut(|mem| mem.data.insert_temp(id, text.clone()));
-                            }
+                                    let widths = body.widths().to_vec();
+                                    body.rows(
+                                        row_height,
+                                        diff_rows.map(|f| f.len()).unwrap_or_default(),
+                                        |mut row| {
+                                            if let Some(rows) = diff_rows {
+                                                let row_index = row.index();
+                                                let diff_row = &rows[row.index()];
+                                                let is_highlighted =
+                                                    ctx.active_highlights.contains(&row_index);
 
-                            // lost_focus not called correctly, quick fix: https://github.com/emilk/egui/issues/2142
-                            // Does not handle holding down mouse on another text field.....
-                            if response.lost_focus() || response.clicked_elsewhere() {
-                                ui.memory_mut(|mem| mem.data.remove::<String>(id));
+                                                log::trace!("==LEFT==");
+                                                row.col(|ui| {
+                                                    egui::ScrollArea::horizontal()
+                                                        .id_salt(format!("l{}", row_index))
+                                                        .scroll_bar_visibility(
+                                                            ScrollBarVisibility::AlwaysHidden,
+                                                        )
+                                                        .scroll_offset(egui::vec2(sl, 0.0))
+                                                        .show(ui, |ui| {
+                                                            Self::render_side_row(
+                                                                ui,
+                                                                ctx.diff_ctx
+                                                                    .map(|f| f.input.file_1.clone())
+                                                                    .unwrap_or_default(),
+                                                                ctx.diff_ctx
+                                                                    .map(|f| f.input.file_2.clone())
+                                                                    .unwrap_or_default(),
+                                                                &diff_row.left,
+                                                                widths[0],
+                                                                is_highlighted,
+                                                            );
+                                                        });
+                                                    left_rect = left_rect.union(ui.max_rect());
+                                                });
 
-                                if text != original_path {
-                                    return Some(UniversalPath::from(&text));
-                                }
-                            }
+                                                row.col(|ui| {
+                                                    let has_op =
+                                                        |tokens: &[(DiffResult, _)], op| {
+                                                            tokens.iter().any(|f| {
+                                                                !f.0.hide_in_diff
+                                                                    && f.0.operation == op
+                                                            })
+                                                        };
 
-                            if !is_valid {
-                                response.on_hover_text("Invalid path");
-                            }
-
-                            None
-                        };
-                        table_builder
-                            .id_salt("file_diff_table")
-                            .striped(false)
-                            .resizable(true)
-                            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                            .column(
-                                Column::initial(available_width * 0.48)
-                                    .at_least(100.0)
-                                    .clip(false),
-                            )
-                            .column(Column::exact(12.0)) // "≠"
-                            .column(Column::remainder().clip(false))
-                            .header(20.0, |mut header| {
-                                header.col(|ui| {
-                                    ui.vertical(|ui| {
-                                        *ctx.set_file_1_root_request = editable_path_test(
-                                            ui,
-                                            "file_1_path_editor_path".into(),
-                                            &ctx.file_source_root.clone().unwrap_or_default(),
-                                            ctx.file_source_root_valid,
-                                            ctx.file_source_loading,
-                                        );
-                                        ui.separator();
-                                        *ctx.load_file_1_request = editable_path_test(
-                                            ui,
-                                            "file_1_path_editor".into(),
-                                            &ctx.file_source_path,
-                                            ctx.file_source_path_valid,
-                                            ctx.file_source_loading,
-                                        );
-                                        ui.separator();
-                                    });
-                                });
-                                header.col(|_| {});
-                                header.col(|ui| {
-                                    ui.vertical(|ui| {
-                                        *ctx.set_file_2_root_request = editable_path_test(
-                                            ui,
-                                            "file_2_path_editor_path".into(),
-                                            &ctx.file_target_root.clone().unwrap_or_default(),
-                                            ctx.file_target_root_valid,
-                                            ctx.file_target_loading,
-                                        );
-                                        ui.separator();
-                                        *ctx.load_file_2_request = editable_path_test(
-                                            ui,
-                                            "file_2_path_editor".into(),
-                                            &ctx.file_target_path,
-                                            ctx.file_target_path_valid,
-                                            ctx.file_target_loading,
-                                        );
-                                        ui.separator();
-                                    });
-                                });
-                            })
-                            .body(|body| {
-                                if do_not_render_diff {
-                                    return Default::default();
-                                }
-
-                                let widths = body.widths().to_vec();
-                                body.rows(
-                                    row_height,
-                                    diff_rows.map(|f| f.len()).unwrap_or_default(),
-                                    |mut row| {
-                                        if let Some(rows) = diff_rows {
-                                            let row_index = row.index();
-                                            let diff_row = &rows[row.index()];
-                                            let is_highlighted =
-                                                ctx.active_highlights.contains(&row_index);
-
-                                            log::trace!("==LEFT==");
-                                            row.col(|ui| {
-                                                egui::ScrollArea::horizontal()
-                                                    .id_salt(format!("l{}", row_index))
-                                                    .scroll_bar_visibility(
-                                                        ScrollBarVisibility::AlwaysHidden,
-                                                    )
-                                                    .scroll_offset(egui::vec2(sl, 0.0))
-                                                    .show(ui, |ui| {
-                                                        Self::render_side_row(
-                                                            ui,
-                                                            ctx.file_source.clone(),
-                                                            ctx.file_target.clone(),
-                                                            &diff_row.left,
-                                                            widths[0],
-                                                            is_highlighted,
-                                                        );
-                                                    });
-                                                left_rect = left_rect.union(ui.max_rect());
-                                            });
-
-                                            row.col(|ui| {
-                                                let has_op = |tokens: &[(DiffResult, _)], op| {
-                                                    tokens.iter().any(|f| {
-                                                        !f.0.hide_in_diff && f.0.operation == op
-                                                    })
-                                                };
-
-                                                let symbol =
+                                                    let symbol =
                                                 |contains_delete: bool, contains_insert: bool| {
                                                     match (contains_delete, contains_insert) {
                                                         (true, true) => "≠",
@@ -462,80 +477,111 @@ impl FileDiffPane {
                                                     }
                                                 };
 
-                                                let text = match (&diff_row.left, &diff_row.right) {
-                                                    (
-                                                        LineContent::Void,
-                                                        LineContent::Code { tokens, .. },
-                                                    ) => symbol(
-                                                        has_op(tokens, DiffOp::Delete),
-                                                        has_op(tokens, DiffOp::Insert),
-                                                    ),
+                                                    let text =
+                                                        match (&diff_row.left, &diff_row.right) {
+                                                            (
+                                                                LineContent::Void,
+                                                                LineContent::Code {
+                                                                    tokens, ..
+                                                                },
+                                                            ) => symbol(
+                                                                has_op(tokens, DiffOp::Delete),
+                                                                has_op(tokens, DiffOp::Insert),
+                                                            ),
 
-                                                    (
-                                                        LineContent::Code { tokens, .. },
-                                                        LineContent::Void,
-                                                    ) => symbol(
-                                                        has_op(tokens, DiffOp::Delete),
-                                                        has_op(tokens, DiffOp::Insert),
-                                                    ),
+                                                            (
+                                                                LineContent::Code {
+                                                                    tokens, ..
+                                                                },
+                                                                LineContent::Void,
+                                                            ) => symbol(
+                                                                has_op(tokens, DiffOp::Delete),
+                                                                has_op(tokens, DiffOp::Insert),
+                                                            ),
 
-                                                    (
-                                                        LineContent::Code { tokens: t1, .. },
-                                                        LineContent::Code { tokens: t2, .. },
-                                                    ) => {
-                                                        let contains_delete =
-                                                            has_op(t1, DiffOp::Delete)
-                                                                || has_op(t2, DiffOp::Delete);
-                                                        let contains_insert =
-                                                            has_op(t1, DiffOp::Insert)
-                                                                || has_op(t2, DiffOp::Insert);
+                                                            (
+                                                                LineContent::Code {
+                                                                    tokens: t1,
+                                                                    ..
+                                                                },
+                                                                LineContent::Code {
+                                                                    tokens: t2,
+                                                                    ..
+                                                                },
+                                                            ) => {
+                                                                let contains_delete =
+                                                                    has_op(t1, DiffOp::Delete)
+                                                                        || has_op(
+                                                                            t2,
+                                                                            DiffOp::Delete,
+                                                                        );
+                                                                let contains_insert =
+                                                                    has_op(t1, DiffOp::Insert)
+                                                                        || has_op(
+                                                                            t2,
+                                                                            DiffOp::Insert,
+                                                                        );
 
-                                                        symbol(contains_delete, contains_insert)
-                                                    }
-                                                    (
-                                                        LineContent::Collapsed,
-                                                        LineContent::Collapsed,
-                                                    ) => "...",
-                                                    _ => " ",
-                                                };
-                                                ui.centered_and_justified(|ui| {
-                                                    ui.label(
-                                                        egui::RichText::new(text)
-                                                            .color(egui::Color32::DARK_GRAY),
-                                                    );
-                                                });
-                                            });
-
-                                            log::trace!("==RIGHT==");
-                                            row.col(|ui| {
-                                                egui::ScrollArea::horizontal()
-                                                    .id_salt(format!("r{}", row_index))
-                                                    .scroll_bar_visibility(
-                                                        ScrollBarVisibility::AlwaysHidden,
-                                                    )
-                                                    .scroll_offset(egui::vec2(sr, 0.0))
-                                                    .show(ui, |ui| {
-                                                        Self::render_side_row(
-                                                            ui,
-                                                            ctx.file_source.clone(),
-                                                            ctx.file_target.clone(),
-                                                            &diff_row.right,
-                                                            widths[2],
-                                                            is_highlighted,
+                                                                symbol(
+                                                                    contains_delete,
+                                                                    contains_insert,
+                                                                )
+                                                            }
+                                                            (
+                                                                LineContent::Collapsed,
+                                                                LineContent::Collapsed,
+                                                            ) => "...",
+                                                            _ => " ",
+                                                        };
+                                                    ui.centered_and_justified(|ui| {
+                                                        ui.label(
+                                                            egui::RichText::new(text)
+                                                                .color(egui::Color32::DARK_GRAY),
                                                         );
                                                     });
-                                                right_rect = right_rect.union(ui.max_rect());
-                                            });
-                                        }
-                                    },
-                                );
-                            });
-                    });
-            });
+                                                });
+
+                                                log::trace!("==RIGHT==");
+                                                row.col(|ui| {
+                                                    egui::ScrollArea::horizontal()
+                                                        .id_salt(format!("r{}", row_index))
+                                                        .scroll_bar_visibility(
+                                                            ScrollBarVisibility::AlwaysHidden,
+                                                        )
+                                                        .scroll_offset(egui::vec2(sr, 0.0))
+                                                        .show(ui, |ui| {
+                                                            Self::render_side_row(
+                                                                ui,
+                                                                ctx.diff_ctx
+                                                                    .map(|f| f.input.file_1.clone())
+                                                                    .unwrap_or_default(),
+                                                                ctx.diff_ctx
+                                                                    .map(|f| f.input.file_2.clone())
+                                                                    .unwrap_or_default(),
+                                                                &diff_row.right,
+                                                                widths[2],
+                                                                is_highlighted,
+                                                            );
+                                                        });
+                                                    right_rect = right_rect.union(ui.max_rect());
+                                                });
+                                            }
+                                        },
+                                    );
+                                });
+                        });
+                });
+            }
 
             if waiting_for_diff {
-                ui.centered_and_justified(|ui| {
+                ui.vertical_centered(|ui| {
+                    // Hack to simulate ui.centered_and_justified to make spinner work
+                    let height = ui.available_height();
+                    ui.add_space(height / 2.0 - 30.0);
+
                     ui.label("Waiting for diff results...");
+                    ui.add_space(8.0);
+                    ui.add(egui::Spinner::new().size(64.0));
                 });
             } else if do_not_render_diff {
                 ui.centered_and_justified(|ui| {
@@ -543,17 +589,19 @@ impl FileDiffPane {
                 });
             }
 
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let left_w = available_width * 0.48;
-                ui.allocate_ui(egui::vec2(left_w, 20.0), |ui| {
-                    ui.add(egui::Slider::new(ctx.scroll_left, 0.0..=2000.0).show_value(false));
+            if !(waiting_for_diff || do_not_render_diff) {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let left_w = available_width * 0.48;
+                    ui.allocate_ui(egui::vec2(left_w, 20.0), |ui| {
+                        ui.add(egui::Slider::new(ctx.scroll_left, 0.0..=2000.0).show_value(false));
+                    });
+                    ui.add_space(12.0);
+                    ui.allocate_ui(egui::vec2(ui.available_width(), 20.0), |ui| {
+                        ui.add(egui::Slider::new(ctx.scroll_right, 0.0..=2000.0).show_value(false));
+                    });
                 });
-                ui.add_space(12.0);
-                ui.allocate_ui(egui::vec2(ui.available_width(), 20.0), |ui| {
-                    ui.add(egui::Slider::new(ctx.scroll_right, 0.0..=2000.0).show_value(false));
-                });
-            });
+            }
         });
 
         handle_drops(

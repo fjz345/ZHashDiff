@@ -13,7 +13,7 @@ pub enum DiffOp {
     Insert,      // From Source 2
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DiffResult {
     pub operation: DiffOp,
     pub token_source_idx: Option<u32>,
@@ -21,7 +21,7 @@ pub struct DiffResult {
     pub hide_in_diff: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DiffIR {
     pub entries: Vec<DiffResult>,
     pub distance: i32,

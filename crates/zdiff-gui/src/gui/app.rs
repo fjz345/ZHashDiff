@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{env, path::PathBuf, sync::mpsc};
 use zcommon::ui_egui::common::show_custom_popup;
 use zdiff::{
-    diff_builder::DiffBuilderOptions,
+    diff_builder::{DiffBuilderOptions, PivotLines},
     lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
     myers::MyersDiffAlgorithm,
     universal_path::UniversalPath,
@@ -527,7 +527,7 @@ impl<'a> ZApp {
                 response.request_focus();
 
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    if let Some(ctx) = diff_processor.get_diff_ctx() {
+                    if let Some(ctx) = &diff_processor.get_minimal_diff_ctx() {
                         let find_ctx = FindCtx::new(find_input, ctx);
                         diff_processor.update_find(find_ctx);
                     }
@@ -541,7 +541,7 @@ impl<'a> ZApp {
                 *find_open = find_window_open;
             }
 
-            let scroll_to_rows = diff_processor.get_scroll_to_row();
+            let scroll_to_rows = &diff_processor.get_scroll_to_row();
             if let Some(scroll_to) = scroll_to_rows {
                 log::info!("Navigating to line: {:?}", scroll_to);
             }
@@ -551,14 +551,13 @@ impl<'a> ZApp {
             let mut pivot: (Option<usize>, Option<usize>) = diff_processor.pivot;
             let mut find_cursor = diff_processor.find_cursor.clone();
 
+            let diff_ctx = diff_processor.get_minimal_diff_ctx();
             let mut behavior = TreeBehavior {
                 ctx_file_diff: FileDiffPaneCtx {
-                    diff_ctx: diff_processor.get_diff_ctx(),
+                    diff_ctx: diff_ctx.as_ref(),
                     scroll_left: scroll_left,
                     scroll_right: scroll_right,
                     diff_options: diff_options,
-                    file_source: file_1.get_cached_file().clone(),
-                    file_target: file_2.get_cached_file().clone(),
                     scroll_to_row_span: &scroll_to_rows,
                     load_file_1_request: &mut None,
                     load_file_2_request: &mut None,
@@ -588,6 +587,7 @@ impl<'a> ZApp {
                     conflict_cursor: &mut conflict_cursor,
                     pivot: &mut pivot,
                     find_cursor: &mut find_cursor,
+                    diff_loading: diff_processor.is_in_progress(),
                 },
             };
 
@@ -595,12 +595,15 @@ impl<'a> ZApp {
                 self.tree.ui(&mut behavior, ui);
             });
 
-            if let (Some(pivot_1), Some(pivot_2)) = (
+            if let (Some(pivot_left), Some(pivot_right)) = (
                 behavior.ctx_file_diff.pivot.0,
                 behavior.ctx_file_diff.pivot.1,
             ) {
-                if pivot_1 > 0 && pivot_2 > 0 {
-                    behavior.ctx_file_diff.diff_options.pivot_lines = Some((pivot_1, pivot_2));
+                if pivot_left > 0 && pivot_right > 0 {
+                    behavior.ctx_file_diff.diff_options.pivot_lines = Some(PivotLines {
+                        left: pivot_left,
+                        right: pivot_right,
+                    });
                 }
             }
 
@@ -638,14 +641,14 @@ impl<'a> ZApp {
                     let target = app_ctx.file_2.get_path_as_string();
                     let total_adds = app_ctx
                         .diff_processor
-                        .get_diff_ctx()
+                        .get_minimal_diff_ctx()
                         .as_ref()
                         .and_then(|f| Some(f.num_add_deletes))
                         .unwrap_or_default()
                         .0;
                     let total_deletes = app_ctx
                         .diff_processor
-                        .get_diff_ctx()
+                        .get_minimal_diff_ctx()
                         .and_then(|f| Some(f.num_add_deletes))
                         .unwrap_or_default()
                         .1;
@@ -889,7 +892,7 @@ impl eframe::App for ZApp {
                 .ctx_mut();
             let conflict_max = app_ctx
                 .diff_processor
-                .get_diff_ctx()
+                .get_minimal_diff_ctx()
                 .as_ref()
                 .and_then(|f| Some(f.precomputed_diffs.len()))
                 .unwrap_or_default();
@@ -929,8 +932,8 @@ impl eframe::App for ZApp {
                     false
                 } else if let Some(in_progress_input) = &state.diff_processor.in_progress_input {
                     *in_progress_input != update_input
-                } else if let Some(diff_ctx) = state.diff_processor.get_diff_ctx() {
-                    let input_equal = update_input == diff_ctx.update_diff_rows_input;
+                } else if let Some(diff_ctx) = state.diff_processor.get_minimal_diff_ctx() {
+                    let input_equal = update_input == diff_ctx.input;
 
                     if !input_equal && !state.diff_processor.in_progress_input.is_some() {
                         log::debug!("diff_ctx invalidated!");
@@ -947,7 +950,7 @@ impl eframe::App for ZApp {
                     state.diff_processor.request_update(update_input);
                 }
 
-                state.diff_processor.poll_diff_channel();
+                state.diff_processor.update();
 
                 self.ui(ctx, frame, &mut state);
 

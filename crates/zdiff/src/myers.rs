@@ -3,7 +3,8 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-type MyersPath = Vec<(i32, i32)>;
+pub type MyersPath = Vec<(i32, i32)>;
+pub type MyersNumAddDelete = (u32, u32);
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -201,7 +202,7 @@ pub fn myers_backtrack(
     Some(path)
 }
 
-pub fn myers_count_add_deletes(diff_path: &[(i32, i32)]) -> (u32, u32) {
+pub fn myers_count_add_deletes(diff_path: &[(i32, i32)]) -> MyersNumAddDelete {
     let mut adds = 0;
     let mut deletes = 0;
 
