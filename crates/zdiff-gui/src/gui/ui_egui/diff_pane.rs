@@ -38,6 +38,8 @@ pub struct FileDiffPaneCtx<'a> {
     pub scroll_left: &'a mut f32,
     pub scroll_right: &'a mut f32,
 
+    pub code_language: &'a str,
+
     pub scroll_to_row_span: &'a Option<ScrollSpan>,
     pub active_highlights: &'a Vec<usize>,
     pub conflict_cursor: &'a mut ClampedCursor,
@@ -456,6 +458,7 @@ impl FileDiffPane {
                                                                 &diff_row.left,
                                                                 widths[0],
                                                                 is_highlighted,
+                                                                ctx.code_language,
                                                             );
                                                         });
                                                     left_rect = left_rect.union(ui.max_rect());
@@ -564,6 +567,7 @@ impl FileDiffPane {
                                                                 &diff_row.right,
                                                                 widths[2],
                                                                 is_highlighted,
+                                                                ctx.code_language,
                                                             );
                                                         });
                                                     right_rect = right_rect.union(ui.max_rect());
@@ -625,6 +629,7 @@ impl FileDiffPane {
         content: &LineContent,
         width: f32,
         is_highlighted: bool,
+        code_language: &str,
     ) {
         let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
 
@@ -724,7 +729,7 @@ impl FileDiffPane {
                                     ui.style(),
                                     &theme,
                                     buf.as_str(),
-                                    language,
+                                    code_language,
                                 );
 
                                 let buf_len = buf.as_str().len();

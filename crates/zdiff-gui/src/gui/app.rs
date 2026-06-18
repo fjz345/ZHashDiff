@@ -1,4 +1,4 @@
-use eframe::egui::{self, Layout, PointerButton};
+use eframe::egui::{self, Layout, PointerButton, containers::menu::MenuConfig};
 use serde::{Deserialize, Serialize};
 use std::{env, path::PathBuf, sync::mpsc};
 use zcommon::ui_egui::common::show_custom_popup;
@@ -39,6 +39,8 @@ pub struct AppStateCtx {
     pub diff_options: DiffBuilderOptions,
 
     pub myers_diff_algorithm: MyersDiffAlgorithm,
+    pub code_language: String,
+    pub code_language_custom: String,
 
     // ### Keybindings
     pub keybindings: Keybindings,
@@ -73,6 +75,8 @@ impl Default for AppStateCtx {
             diff_lexer_mode: LEXER_MODE_DEFAULT,
             keybindings: Default::default(),
             myers_diff_algorithm: Default::default(),
+            code_language: "rs".to_string(),
+            code_language_custom: "".into(),
         }
     }
 }
@@ -236,202 +240,244 @@ impl<'a> ZApp {
         lexer_mode: &mut u8,
         keybindings: &mut Keybindings,
         myers_diff_algorithm: &mut MyersDiffAlgorithm,
+        code_language: &mut String,
+        code_language_custom: &mut String,
     ) {
         ui.horizontal(|ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                ui.menu_button("File", |ui| {
-                    if ui
-                        .button(format!(
-                            "[{}]Open Source",
-                            keybindings
-                                .open_file_source
-                                .as_ref()
-                                .map_or_else(|| "None".to_string(), Shortcut::format)
-                        ))
-                        .clicked()
-                    {
-                        Self::open_file_picker(file_1.get_tx());
-                    }
-                    if ui
-                        .button(format!(
-                            "[{}]Open Target",
-                            keybindings
-                                .open_file_target
-                                .as_ref()
-                                .map_or_else(|| "None".to_string(), Shortcut::format)
-                        ))
-                        .clicked()
-                    {
-                        Self::open_file_picker(file_2.get_tx());
-                    }
-                    if ui.button("Swap Source/Target").clicked() {
-                        std::mem::swap(file_1, file_2);
-                        std::mem::swap(scroll_left, scroll_right);
+            egui::MenuBar::new()
+                .config(
+                    MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+                )
+                .ui(ui, |ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    ui.menu_button("File", |ui| {
+                        if ui
+                            .button(format!(
+                                "[{}]Open Source",
+                                keybindings
+                                    .open_file_source
+                                    .as_ref()
+                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                            ))
+                            .clicked()
+                        {
+                            Self::open_file_picker(file_1.get_tx());
+                        }
+                        if ui
+                            .button(format!(
+                                "[{}]Open Target",
+                                keybindings
+                                    .open_file_target
+                                    .as_ref()
+                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                            ))
+                            .clicked()
+                        {
+                            Self::open_file_picker(file_2.get_tx());
+                        }
+                        if ui.button("Swap Source/Target").clicked() {
+                            std::mem::swap(file_1, file_2);
+                            std::mem::swap(scroll_left, scroll_right);
 
-                        diff_processor.reset_ctx();
-                    }
-                    if ui
-                        .button(format!(
-                            "[{}]Find",
-                            keybindings
-                                .find
-                                .as_ref()
-                                .map_or_else(|| "None".to_string(), Shortcut::format)
-                        ))
-                        .clicked()
-                    {
-                        *find_open = true;
-                    }
-                    if ui
-                        .button(format!(
-                            "[{}]Goto",
-                            keybindings
-                                .goto
-                                .as_ref()
-                                .map_or_else(|| "None".to_string(), Shortcut::format)
-                        ))
-                        .clicked()
-                    {
-                        *goto_open = true;
-                    }
-                });
-
-                ui.menu_button("Options", |ui| {
-                    ui.menu_button("Myers Algo", |ui| {
-                        ui.radio_value(myers_diff_algorithm, MyersDiffAlgorithm::Trace, "debug");
-                        ui.radio_value(myers_diff_algorithm, MyersDiffAlgorithm::Linear, "Linear");
-                        ui.radio_value(
-                            myers_diff_algorithm,
-                            MyersDiffAlgorithm::LinearMT,
-                            "LinearMT",
-                        );
+                            diff_processor.reset_ctx();
+                        }
+                        if ui
+                            .button(format!(
+                                "[{}]Find",
+                                keybindings
+                                    .find
+                                    .as_ref()
+                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                            ))
+                            .clicked()
+                        {
+                            *find_open = true;
+                        }
+                        if ui
+                            .button(format!(
+                                "[{}]Goto",
+                                keybindings
+                                    .goto
+                                    .as_ref()
+                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                            ))
+                            .clicked()
+                        {
+                            *goto_open = true;
+                        }
                     });
-                    ui.menu_button("Lexer", |ui| {
-                        ui.radio_value(lexer_mode, LEXER_MODE_GREEDY, "LexerGreedy");
-                        ui.radio_value(lexer_mode, LEXER_MODE_TOKENIZE, "LexerTokenize");
-                        ui.radio_value(lexer_mode, LEXER_MODE_NEWLINE, "LexerNewLine");
+
+                    ui.menu_button("Options", |ui| {
+                        ui.menu_button("Myers Algo", |ui| {
+                            ui.radio_value(
+                                myers_diff_algorithm,
+                                MyersDiffAlgorithm::Trace,
+                                "debug",
+                            );
+                            ui.radio_value(
+                                myers_diff_algorithm,
+                                MyersDiffAlgorithm::Linear,
+                                "Linear",
+                            );
+                            ui.radio_value(
+                                myers_diff_algorithm,
+                                MyersDiffAlgorithm::LinearMT,
+                                "LinearMT",
+                            );
+                        });
+                        ui.menu_button("Lexer", |ui| {
+                            ui.radio_value(lexer_mode, LEXER_MODE_GREEDY, "LexerGreedy");
+                            ui.radio_value(lexer_mode, LEXER_MODE_TOKENIZE, "LexerTokenize");
+                            ui.radio_value(lexer_mode, LEXER_MODE_NEWLINE, "LexerNewLine");
+                        });
+                        ui.menu_button("Code Language", |ui| {
+                            ui.radio_value(code_language, "rs".to_string(), "Rust (.rs)");
+                            ui.radio_value(code_language, "py".to_string(), "Python (.py)");
+                            ui.radio_value(code_language, "cpp".to_string(), "C++ (.cpp)");
+                            ui.radio_value(code_language, "js".to_string(), "JavaScript (.js)");
+                            ui.radio_value(code_language, "json".to_string(), "JSON (.json)");
+                            ui.radio_value(code_language, "md".to_string(), "Markdown (.md)");
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .radio(
+                                        code_language == code_language_custom
+                                            && !code_language_custom.is_empty(),
+                                        "Use Custom",
+                                    )
+                                    .clicked()
+                                {
+                                    *code_language = code_language_custom.trim().to_string();
+                                }
+                                let text_edit = egui::TextEdit::singleline(code_language_custom)
+                                    .hint_text("Custom (e.g. go, html)");
+                                let res = ui.add(text_edit);
+                                if res.changed() && !code_language_custom.is_empty() {
+                                    *code_language = code_language_custom.trim().to_string();
+                                }
+                            });
+                        });
+                        *code_language = code_language.trim_matches('.').to_string();
+                        if ui
+                            .button(format!(
+                                "[{}]P4Config",
+                                keybindings
+                                    .open_universal_path
+                                    .as_ref()
+                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                            ))
+                            .clicked()
+                        {
+                            self.open_universal_path_window = true;
+                        }
+                        if ui
+                            .button(format!(
+                                "[{}]Keyboard Shortcuts",
+                                keybindings
+                                    .open_options_keybindings
+                                    .as_ref()
+                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                            ))
+                            .clicked()
+                        {
+                            self.open_shortcuts_window = true;
+                        }
                     });
-                    if ui
-                        .button(format!(
-                            "[{}]P4Config",
-                            keybindings
-                                .open_universal_path
-                                .as_ref()
-                                .map_or_else(|| "None".to_string(), Shortcut::format)
-                        ))
-                        .clicked()
-                    {
-                        self.open_universal_path_window = true;
-                    }
-                    if ui
-                        .button(format!(
-                            "[{}]Keyboard Shortcuts",
-                            keybindings
-                                .open_options_keybindings
-                                .as_ref()
-                                .map_or_else(|| "None".to_string(), Shortcut::format)
-                        ))
-                        .clicked()
-                    {
-                        self.open_shortcuts_window = true;
-                    }
+
+                    ui.menu_button("Debug", |ui| {
+                        if ui.button("Clear File Paths").clicked() {
+                            file_1.set_path(UniversalPath::default());
+                            file_2.set_path(UniversalPath::default());
+                            diff_processor.reset_ctx();
+                        }
+                        if ui
+                            .button(format!(
+                                "[{}]Clear Cached Files",
+                                keybindings
+                                    .refresh_diff
+                                    .as_ref()
+                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                            ))
+                            .clicked()
+                        {
+                            diff_processor.reset_ctx();
+                            Self::refresh_file_contents(file_1, file_2);
+                        }
+                        if ui
+                            .button(format!(
+                                "[{}]Clear Diff Rows",
+                                keybindings
+                                    .refresh_diff_rows_only
+                                    .as_ref()
+                                    .map_or_else(|| "None".to_string(), Shortcut::format)
+                            ))
+                            .clicked()
+                        {
+                            diff_processor.reset_ctx();
+                        }
+                        #[cfg(debug_assertions)]
+                        {
+                            let load_btn = |ui: &mut egui::Ui,
+                                            label: &str,
+                                            file_1: &mut FileProcessor,
+                                            file_2: &mut FileProcessor,
+                                            diff_processor: &mut DiffProcessor,
+                                            p1: &str,
+                                            p2: &str| {
+                                if ui.button(label).clicked() {
+                                    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+                                    file_1.set_root("".into());
+                                    file_2.set_root("".into());
+                                    file_1.set_path(UniversalPath::from(base.join(p1)));
+                                    file_2.set_path(UniversalPath::from(base.join(p2)));
+
+                                    diff_processor.reset_ctx();
+                                }
+                            };
+
+                            load_btn(
+                                ui,
+                                "Load $A",
+                                file_1,
+                                file_2,
+                                diff_processor,
+                                "../../test/rust_files_diff_1/advanced_rust.rs",
+                                "../../test/rust_files_diff_1/advanced_rust_2.rs",
+                            );
+
+                            load_btn(
+                                ui,
+                                "Load $B",
+                                file_1,
+                                file_2,
+                                diff_processor,
+                                "../../test/rust_files_diff_1/imgui.1.91.1.h",
+                                "../../test/rust_files_diff_1/imgui.h",
+                            );
+
+                            load_btn(
+                                ui,
+                                "Load $C",
+                                file_1,
+                                file_2,
+                                diff_processor,
+                                "../../test/test_ignore_whitespace_simple/1.txt",
+                                "../../test/test_ignore_whitespace_simple/2.txt",
+                            );
+
+                            load_btn(
+                                ui,
+                                "Load $D",
+                                file_1,
+                                file_2,
+                                diff_processor,
+                                "../../test/test_ignore_whitespace_extreme_simple/1.txt",
+                                "../../test/test_ignore_whitespace_extreme_simple/2.txt",
+                            );
+                        }
+                    });
                 });
-
-                ui.menu_button("Debug", |ui| {
-                    if ui.button("Clear File Paths").clicked() {
-                        file_1.set_path(UniversalPath::default());
-                        file_2.set_path(UniversalPath::default());
-                        diff_processor.reset_ctx();
-                    }
-                    if ui
-                        .button(format!(
-                            "[{}]Clear Cached Files",
-                            keybindings
-                                .refresh_diff
-                                .as_ref()
-                                .map_or_else(|| "None".to_string(), Shortcut::format)
-                        ))
-                        .clicked()
-                    {
-                        diff_processor.reset_ctx();
-                        Self::refresh_file_contents(file_1, file_2);
-                    }
-                    if ui
-                        .button(format!(
-                            "[{}]Clear Diff Rows",
-                            keybindings
-                                .refresh_diff_rows_only
-                                .as_ref()
-                                .map_or_else(|| "None".to_string(), Shortcut::format)
-                        ))
-                        .clicked()
-                    {
-                        diff_processor.reset_ctx();
-                    }
-                    #[cfg(debug_assertions)]
-                    {
-                        let load_btn = |ui: &mut egui::Ui,
-                                        label: &str,
-                                        file_1: &mut FileProcessor,
-                                        file_2: &mut FileProcessor,
-                                        diff_processor: &mut DiffProcessor,
-                                        p1: &str,
-                                        p2: &str| {
-                            if ui.button(label).clicked() {
-                                let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-
-                                file_1.set_root("".into());
-                                file_2.set_root("".into());
-                                file_1.set_path(UniversalPath::from(base.join(p1)));
-                                file_2.set_path(UniversalPath::from(base.join(p2)));
-
-                                diff_processor.reset_ctx();
-                            }
-                        };
-
-                        load_btn(
-                            ui,
-                            "Load $A",
-                            file_1,
-                            file_2,
-                            diff_processor,
-                            "../../test/rust_files_diff_1/advanced_rust.rs",
-                            "../../test/rust_files_diff_1/advanced_rust_2.rs",
-                        );
-
-                        load_btn(
-                            ui,
-                            "Load $B",
-                            file_1,
-                            file_2,
-                            diff_processor,
-                            "../../test/rust_files_diff_1/imgui.1.91.1.h",
-                            "../../test/rust_files_diff_1/imgui.h",
-                        );
-
-                        load_btn(
-                            ui,
-                            "Load $C",
-                            file_1,
-                            file_2,
-                            diff_processor,
-                            "../../test/test_ignore_whitespace_simple/1.txt",
-                            "../../test/test_ignore_whitespace_simple/2.txt",
-                        );
-
-                        load_btn(
-                            ui,
-                            "Load $D",
-                            file_1,
-                            file_2,
-                            diff_processor,
-                            "../../test/test_ignore_whitespace_extreme_simple/1.txt",
-                            "../../test/test_ignore_whitespace_extreme_simple/2.txt",
-                        );
-                    }
-                });
-            });
         });
 
         if self.open_shortcuts_window {
@@ -480,6 +526,8 @@ impl<'a> ZApp {
                 keybindings,
                 myers_diff_algorithm,
                 diff_processor,
+                code_language,
+                code_language_custom,
             } = app_ctx;
             self.show_menu(
                 ui,
@@ -493,6 +541,8 @@ impl<'a> ZApp {
                 lexer_mode,
                 keybindings,
                 myers_diff_algorithm,
+                code_language,
+                code_language_custom,
             );
 
             ui.separator();
@@ -588,6 +638,7 @@ impl<'a> ZApp {
                     pivot: &mut pivot,
                     find_cursor: &mut find_cursor,
                     diff_loading: diff_processor.is_in_progress(),
+                    code_language,
                 },
             };
 
