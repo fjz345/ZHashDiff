@@ -25,10 +25,11 @@ pub struct DiffRow {
     pub right: LineContent,
 }
 
+pub type IsGhost = bool;
 #[derive(Debug, Clone)]
 pub enum LineContent {
     Code {
-        tokens: Vec<(DiffResult, Color32)>,
+        tokens: Vec<(DiffResult, Color32, IsGhost)>,
         line_num: i32,
         bg: Color32,
     },
@@ -104,7 +105,7 @@ impl Default for DiffTheme {
 }
 
 struct SideState {
-    buf: Vec<(DiffResult, Color32)>,
+    buf: Vec<(DiffResult, Color32, IsGhost)>,
     line_num: i32,
     active_diff: bool,
 }
@@ -118,8 +119,8 @@ impl SideState {
         }
     }
 
-    fn push(&mut self, val: DiffResult, color: Color32) {
-        self.buf.push((val, color));
+    fn push(&mut self, val: DiffResult, color: Color32, is_ghost: IsGhost) {
+        self.buf.push((val, color, is_ghost));
     }
 
     fn flush(&mut self, line_num: i32, bg_color: Color32) -> LineContent {
@@ -194,8 +195,8 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         let color = self.get_color(token.as_ref().kind.is_keyword());
         let is_newline = token.as_ref().kind == TokenKind::Newline;
 
-        self.left.push(diff_result.clone(), color);
-        self.right.push(diff_result, color);
+        self.left.push(diff_result.clone(), color, false);
+        self.right.push(diff_result, color, false);
 
         if is_newline {
             self.emit_row(true, true, true, true);
@@ -236,7 +237,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         } else {
             self.theme.ins
         };
-        side.push(diff_result.clone(), color);
+        side.push(diff_result.clone(), color, false);
 
         if self.options.ghost_rows {
             self.apply_ghosts(is_deletion, diff_result);
@@ -306,12 +307,12 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
                 .left
                 .buf
                 .iter()
-                .any(|(r, _)| r.operation != DiffOp::Insert);
+                .any(|(r, _, _)| r.operation != DiffOp::Insert);
             let inc_r = self
                 .right
                 .buf
                 .iter()
-                .any(|(r, _)| r.operation != DiffOp::Delete);
+                .any(|(r, _, _)| r.operation != DiffOp::Delete);
             self.emit_row(true, true, inc_l, inc_r);
         }
         self.rows
@@ -320,9 +321,9 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
     fn apply_ghosts(&mut self, last_was_deletion: bool, result: DiffResult) {
         let ghost_color = self.theme.ghost;
         if last_was_deletion {
-            self.right.push(result, ghost_color);
+            self.right.push(result, ghost_color, true);
         } else {
-            self.left.push(result, ghost_color);
+            self.left.push(result, ghost_color, true);
         }
     }
 }

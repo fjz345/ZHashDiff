@@ -29,7 +29,6 @@ GUI for zdiff crate
 * lost_focus not called correctly on paths when holding down mouse: https://github.com/emilk/egui/issues/2142
 
 ## Todo
-* Split logic to avoid invalidate whole diff_ctx when doing DiffRow manipulations
 * Better handling of temp paths (example: [p4] Zdiff.exe %s %s)
     - Need to be able to use QuickDiffs after opening a file via p4 diff
 * Selecting word in diff highlights all usages of that text in both diffs
@@ -45,6 +44,7 @@ GUI for zdiff crate
 * Batch DiffRow performance optimzation
 * Quick Diff /w multiple p4 repositories
 
+* Research row independant diffing if it is possible
 * Color/style customization
 * Syncronized scroll bar (like p4)
 * user defined comparison per file format

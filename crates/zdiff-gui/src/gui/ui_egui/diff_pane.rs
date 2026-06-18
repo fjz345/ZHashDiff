@@ -5,7 +5,10 @@ use crate::{
     diff_ctx::{MinimalDiffCtx, ScrollSpan},
     ui_egui::panes::ZAppPane,
 };
-use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility};
+use eframe::egui::{
+    self, Layout, TextEdit, UiBuilder, Vec2, WidgetInfo, WidgetType::Label,
+    scroll_area::ScrollBarVisibility,
+};
 use serde::{Deserialize, Serialize};
 use zdiff::{
     cached_file::CachedFile,
@@ -460,7 +463,7 @@ impl FileDiffPane {
 
                                                 row.col(|ui| {
                                                     let has_op =
-                                                        |tokens: &[(DiffResult, _)], op| {
+                                                        |tokens: &[(DiffResult, _, _)], op| {
                                                             tokens.iter().any(|f| {
                                                                 !f.0.hide_in_diff
                                                                     && f.0.operation == op
@@ -635,20 +638,6 @@ impl FileDiffPane {
                 line_num,
                 bg,
             } => {
-                ui.painter().rect_filled(
-                    extended_rect,
-                    0.0,
-                    egui::Color32::from_rgba_unmultiplied(bg.0[0], bg.0[1], bg.0[2], bg.0[3]),
-                );
-
-                if is_highlighted {
-                    ui.painter().rect_filled(
-                        extended_rect,
-                        0.0,
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40), // Faint yellow
-                    );
-                }
-
                 ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                     ui.horizontal_centered(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
@@ -663,7 +652,7 @@ impl FileDiffPane {
                         ui.add_sized(
                             [gutter_width, row_h],
                             egui::Label::new(
-                                egui::RichText::new(line_num_str)
+                                egui::RichText::new(&line_num_str)
                                     .color(egui::Color32::DARK_GRAY)
                                     .size(10.0),
                             ),
@@ -694,25 +683,94 @@ impl FileDiffPane {
                             Some(file.read_content_span(token.as_ref().span.clone()))
                         };
                         log::trace!("-----------------------------------------------");
-                        for (diff_result, color) in tokens {
-                            let str = read_string(diff_result).unwrap_or_default();
-                            log::trace!(
-                                "Op: {:?}, Str: {:?}, L: {:?}, R: {:?}",
-                                diff_result.operation,
-                                str,
-                                diff_result.token_source_idx,
-                                diff_result.token_target_idx
-                            );
+                        let mut concat_str = String::new();
+                        let mut ghost_ranges = Vec::new();
+                        let mut current_byte_idx = 0;
 
+                        for (diff_result, color, is_ghost) in tokens {
+                            let str = read_string(diff_result).unwrap_or_default();
                             if str.is_empty() || str == "\n" || str == "\r\n" {
                                 continue;
                             }
 
-                            ui.label(egui::RichText::new(str).color(
-                                egui::Color32::from_rgba_unmultiplied(
+                            let byte_len = str.len();
+
+                            if *is_ghost {
+                                let ghost_color = egui::Color32::from_rgba_unmultiplied(
                                     color.0[0], color.0[1], color.0[2], color.0[3],
-                                ),
-                            ));
+                                );
+                                ghost_ranges.push((
+                                    current_byte_idx..(current_byte_idx + byte_len),
+                                    ghost_color,
+                                ));
+                            }
+
+                            concat_str.push_str(&str);
+                            current_byte_idx += byte_len;
+                        }
+
+                        let mut text_buffer = concat_str.trim_end().to_string();
+
+                        let theme = egui_extras::syntax_highlighting::CodeTheme::from_memory(
+                            ui.ctx(),
+                            ui.style(),
+                        );
+                        let language = "rs";
+
+                        let mut layouter =
+                            |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                                let mut layout_job = egui_extras::syntax_highlighting::highlight(
+                                    ui.ctx(),
+                                    ui.style(),
+                                    &theme,
+                                    buf.as_str(),
+                                    language,
+                                );
+
+                                let buf_len = buf.as_str().len();
+                                for section in &mut layout_job.sections {
+                                    for (ghost_range, ghost_color) in &ghost_ranges {
+                                        // Clamp ranges in case text_buffer.trim_end() shortened the string
+                                        let start = ghost_range.start.min(buf_len);
+                                        let end = ghost_range.end.min(buf_len);
+
+                                        if section.byte_range.start < end
+                                            && section.byte_range.end > start
+                                        {
+                                            section.format.color = *ghost_color;
+                                        }
+                                    }
+                                }
+                                // layout_job.wrap.max_width = wrap_width;
+                                ui.fonts_mut(|f| f.layout_job(layout_job))
+                            };
+
+                        let id_salt = line_num_str.clone();
+                        ui.push_id(&id_salt, |ui| {
+                            let editor = egui::TextEdit::multiline(&mut text_buffer)
+                                .font(egui::TextStyle::Monospace)
+                                .code_editor()
+                                .desired_rows(1)
+                                .lock_focus(true)
+                                .desired_width(f32::INFINITY)
+                                .frame(false)
+                                .layouter(&mut layouter);
+                            ui.add(editor);
+                        });
+
+                        ui.painter().rect_filled(
+                            extended_rect,
+                            0.0,
+                            egui::Color32::from_rgba_unmultiplied(
+                                bg.0[0], bg.0[1], bg.0[2], bg.0[3],
+                            ),
+                        );
+                        if is_highlighted {
+                            ui.painter().rect_filled(
+                                extended_rect,
+                                0.0,
+                                egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40), // Faint yellow
+                            );
                         }
                     });
                 });

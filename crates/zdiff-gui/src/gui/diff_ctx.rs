@@ -774,7 +774,7 @@ fn precompute_diff_spans(diff_rows: &[DiffRow]) -> PrecomputedDiffs {
     let has_change = |content: &LineContent| match content {
         LineContent::Code { tokens, .. } => tokens
             .iter()
-            .any(|(res, _)| !res.hide_in_diff && !matches!(res.operation, DiffOp::Equal(_))),
+            .any(|(res, _, _)| !res.hide_in_diff && !matches!(res.operation, DiffOp::Equal(_))),
         _ => false,
     };
 

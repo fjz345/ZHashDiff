@@ -30,7 +30,7 @@ eframe = { version = "0.33.3", default-features = false, features = [
     "persistence"
 ] , optional = true }
 egui_tiles =  {version = "0.14.1", features = ["serde"], optional = true}
-egui_extras = { version = "0.33.3", features = ["image"] }
+egui_extras = { version = "0.33.3", features = ["image", "syntect"] }
 serde = { version = "1.0.48", features = ["derive"], optional = true}
 serde_json = { version = "1.0.48", optional = true }
 log = "0.4.27"
