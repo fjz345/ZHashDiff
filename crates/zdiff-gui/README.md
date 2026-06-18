@@ -32,14 +32,13 @@ GUI for zdiff crate
 * Better handling of temp paths (example: [p4] Zdiff.exe %s %s)
     - Need to be able to use QuickDiffs after opening a file via p4 diff
 * Selecting word in diff highlights all usages of that text in both diffs
-* Fix so that selecting multi rows only selects text from the current diff text
+* Fix multi line text selection
 * Fix MyersLinear to behave the same as MyersDebug, it uses the wrong path
 
 * p4 feature to quick diff towards the current local file
 * Feature to click "collapsed rows" to expand them
 * Add platform image for .exe
 * show time it took to compute the diff
-* Fix bug where copying text adds spaces around some tokens (often '.')
 
 * Batch DiffRow performance optimzation
 * Quick Diff /w multiple p4 repositories
