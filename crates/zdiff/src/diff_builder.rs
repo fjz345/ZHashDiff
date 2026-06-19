@@ -423,7 +423,7 @@ mod tests {
                 let mut text = String::new();
                 let mut debug_tokens = Vec::new();
 
-                for (res, _) in tokens {
+                for (res, _, _) in tokens {
                     // Determine which token array and which index to use
                     let (src_tokens, src_text, idx) = match res.operation {
                         DiffOp::Equal(..) | DiffOp::Delete => (
@@ -613,7 +613,7 @@ mod integration_tests {
 
         for row in rows {
             if let LineContent::Code { tokens, .. } = row.left {
-                for (res, _) in tokens {
+                for (res, _, _) in tokens {
                     if res.operation != DiffOp::Insert {
                         let idx = res.token_source_idx.expect("Source index missing");
                         left_res
@@ -622,7 +622,7 @@ mod integration_tests {
                 }
             }
             if let LineContent::Code { tokens, .. } = row.right {
-                for (res, _) in tokens {
+                for (res, _, _) in tokens {
                     if res.operation != DiffOp::Delete {
                         let idx = res.token_target_idx.expect("Target index missing");
                         right_res
