@@ -686,37 +686,33 @@ impl DiffProcessor {
     }
 
     pub fn get_scroll_to_row(&mut self) -> Option<ScrollSpan> {
-        let conflict_scroll_to_row = self.conflict_scroll_to_row();
-        let conflict_scroll_to_row = if conflict_scroll_to_row != self.last_conflict_scroll_to_row {
-            self.last_conflict_scroll_to_row = conflict_scroll_to_row;
-            conflict_scroll_to_row
-        } else {
-            None
-        };
-        let goto_scroll_to_rows = self.goto_line_number.map(|f| ScrollSpan {
-            start: f.saturating_sub(1),
-            maybe_end: None,
-        });
-
-        let goto_scroll_to_rows = if goto_scroll_to_rows != self.last_goto_scroll_to_row {
-            self.last_goto_scroll_to_row = goto_scroll_to_rows;
-            goto_scroll_to_rows
-        } else {
-            None
+        let check_update = |new: Option<ScrollSpan>, last: &mut Option<ScrollSpan>| {
+            if new != *last {
+                *last = new;
+                new
+            } else {
+                None
+            }
         };
 
-        let find_scroll_to_rows = self.find_scroll_to_row();
-        let find_scroll_to_rows = if find_scroll_to_rows != self.last_find_scroll_to_row {
-            self.last_find_scroll_to_row = find_scroll_to_rows;
-            find_scroll_to_rows
-        } else {
-            None
-        };
+        let conflict = check_update(
+            self.conflict_scroll_to_row(),
+            &mut self.last_conflict_scroll_to_row,
+        );
 
-        let scroll_to_rows =
-            find_scroll_to_rows.or_else(|| goto_scroll_to_rows.or_else(|| conflict_scroll_to_row));
+        let goto = check_update(
+            self.goto_line_number.map(|f| ScrollSpan {
+                start: f.saturating_sub(1),
+                maybe_end: None,
+            }),
+            &mut self.last_goto_scroll_to_row,
+        );
 
-        if let Some(ScrollSpan { start, maybe_end }) = &scroll_to_rows {
+        let find = check_update(self.find_scroll_to_row(), &mut self.last_find_scroll_to_row);
+
+        let scroll_to_row = find.or(goto).or(conflict);
+
+        if let Some(ScrollSpan { start, maybe_end }) = &scroll_to_row {
             self.active_highlights.clear();
             if let Some(end) = maybe_end {
                 self.active_highlights.extend(*start..=*end);
@@ -725,7 +721,7 @@ impl DiffProcessor {
             }
         }
 
-        scroll_to_rows
+        scroll_to_row
     }
 
     pub fn conflict_scroll_to_row(&mut self) -> Option<ScrollSpan> {
@@ -738,6 +734,8 @@ impl DiffProcessor {
                     start: conflict_idx_span.start,
                     maybe_end: Some(conflict_idx_span.end),
                 });
+            } else {
+                ret = None;
             }
         }
         ret
