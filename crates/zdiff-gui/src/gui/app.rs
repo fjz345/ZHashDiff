@@ -312,7 +312,7 @@ impl<'a> ZApp {
                             ui.radio_value(
                                 myers_diff_algorithm,
                                 MyersDiffAlgorithm::Trace,
-                                "debug",
+                                "Trace",
                             );
                             ui.radio_value(
                                 myers_diff_algorithm,
@@ -924,13 +924,12 @@ impl<'a> ZApp {
 
 impl eframe::App for ZApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        log::info!("SAVING...");
-
+        log::debug!("SAVING...");
         #[cfg(feature = "serde")]
         if let Ok(json) = serde_json::to_string(self) {
             storage.set_string(eframe::APP_KEY, json);
         }
-        log::info!("SAVED!");
+        log::debug!("SAVED!");
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {

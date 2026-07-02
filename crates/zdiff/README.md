@@ -11,9 +11,6 @@ Library diffing file contents.
 ## Todo
 * Propper state based lexer for parsing scopes (// COMMENT & /* COMMENT\n*/)
 * Line diff -> inner line diff
-* toggle filter only diffs rows
-* P4 revision graph + timelapse keybind
-* fix as_local_path to work for depot paths
 
 * Regex filter text contents
 * image file diff
