@@ -49,7 +49,7 @@ impl<'a> DiffTestHarness<'a> {
         }
     }
 
-    pub fn diff_irs(&self) -> &DiffIR {
+    pub fn diff_ir(&self) -> &DiffIR {
         &self.diff_ir
     }
 

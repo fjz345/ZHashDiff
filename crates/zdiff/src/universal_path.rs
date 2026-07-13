@@ -118,10 +118,17 @@ impl UniversalPath {
         components.into_iter().collect()
     }
 
-    pub fn as_local_path(&self) -> Option<&Path> {
+    pub fn as_path(&self) -> Option<&Path> {
         match self {
             Self::Local(p) => Some(p.as_path()),
             Self::Depot(..) => None, // TODO: get local path for depot
+        }
+    }
+
+    pub fn as_local_path(&self) -> String {
+        match self {
+            Self::Local(p) => p.to_string_lossy().replace('\\', "/"),
+            Self::Depot(..) => todo!(), // TODO: get local path for depot
         }
     }
 
@@ -129,7 +136,7 @@ impl UniversalPath {
         match self {
             Self::Depot(s, Some(rev)) => format!("{}#{}", s, rev),
             Self::Depot(s, None) => s.clone(),
-            Self::Local(p) => p.to_string_lossy().replace('\\', "/"),
+            Self::Local(p) => self.as_local_path(),
         }
     }
 
