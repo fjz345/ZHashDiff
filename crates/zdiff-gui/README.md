@@ -29,13 +29,14 @@ GUI for zdiff crate
 * lost_focus not called correctly on paths when holding down mouse: https://github.com/emilk/egui/issues/2142
 
 ## Todo
+* Revert lines
 * Better handling of temp paths (example: [p4] Zdiff.exe %s %s)
     - Need to be able to use QuickDiffs after opening a file via p4 diff
 * Selecting word in diff highlights all usages of that text in both diffs
 * Fix multi line text selection
-* Fix MyersLinear to behave the same as MyersDebug, it uses the wrong path
 
 * p4 feature to quick diff towards the current local file
+    - Keybinding?
 * Feature to click "collapsed rows" to expand them
 * Add platform image for .exe
 * show time it took to compute the diff
