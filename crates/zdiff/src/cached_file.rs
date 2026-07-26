@@ -111,46 +111,43 @@ impl<T: RawTokenTrait> CachedFile<T> {
         })
     }
 
-    // Attempt to write a revert, returns an error if could not write
-    pub fn revert(
+    pub fn revert_one_diff(
         &self,
-        diffs: &[DiffResult],
+        diff: &DiffResult,
         other: &Self,
         self_is_source: bool,
     ) -> io::Result<()> {
-        let reconstructed: String = diffs
-            .iter()
-            .filter_map(|diff| match diff.operation {
-                crate::diff_ir::DiffOp::Equal(_) => {
-                    if self_is_source {
-                        let idx = diff.token_source_idx? as usize;
-                        Some(self.read_content_span(self.tokens[idx].as_ref().span.clone()))
-                    } else {
-                        let idx = diff.token_target_idx? as usize;
-                        Some(self.read_content_span(self.tokens[idx].as_ref().span.clone()))
-                    }
-                }
-                crate::diff_ir::DiffOp::Delete => {
-                    if self_is_source {
-                        None
-                    } else {
-                        let idx = diff.token_source_idx? as usize;
-                        Some(other.read_content_span(other.tokens[idx].as_ref().span.clone()))
-                    }
-                }
-                crate::diff_ir::DiffOp::Insert => {
-                    if self_is_source {
-                        let idx = diff.token_target_idx? as usize;
-                        Some(other.read_content_span(other.tokens[idx].as_ref().span.clone()))
-                    } else {
-                        None
-                    }
-                }
-            })
-            .collect();
+        let remove_from_self = match diff.operation {
+            crate::diff_ir::DiffOp::Equal(_) => return Ok(()),
+            crate::diff_ir::DiffOp::Delete => self_is_source,
+            crate::diff_ir::DiffOp::Insert => !self_is_source,
+        };
+
+        let (self_idx, other_idx) = if self_is_source {
+            (diff.token_source_idx, diff.token_target_idx)
+        } else {
+            (diff.token_target_idx, diff.token_source_idx)
+        };
+
+        let span_of = |file: &Self, idx: u32| file.tokens[idx as usize].as_ref().span.clone();
+        let mut new_contents = self.contents.clone();
+
+        if remove_from_self {
+            if let Some(idx) = self_idx {
+                new_contents.replace_range(span_of(self, idx), "");
+            }
+        } else if let Some(o_idx) = other_idx {
+            let other_span = span_of(other, o_idx);
+            let text = other.read_content_span(other_span.clone());
+            let insert_at = self_idx
+                .map(|idx| span_of(self, idx).start)
+                .unwrap_or_else(|| other_span.start.min(self.contents.len()));
+
+            new_contents.insert_str(insert_at, text);
+        }
 
         let mut file = File::create(&self.path.to_p4_string())?;
-        file.write_all(reconstructed.as_bytes())?;
+        file.write_all(new_contents.as_bytes())?;
 
         Ok(())
     }
@@ -161,7 +158,7 @@ mod tests {
     use super::*;
     use crate::{
         diff_builder::DiffBuilderOptions,
-        lexer::{LEXER_MODE_DEFAULT, RawToken},
+        lexer::{LEXER_MODE_GREEDY, RawToken},
         test_harness::DiffTestHarness,
     };
 
@@ -172,8 +169,6 @@ mod tests {
 
         let s1 = "\t#define hello_there\n\t// Comment\n";
         let s2 = "\t#define world_here\n\t// Comment\n";
-        let s1_expected = s2;
-        let s2_expected = s1;
         std::fs::write(temp_file_1.path(), s1).unwrap();
         std::fs::write(temp_file_2.path(), s2).unwrap();
 
@@ -184,11 +179,17 @@ mod tests {
         let cached_file_1 = CachedFile::<RawToken>::new(
             display_path_1.clone(),
             physical_path_1.clone(),
-            LEXER_MODE_DEFAULT,
+            LEXER_MODE_GREEDY,
+        )
+        .expect("failed to create CachedFile");
+        let cached_file_1_clone = CachedFile::<RawToken>::new(
+            display_path_1.clone(),
+            physical_path_1.clone(),
+            LEXER_MODE_GREEDY,
         )
         .expect("failed to create CachedFile");
         let cached_file_2 =
-            CachedFile::<RawToken>::new(display_path_2, physical_path_2, LEXER_MODE_DEFAULT)
+            CachedFile::<RawToken>::new(display_path_2, physical_path_2, LEXER_MODE_GREEDY)
                 .expect("failed to create CachedFile");
 
         let path = vec![
@@ -212,26 +213,27 @@ mod tests {
             },
             4,
         );
-
         let diff_ir = harness.diff_ir().clone();
+
         for a in diff_ir.entries.iter() {
             println!("{:?}", a);
         }
 
-        // Revert 1 to 2
+        let diff_to_revert_source = &diff_ir.entries[1];
         cached_file_1
-            .revert(&diff_ir.entries, &cached_file_2, true)
+            .revert_one_diff(diff_to_revert_source, &cached_file_2, true)
             .expect("Failed to revert");
 
-        // Revert 2 to 1
+        let diff_to_revert_target = &diff_ir.entries[2];
         cached_file_2
-            .revert(&diff_ir.entries, &cached_file_1, false)
+            .revert_one_diff(diff_to_revert_target, &cached_file_1_clone, false)
             .expect("Failed to revert");
 
+        let expected_reverted = "\t\n\t// Comment\n";
         let s1_reverted = std::fs::read_to_string(temp_file_1.path()).unwrap();
         let s2_reverted = std::fs::read_to_string(temp_file_2.path()).unwrap();
-        assert_eq!(s1_reverted, s1_expected);
-        assert_eq!(s2_reverted, s2_expected);
+        assert_eq!(s1_reverted, expected_reverted);
+        assert_eq!(s2_reverted, expected_reverted);
     }
 
     #[test]
@@ -267,9 +269,9 @@ mod tests {
         let mut tokens_newline = cached_file_newline.tokens.clone();
         let mut tokens_tokenize = cached_file_tokenize.tokens.clone();
 
-        tokens_greedy.remove(0); // remove tab
-        tokens_newline.remove(0); // remove all before newline 
-        tokens_tokenize.remove(0); // remove tab
+        tokens_greedy.remove(0);
+        tokens_newline.remove(0);
+        tokens_tokenize.remove(0);
 
         let reconstructed_unmodified = tokens_unmodified
             .iter()
