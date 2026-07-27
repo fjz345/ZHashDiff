@@ -1,4 +1,5 @@
 use std::io;
+#[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -63,8 +64,8 @@ impl DiffToolConfig {
         }
     }
 }
-
-pub fn open_diff_tool(
+#[cfg(target_os = "windows")]
+pub fn open_diff_tool_windows(
     config: &DiffToolConfig,
     file1: impl AsRef<Path>,
     file2: impl AsRef<Path>,
@@ -91,6 +92,53 @@ pub fn open_diff_tool(
 
     log::info!("Opening diff tool {:?}", cmd);
     cmd.spawn()?;
+
+    Ok(())
+}
+#[cfg(target_os = "macos")]
+pub fn open_diff_tool_macos(
+    config: &DiffToolConfig,
+    file1: impl AsRef<Path>,
+    file2: impl AsRef<Path>,
+) -> io::Result<()> {
+    todo!();
+    let mut cmd = Command::new(&config.exe_path);
+
+    for arg in &config.prefix_args.default_args {
+        cmd.arg(arg);
+    }
+    // !!! Important !!! use raw_arg.
+    // cmd.raw_arg(
+    //     config
+    //         .diff_path_1_args
+    //         .replace("{}", &file1.as_ref().to_string_lossy()),
+    // );
+    // cmd.raw_arg(
+    //     config
+    //         .diff_path_2_args
+    //         .replace("{}", &file2.as_ref().to_string_lossy()),
+    // );
+    for arg in &config.suffix_args.default_args {
+        cmd.arg(arg);
+    }
+
+    log::info!("Opening diff tool {:?}", cmd);
+    cmd.spawn()?;
+
+    Ok(())
+}
+
+
+pub fn open_diff_tool(
+    config: &DiffToolConfig,
+    file1: impl AsRef<Path>,
+    file2: impl AsRef<Path>,
+) -> io::Result<()> {
+    #[cfg(target_os = "windows")]
+    open_diff_tool_windows(config, file1, file2)?;
+
+    #[cfg(target_os = "macos")]
+    open_diff_tool_macos(config, file1, file2)?;
 
     Ok(())
 }
