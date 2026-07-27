@@ -5,14 +5,11 @@ use crate::{
     diff_ctx::{MinimalDiffCtx, ScrollSpan},
     ui_egui::panes::ZAppPane,
 };
-use eframe::egui::{
-    self, Layout, TextEdit, UiBuilder, Vec2, WidgetInfo, WidgetType::Label,
-    scroll_area::ScrollBarVisibility,
-};
+use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
 use zdiff::{
     cached_file::CachedFile,
-    diff_builder::{DiffBuilderOptions, LineContent},
+    diff_builder::{DiffBuilderOptions, DiffRow, LineContent},
     diff_ir::{DiffOp, DiffResult},
     lexer::RawTokenTrait,
     universal_path::UniversalPath,
@@ -49,6 +46,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub set_file_1_root_request: &'a mut Option<UniversalPath>,
     pub set_file_2_root_request: &'a mut Option<UniversalPath>,
     pub pivot: &'a mut (Option<usize>, Option<usize>),
+    pub revert_request: &'a mut Option<DiffResult>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -483,7 +481,7 @@ impl FileDiffPane {
                                                     }
                                                 };
 
-                                                    let text =
+                                                    let symbol_text =
                                                         match (&diff_row.left, &diff_row.right) {
                                                             (
                                                                 LineContent::Void,
@@ -540,10 +538,55 @@ impl FileDiffPane {
                                                             _ => " ",
                                                         };
                                                     ui.centered_and_justified(|ui| {
-                                                        ui.label(
-                                                            egui::RichText::new(text)
-                                                                .color(egui::Color32::DARK_GRAY),
-                                                        );
+                                                        ui.horizontal(|ui|{
+                                                            let revert_func = |diff_row: &DiffRow|{
+                                                                match &diff_row.left
+                                                                {
+                                                                    LineContent::Code { tokens, line_num, bg } => {
+                                                                        let diff_result = tokens.first().map(|a|a.0.clone());
+                                                                        let diff_result = match diff_result{
+                                                                            Some(diff) => {
+                                                                                match &diff.operation {
+                                                                                    DiffOp::Equal(_) => {None},
+                                                                                    DiffOp::Delete => {Some(diff)},
+                                                                                    DiffOp::Insert => {Some(diff)},
+                                                                                }
+                                                                            },
+                                                                            None => {None},
+                                                                        };
+                                                                        diff_result
+                                                                    },
+                                                                    LineContent::Void => {None},
+                                                                    LineContent::Collapsed => {None},
+                                                                }
+                                                            };
+                                                            let can_revert_left = match &diff_row.left {
+                                                                LineContent::Code { tokens, line_num, bg } => tokens.iter().any(|a|matches!(a.0.operation, DiffOp::Delete)),
+                                                                LineContent::Void | LineContent::Collapsed => false,
+                                                            };
+                                                            let can_revert_right = match &diff_row.right {
+                                                                LineContent::Code { tokens, line_num, bg } => tokens.iter().any(|a|matches!(a.0.operation, DiffOp::Insert)),
+                                                                LineContent::Void | LineContent::Collapsed => false,
+                                                            };
+                                                            if  can_revert_left && ui.button("<").clicked(){
+                                                                let diff = revert_func(&diff_row);
+                                                                *ctx.revert_request = diff;
+                                                                if let Some(new_diff) = ctx.revert_request{
+                                                                        log::info!("revert_reqeust updated: {:?}", new_diff);
+                                                                }
+                                                            };
+                                                            ui.label(
+                                                                egui::RichText::new(symbol_text)
+                                                                    .color(egui::Color32::DARK_GRAY),
+                                                            );
+                                                            if can_revert_right && ui.button(">").clicked(){
+                                                                let diff = revert_func(&diff_row);
+                                                                *ctx.revert_request = diff;
+                                                                if let Some(new_diff) = ctx.revert_request{
+                                                                    log::info!("revert_reqeust updated: {:?}", new_diff);
+                                                                }
+                                                            };
+                                                        });
                                                     });
                                                 });
 

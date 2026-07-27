@@ -639,6 +639,7 @@ impl<'a> ZApp {
                     find_cursor: &mut find_cursor,
                     diff_loading: diff_processor.is_in_progress(),
                     code_language,
+                    revert_request: &mut None,
                 },
             };
 
@@ -679,6 +680,51 @@ impl<'a> ZApp {
             if let Some(file_path) = behavior.ctx_file_diff.load_file_2_request.take() {
                 log::debug!("Set new path from file_1_request: {:?}", file_path);
                 app_ctx.file_2.set_path(file_path);
+            }
+            if let Some(revert_request) = behavior.ctx_file_diff.revert_request {
+                log::debug!("new revert request: {:?}", revert_request);
+                let revert_success = match &revert_request.operation {
+                    zdiff::diff_ir::DiffOp::Equal(_) => {
+                        log::debug!("invalid revert request");
+                        false
+                    }
+                    zdiff::diff_ir::DiffOp::Delete => {
+                        let c1 = app_ctx
+                            .file_1
+                            .get_cached_file()
+                            .expect("tried to revert cached file");
+                        let c2 = app_ctx
+                            .file_2
+                            .get_cached_file()
+                            .expect("tried to revert cached file");
+                        if let Err(e) = c2.revert_one_diff(revert_request, &c1, false) {
+                            log::error!("Failed to revert: {} {:?}", e, revert_request);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                    zdiff::diff_ir::DiffOp::Insert => {
+                        let c1 = app_ctx
+                            .file_1
+                            .get_cached_file()
+                            .expect("tried to revert cached file");
+                        let c2 = app_ctx
+                            .file_2
+                            .get_cached_file()
+                            .expect("tried to revert cached file");
+                        if let Err(e) = c1.revert_one_diff(revert_request, &c2, true) {
+                            log::error!("Failed to revert: {} {:?}", e, revert_request);
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                };
+                if revert_success {
+                    diff_processor.reset_ctx();
+                    Self::refresh_file_contents(&mut app_ctx.file_1, &mut app_ctx.file_2);
+                }
             }
 
             drop(behavior);

@@ -60,7 +60,6 @@ pub struct Keybindings {
     pub timelapse_view: Option<Shortcut>,
 }
 
-// const DEFAULT_COMMAND_ENABLE: bool = true;
 const DEFAULT_COMMAND_ENABLE: bool = if cfg!(target_os = "macos")
 {true}
 else
