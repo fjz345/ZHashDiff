@@ -60,37 +60,47 @@ pub struct Keybindings {
     pub timelapse_view: Option<Shortcut>,
 }
 
+// const DEFAULT_COMMAND_ENABLE: bool = true;
+const DEFAULT_COMMAND_ENABLE: bool = if cfg!(target_os = "macos")
+{true}
+else
+{true};
+const DEFAULT_CONTROL_ENABLE: bool = if cfg!(target_os = "macos")
+{false}
+else
+{true};
+
 impl Default for Keybindings {
     fn default() -> Self {
         Self {
             open_file_source: Some(Shortcut {
                 key: Key::F1,
                 modifiers: Modifiers {
-                    ctrl: true,
-                    command: true,
+                    ctrl: DEFAULT_CONTROL_ENABLE,
+                    command: DEFAULT_COMMAND_ENABLE,
                     ..Default::default()
                 },
             }),
             open_file_target: Some(Shortcut {
                 key: Key::F2,
                 modifiers: Modifiers {
-                    ctrl: true,
-                    command: true,
+                    ctrl: DEFAULT_CONTROL_ENABLE,
+                    command: DEFAULT_COMMAND_ENABLE,
                     ..Default::default()
                 },
             }),
             refresh_diff: Some(Shortcut {
                 key: Key::R,
                 modifiers: Modifiers {
-                    ctrl: true,
-                    command: true,
+                    ctrl: DEFAULT_CONTROL_ENABLE,
+                    command: DEFAULT_COMMAND_ENABLE,
                     ..Default::default()
                 },
             }),
             refresh_diff_rows_only: Some(Shortcut {
                 key: Key::R,
                 modifiers: Modifiers {
-                    ctrl: true,
+                    ctrl: DEFAULT_CONTROL_ENABLE,
                     command: true,
                     alt: true,
                     ..Default::default()
@@ -99,47 +109,47 @@ impl Default for Keybindings {
             open_options_keybindings: Some(Shortcut {
                 key: Key::O,
                 modifiers: Modifiers {
-                    ctrl: true,
-                    command: true,
+                    ctrl: DEFAULT_CONTROL_ENABLE,
+                    command: DEFAULT_COMMAND_ENABLE,
                     ..Default::default()
                 },
             }),
             open_universal_path: Some(Shortcut {
                 key: Key::U,
                 modifiers: Modifiers {
-                    ctrl: true,
-                    command: true,
+                    ctrl: DEFAULT_CONTROL_ENABLE,
+                    command: DEFAULT_COMMAND_ENABLE,
                     ..Default::default()
                 },
             }),
             find: Some(Shortcut {
                 key: Key::F,
                 modifiers: Modifiers {
-                    ctrl: true,
-                    command: true,
+                    ctrl: DEFAULT_CONTROL_ENABLE,
+                    command: DEFAULT_COMMAND_ENABLE,
                     ..Default::default()
                 },
             }),
             goto: Some(Shortcut {
                 key: Key::G,
                 modifiers: Modifiers {
-                    ctrl: true,
-                    command: true,
+                    ctrl: DEFAULT_CONTROL_ENABLE,
+                    command: DEFAULT_COMMAND_ENABLE,
                     ..Default::default()
                 },
             }),
             next_conflict: Some(Shortcut {
                 key: Key::Num2,
                 modifiers: Modifiers {
-                    ctrl: true,
-                    command: true,
+                    ctrl: DEFAULT_CONTROL_ENABLE,
+                    command: DEFAULT_COMMAND_ENABLE,
                     ..Default::default()
                 },
             }),
             prev_conflict: Some(Shortcut {
                 key: Key::Num1,
                 modifiers: Modifiers {
-                    ctrl: true,
+                    ctrl: DEFAULT_CONTROL_ENABLE,
                     command: true,
                     shift: true,
                     ..Default::default()
@@ -216,7 +226,7 @@ impl Default for Keybindings {
             revision_graph: Some(Shortcut {
                 key: Key::R,
                 modifiers: Modifiers {
-                    ctrl: true,
+                    ctrl: DEFAULT_CONTROL_ENABLE,
                     command: true,
                     shift: true,
                     ..Default::default()
@@ -225,7 +235,7 @@ impl Default for Keybindings {
             timelapse_view: Some(Shortcut {
                 key: Key::T,
                 modifiers: Modifiers {
-                    ctrl: true,
+                    ctrl: DEFAULT_CONTROL_ENABLE,
                     command: true,
                     shift: true,
                     ..Default::default()
@@ -301,7 +311,7 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                             });
 
                             if should_surrender {
-                                log::info!("Setting shortcut for {}: {:?}", label, next_shortcut);
+                                log::info!("Setting shortcut for {}:\n{:?}\n -> \n{:?}", label, shortcut, next_shortcut);
                                 *shortcut = next_shortcut;
                                 ui.memory_mut(|mem| mem.surrender_focus(id));
                             }
