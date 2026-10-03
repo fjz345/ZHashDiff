@@ -8,14 +8,17 @@ use crate::{
         panes::ZAppPane,
     },
 };
-use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility};
+use eframe::egui::{
+    self, Layout, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility,
+    text_selection::LabelSelectionState,
+};
 use serde::{Deserialize, Serialize};
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent},
     diff_ir::{DiffOp, DiffResult},
     lexer::RawTokenTrait,
-    row_text::{RowText, build_row_text},
+    row_text::build_row_text,
     universal_path::UniversalPath,
 };
 
@@ -596,9 +599,12 @@ impl FileDiffPane {
                                                                         log::info!("revert_reqeust updated: {:?}", new_diff);
                                                                 }
                                                             };
-                                                            ui.label(
-                                                                egui::RichText::new(symbol_text)
-                                                                    .color(egui::Color32::DARK_GRAY),
+                                                            ui.add(
+                                                                egui::Label::new(
+                                                                    egui::RichText::new(symbol_text)
+                                                                        .color(egui::Color32::DARK_GRAY),
+                                                                )
+                                                                .selectable(false),
                                                             );
                                                             if can_revert_right && ui.button(">").clicked(){
                                                                 let diff = revert_func(&diff_row);
@@ -756,7 +762,6 @@ impl FileDiffPane {
                             file_source.as_deref(),
                             file_target.as_deref(),
                         );
-                        let (text, ghost_ranges) = inline_ghosts(&row_text);
 
                         let theme = egui_extras::syntax_highlighting::CodeTheme::from_memory(
                             ui.ctx(),
@@ -766,21 +771,35 @@ impl FileDiffPane {
                             ui.ctx(),
                             ui.style(),
                             &theme,
-                            &text,
+                            &row_text.text,
                             code_language,
                         );
-                        for section in &mut layout_job.sections {
-                            for (ghost_range, ghost_color) in &ghost_ranges {
-                                if section.byte_range.start < ghost_range.end
-                                    && section.byte_range.end > ghost_range.start
-                                {
-                                    section.format.color = *ghost_color;
-                                }
-                            }
-                        }
+
+                        let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+                        let ghost_galleys: Vec<(usize, Arc<egui::Galley>)> = row_text
+                            .ghosts
+                            .iter()
+                            .map(|ghost| {
+                                let [r, g, b, a] = ghost.color.0;
+                                let galley = ui.fonts_mut(|fonts| {
+                                    fonts.layout_no_wrap(
+                                        ghost.text.clone(),
+                                        font_id.clone(),
+                                        egui::Color32::from_rgba_unmultiplied(r, g, b, a),
+                                    )
+                                });
+                                (ghost.byte_offset, galley)
+                            })
+                            .collect();
+                        let ghost_widths: Vec<(usize, f32)> = ghost_galleys
+                            .iter()
+                            .map(|(offset, galley)| (*offset, galley.size().x))
+                            .collect();
+                        insert_ghost_gaps(&mut layout_job, &ghost_widths);
 
                         layout_job.wrap.max_width = f32::INFINITY;
                         let galley = ui.fonts_mut(|fonts| fonts.layout_job(layout_job));
+                        let ghost_xs = ghost_x_offsets(&galley, &row_text.text, &ghost_widths);
                         // The hit area spans the rest of the row, not just the text, so a press
                         // anywhere in the block starts a selection. Drag sense on both sides:
                         // egui hit-tests against the previous frame, so the side that becomes
@@ -805,6 +824,13 @@ impl FileDiffPane {
                             ui.painter().add(egui::epaint::TextShape::new(
                                 hit_rect.left_top(),
                                 galley,
+                                text_color,
+                            ));
+                        }
+                        for ((_, ghost_galley), x) in ghost_galleys.into_iter().zip(ghost_xs) {
+                            ui.painter().add(egui::epaint::TextShape::new(
+                                hit_rect.left_top() + egui::vec2(x, 0.0),
+                                ghost_galley,
                                 text_color,
                             ));
                         }
@@ -873,25 +899,51 @@ impl FileDiffPane {
     }
 }
 
-/// Ghost text is still shown inline (dimmed) and therefore still selectable; the copy-exclusion
-/// handling is a later slice. Returns the displayed text and the byte ranges of the ghosts in it.
-fn inline_ghosts(row_text: &RowText) -> (String, Vec<(std::ops::Range<usize>, egui::Color32)>) {
-    let mut text = String::with_capacity(row_text.text.len());
-    let mut ghost_ranges = Vec::with_capacity(row_text.ghosts.len());
-    let mut copied = 0;
-    for ghost in &row_text.ghosts {
-        text.push_str(&row_text.text[copied..ghost.byte_offset]);
-        copied = ghost.byte_offset;
-        let start = text.len();
-        text.push_str(&ghost.text);
-        let [r, g, b, a] = ghost.color.0;
-        ghost_ranges.push((
-            start..text.len(),
-            egui::Color32::from_rgba_unmultiplied(r, g, b, a),
-        ));
+/// Ghost text is visual-only: it is kept out of the label text so egui can neither select nor
+/// copy it, and each ghost is a blank gap in the layout job instead. `ghosts` is (byte offset
+/// into the real text, ghost width) in row order. Ghosts at the end of the text need no gap
+/// because nothing follows them.
+fn insert_ghost_gaps(job: &mut egui::text::LayoutJob, ghosts: &[(usize, f32)]) {
+    for &(offset, width) in ghosts {
+        if offset >= job.text.len() {
+            continue;
+        }
+        let mut i = job
+            .sections
+            .iter()
+            .position(|s| s.byte_range.contains(&offset))
+            .expect("layout sections cover the whole text");
+        let section = &mut job.sections[i];
+        if section.byte_range.start < offset {
+            let mut tail = section.clone();
+            tail.leading_space = 0.0;
+            tail.byte_range.start = offset;
+            section.byte_range.end = offset;
+            job.sections.insert(i + 1, tail);
+            i += 1;
+        }
+        job.sections[i].leading_space += width;
     }
-    text.push_str(&row_text.text[copied..]);
-    (text, ghost_ranges)
+}
+
+/// X of each ghost relative to the galley origin: inside its gap, or past the end of the text for
+/// trailing ghosts. Ghosts sharing an offset sit side by side in one gap.
+fn ghost_x_offsets(galley: &egui::Galley, text: &str, ghosts: &[(usize, f32)]) -> Vec<f32> {
+    let glyphs = galley.rows.first().map_or(&[][..], |row| &row.glyphs[..]);
+    ghosts
+        .iter()
+        .enumerate()
+        .map(|(i, &(offset, _))| {
+            let same_offset = |(o, _): &&(usize, f32)| *o == offset;
+            let gap_width: f32 = ghosts.iter().filter(same_offset).map(|g| g.1).sum();
+            let before_in_gap: f32 = ghosts[..i].iter().filter(same_offset).map(|g| g.1).sum();
+            let gap_start = match glyphs.get(text[..offset].chars().count()) {
+                Some(glyph) => glyph.pos.x - gap_width,
+                None => glyphs.last().map_or(0.0, |glyph| glyph.max_x()),
+            };
+            gap_start + before_in_gap
+        })
+        .collect()
 }
 
 fn handle_drops(
@@ -942,6 +994,45 @@ mod tests {
     use zdiff::diff_builder::{DiffBuilderOptions, DiffRow, LineContent};
 
     use crate::ui_egui::copy_harness::{CopyHarness, Side};
+
+    use super::insert_ghost_gaps;
+
+    fn job_with_one_section(text: &str) -> eframe::egui::text::LayoutJob {
+        eframe::egui::text::LayoutJob::simple_singleline(
+            text.to_owned(),
+            eframe::egui::FontId::monospace(12.0),
+            eframe::egui::Color32::WHITE,
+        )
+    }
+
+    #[test]
+    fn ghost_gap_splits_the_section_without_changing_the_text() {
+        let mut job = job_with_one_section("abcd");
+
+        insert_ghost_gaps(&mut job, &[(2, 7.0)]);
+
+        assert_eq!(job.text, "abcd");
+        let sections: Vec<_> = job
+            .sections
+            .iter()
+            .map(|s| (s.byte_range.clone(), s.leading_space))
+            .collect();
+        assert_eq!(sections, [(0..2, 0.0), (2..4, 7.0)]);
+    }
+
+    #[test]
+    fn ghost_gaps_at_the_same_offset_add_up_and_trailing_ghosts_add_no_gap() {
+        let mut job = job_with_one_section("abcd");
+
+        insert_ghost_gaps(&mut job, &[(0, 1.0), (0, 2.0), (4, 5.0)]);
+
+        let sections: Vec<_> = job
+            .sections
+            .iter()
+            .map(|s| (s.byte_range.clone(), s.leading_space))
+            .collect();
+        assert_eq!(sections, [(0..4, 3.0)]);
+    }
 
     const SOURCE: &str = "fn main() {\n    let x = 1;\n    let y = 2;\n}\n";
     const TARGET: &str = "fn main() {\n    let x = 1;\n    let z = 3 + 4;\n}\n";
@@ -1090,7 +1181,7 @@ mod tests {
     fn inline_ghost_row_copies_partial_real_text_on_either_side_of_the_ghost() {
         let mut harness = CopyHarness::new("let x = old(1);\nkeep\n", "let x = new(1);\nkeep\n", &DiffBuilderOptions::default());
 
-        let copied = harness.drag_and_copy(Side::Left, (0, 4), (0, 11));
+        let copied = harness.drag_and_copy(Side::Left, (0, 4), (0, 12));
         assert_eq!(copied.as_deref(), Some("x = old("));
         let copied = harness.drag_and_copy(Side::Left, (0, 9), (1, 2));
         assert_eq!(copied.as_deref(), Some("ld(1);\nke"));
