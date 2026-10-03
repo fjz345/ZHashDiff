@@ -123,6 +123,10 @@ impl SideState {
         self.buf.push((val, color, is_ghost));
     }
 
+    fn has_real_tokens(&self) -> bool {
+        self.buf.iter().any(|(_, _, is_ghost)| !is_ghost)
+    }
+
     fn flush(&mut self, line_num: i32, bg_color: Color32) -> LineContent {
         if self.buf.is_empty() {
             LineContent::Void
@@ -244,12 +248,16 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         }
 
         if is_newline {
-            if self.options.ghost_rows {
-                // Force flush is needed for better new line handling for ghosting
-                self.emit_row(true, true, is_deletion, !is_deletion);
-            } else {
-                self.emit_row(is_deletion, !is_deletion, is_deletion, !is_deletion);
-            }
+            // The ghost of this newline must not end the other side's real line early: the other
+            // side is flushed only when it holds nothing but ghosts, which then form a ghost-only row.
+            let other = if is_deletion { &self.right } else { &self.left };
+            let flush_other = self.options.ghost_rows && !other.has_real_tokens();
+            self.emit_row(
+                is_deletion || flush_other,
+                !is_deletion || flush_other,
+                is_deletion,
+                !is_deletion,
+            );
         }
     }
 

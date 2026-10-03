@@ -21,7 +21,7 @@ use zdiff::{
 
 use crate::ui_egui::{
     active_side::{ActiveSide, ActiveSideState},
-    diff_pane::FileDiffPane,
+    diff_pane::{CopyMarkerPlugin, FileDiffPane},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,8 +128,12 @@ impl CopyHarness {
                 .max(file_target.metadata.num_lines()),
         );
 
+        // Mirrors FileDiffPane::ui, which registers it before rendering rows.
+        let ctx = egui::Context::default();
+        ctx.add_plugin(CopyMarkerPlugin);
+
         Self {
-            ctx: egui::Context::default(),
+            ctx,
             file_source: Arc::new(file_source),
             file_target: Arc::new(file_target),
             rows,

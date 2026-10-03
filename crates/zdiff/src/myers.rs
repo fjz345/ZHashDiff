@@ -3,6 +3,8 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+use crate::lexer::{RawTokenTrait, TokenKind};
+
 pub type MyersPath = Vec<(i32, i32)>;
 pub type MyersNumAddDelete = (u32, u32);
 
@@ -23,17 +25,126 @@ pub fn myers_diff_path<T, F>(
     cancel_flag: Arc<AtomicBool>,
 ) -> Option<MyersPath>
 where
-    T: Sync,
+    T: RawTokenTrait,
     F: Fn(&T, &T) -> bool + Sync,
 {
-    match algorithm {
+    let path = match algorithm {
         MyersDiffAlgorithm::Trace => {
-            let trace = myers_diff_trace(source, target, cmp);
+            let trace = myers_diff_trace(source, target, &cmp);
             myers_backtrack(trace, source.len() as i32, target.len() as i32, cancel_flag)
         }
-        MyersDiffAlgorithm::Linear => myers_diff_linear(source, target, cmp, cancel_flag),
-        MyersDiffAlgorithm::LinearMT => myers_diff_linear_mt(source, target, cmp, cancel_flag),
+        MyersDiffAlgorithm::Linear => myers_diff_linear(source, target, &cmp, cancel_flag),
+        MyersDiffAlgorithm::LinearMT => myers_diff_linear_mt(source, target, &cmp, cancel_flag),
+    }?;
+    let is_line_end = |t: &T| t.as_ref().kind == TokenKind::Newline;
+    Some(align_runs_to_line_ends(&path, source, target, &cmp, is_line_end))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Equal,
+    Delete,
+    Insert,
+}
+
+/// How far a run may slide; bounds the cost on long runs of identical tokens.
+const MAX_SLIDE: usize = 256;
+
+/// Moves each pure insert or delete run to the equivalent position (same cost) where its last
+/// token ends a line. Token-level Myers often places a whole-line edit across a line break
+/// (`a [+\n +x] \n` instead of `a \n [+x +\n]`), which pairs the wrong lines in the rows.
+/// Runs with no such position stay put. Returns a unit-step path.
+pub fn align_runs_to_line_ends<T, F, L>(
+    path: &[(i32, i32)],
+    source: &[T],
+    target: &[T],
+    cmp: F,
+    is_line_end: L,
+) -> MyersPath
+where
+    F: Fn(&T, &T) -> bool,
+    L: Fn(&T) -> bool,
+{
+    let Some(&start) = path.first() else {
+        return Vec::new();
+    };
+
+    // Same window semantics as DiffIR::generate_ir: edits first, then the snake.
+    let mut steps = Vec::with_capacity(source.len() + target.len());
+    for w in path.windows(2) {
+        let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+        let edit = if dx > dy { Step::Delete } else { Step::Insert };
+        steps.extend(std::iter::repeat_n(edit, (dx - dy).unsigned_abs() as usize));
+        steps.extend(std::iter::repeat_n(Step::Equal, dx.min(dy) as usize));
     }
+
+    let (mut x, mut y) = (start.0 as usize, start.1 as usize);
+    let mut i = 0;
+    while i < steps.len() {
+        let edit = steps[i];
+        if edit == Step::Equal {
+            (x, y) = (x + 1, y + 1);
+            i += 1;
+            continue;
+        }
+        let end = i + steps[i..].iter().take_while(|s| **s == edit).count();
+        let n = end - i;
+
+        // Sliding forward by one pairs source[x + j] with target[y + j] for either run kind.
+        let forward = (0..MAX_SLIDE)
+            .take_while(|&j| {
+                steps.get(end + j) == Some(&Step::Equal) && cmp(&source[x + j], &target[y + j])
+            })
+            .count();
+        let backward = (1..=MAX_SLIDE.min(i))
+            .take_while(|&j| {
+                steps[i - j] == Step::Equal
+                    && match edit {
+                        Step::Insert => cmp(&source[x - j], &target[y + n - j]),
+                        _ => cmp(&source[x + n - j], &target[y - j]),
+                    }
+            })
+            .count();
+        let ends_line = |d: isize| {
+            let last = ((if edit == Step::Insert { y } else { x }) + n) as isize + d - 1;
+            let tokens = if edit == Step::Insert { target } else { source };
+            is_line_end(&tokens[last as usize])
+        };
+        let shift = (-(backward as isize)..=forward as isize)
+            .rev()
+            .find(|&d| ends_line(d))
+            .unwrap_or(0);
+
+        // The shifted region holds the same steps, so the cursors past it are unchanged.
+        if shift > 0 {
+            let d = shift as usize;
+            steps[i..i + d].fill(Step::Equal);
+            steps[i + d..end + d].fill(edit);
+        } else if shift < 0 {
+            let d = (-shift) as usize;
+            steps[i - d..end - d].fill(edit);
+            steps[end - d..end].fill(Step::Equal);
+        }
+        let equals = shift.max(0) as usize;
+        match edit {
+            Step::Insert => (x, y) = (x + equals, y + n + equals),
+            _ => (x, y) = (x + n + equals, y + equals),
+        }
+        i = end + equals;
+    }
+
+    let mut out = Vec::with_capacity(steps.len() + 1);
+    let (mut x, mut y) = start;
+    out.push((x, y));
+    for step in steps {
+        match step {
+            Step::Equal => (x, y) = (x + 1, y + 1),
+            Step::Delete => x += 1,
+            Step::Insert => y += 1,
+        }
+        out.push((x, y));
+    }
+    out
 }
 
 pub struct MyersTrace {
@@ -1097,5 +1208,64 @@ mod tests {
                 y2
             );
         }
+    }
+
+    /// Edit script of a unit-step path: `=c` equal, `-c` delete, `+c` insert.
+    fn script(path: &[(i32, i32)], source: &[char], target: &[char]) -> String {
+        path.windows(2)
+            .map(|w| {
+                let ((x, y), (x2, y2)) = (w[0], w[1]);
+                match (x2 - x, y2 - y) {
+                    (1, 1) => format!("={}", source[x as usize]),
+                    (1, 0) => format!("-{}", source[x as usize]),
+                    (0, 1) => format!("+{}", target[y as usize]),
+                    step => panic!("not a unit step: {step:?}"),
+                }
+            })
+            .collect()
+    }
+
+    fn align(path: &[(i32, i32)], source: &str, target: &str) -> String {
+        let (s, t): (Vec<char>, Vec<char>) = (source.chars().collect(), target.chars().collect());
+        let aligned = align_runs_to_line_ends(path, &s, &t, |a, b| a == b, |c| *c == '\n');
+        script(&aligned, &s, &t)
+    }
+
+    #[test]
+    fn insert_run_straddling_a_line_break_slides_to_end_at_it() {
+        // a [+\n +x] \n b \n
+        let path = [(0, 0), (1, 1), (1, 2), (1, 3), (2, 4), (3, 5), (4, 6)];
+        assert_eq!(align(&path, "a\nb\n", "a\nx\nb\n"), "=a=\n+x+\n=b=\n");
+    }
+
+    #[test]
+    fn delete_run_straddling_a_line_break_slides_to_end_at_it() {
+        // k e e p [-\n -o -l -d] \n e n d \n
+        let mut path = vec![(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)];
+        path.extend((5..=8).map(|x| (x, 4)));
+        path.extend((9..=13).map(|x| (x, x - 4)));
+        assert_eq!(
+            align(&path, "keep\nold\nend\n", "keep\nend\n"),
+            "=k=e=e=p=\n-o-l-d-\n=e=n=d=\n"
+        );
+    }
+
+    #[test]
+    fn run_that_cannot_end_at_a_line_break_stays_put() {
+        let path = [(0, 0), (1, 1), (1, 2), (2, 3), (3, 4)];
+        assert_eq!(align(&path, "ab\n", "axb\n"), "=a+x=b=\n");
+    }
+
+    #[test]
+    fn run_slides_back_when_it_cannot_slide_forward() {
+        // a \n b [+\n +b] at the end of the file
+        let path = [(0, 0), (1, 1), (2, 2), (3, 3), (3, 4), (3, 5)];
+        assert_eq!(align(&path, "a\nb", "a\nb\nb"), "=a=\n+b+\n=b");
+    }
+
+    #[test]
+    fn already_aligned_run_stays_put() {
+        let path = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (4, 5), (4, 6)];
+        assert_eq!(align(&path, "a\nx\n", "a\nx\nx\n"), "=a=\n=x=\n+x+\n");
     }
 }

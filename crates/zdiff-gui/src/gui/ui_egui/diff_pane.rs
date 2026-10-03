@@ -79,6 +79,9 @@ impl FileDiffPane {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut FileDiffPaneCtx) -> egui_tiles::UiResponse {
+        // No-op once registered.
+        ui.ctx().add_plugin(CopyMarkerPlugin);
+
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta.x + i.raw_scroll_delta.x);
         if scroll_delta != 0.0 {
             *ctx.scroll_left = (*ctx.scroll_left - scroll_delta).max(0.0);
@@ -814,6 +817,17 @@ impl FileDiffPane {
                             ui.allocate_exact_size(hit_size, egui::Sense::click_and_drag());
                         let text_color = ui.style().visuals.text_color();
                         if selectable {
+                            let marker = if tokens.iter().all(|(_, _, is_ghost)| *is_ghost) {
+                                Some(COPY_MARKER_NO_LINE)
+                            } else if row_text.text.is_empty() {
+                                Some(COPY_MARKER_BLANK_LINE)
+                            } else {
+                                None
+                            };
+                            let galley = match marker {
+                                Some(marker) => copy_marker_galley(ui, marker),
+                                None => galley,
+                            };
                             LabelSelectionState::label_text_selection(
                                 ui,
                                 &response,
@@ -861,6 +875,22 @@ impl FileDiffPane {
                     egui::Color32::from_gray(30)
                 };
                 ui.painter().rect_filled(extended_rect, 0.0, fill);
+
+                if selectable {
+                    // Full-row hit area like Code rows, so a press here starts a selection too.
+                    ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+                        let (hit_rect, response) =
+                            ui.allocate_exact_size(rect.size(), egui::Sense::click_and_drag());
+                        LabelSelectionState::label_text_selection(
+                            ui,
+                            &response,
+                            hit_rect.left_top(),
+                            copy_marker_galley(ui, COPY_MARKER_NO_LINE),
+                            egui::Color32::TRANSPARENT,
+                            egui::Stroke::NONE,
+                        );
+                    });
+                }
             }
             LineContent::Collapsed => {
                 let fill = if is_highlighted {
@@ -894,11 +924,70 @@ impl FileDiffPane {
                             )
                             .selectable(false),
                         );
+
+                        if selectable {
+                            let galley = copy_marker_galley(ui, COPY_MARKER_NO_LINE);
+                            let (hit_rect, response) = ui
+                                .allocate_exact_size(galley.size(), egui::Sense::click_and_drag());
+                            LabelSelectionState::label_text_selection(
+                                ui,
+                                &response,
+                                hit_rect.left_top(),
+                                galley,
+                                egui::Color32::TRANSPARENT,
+                                egui::Stroke::NONE,
+                            );
+                        }
                     });
                 });
             }
         }
     }
+}
+
+/// Rows that are not file text get a one-character selectable label holding one of these
+/// noncharacters. egui's cross-label copy adds a blank line for any vertical gap between copied
+/// labels (and skips empty ones), so without them a Void or ghost-only row would copy as a blank
+/// line and consecutive real blank lines would collapse into one. `CopyMarkerPlugin` removes them.
+const COPY_MARKER_NO_LINE: char = '\u{FDD0}';
+const COPY_MARKER_BLANK_LINE: char = '\u{FDD1}';
+
+fn strip_copy_markers(copied: &str) -> String {
+    let (no_line, blank) = (COPY_MARKER_NO_LINE.to_string(), COPY_MARKER_BLANK_LINE.to_string());
+    copied
+        .split('\n')
+        .filter(|line| *line != no_line)
+        .map(|line| if line == blank { "" } else { line })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub(super) struct CopyMarkerPlugin;
+
+impl egui::Plugin for CopyMarkerPlugin {
+    fn debug_name(&self) -> &'static str {
+        "CopyMarkerPlugin"
+    }
+
+    fn output_hook(&mut self, output: &mut egui::FullOutput) {
+        output.platform_output.commands.retain_mut(|command| match command {
+            egui::OutputCommand::CopyText(text)
+                if text.contains([COPY_MARKER_NO_LINE, COPY_MARKER_BLANK_LINE]) =>
+            {
+                *text = strip_copy_markers(text);
+                !text.is_empty()
+            }
+            _ => true,
+        });
+    }
+}
+
+/// Invisible selectable stand-in for a row that holds no file text; see `COPY_MARKER_NO_LINE`.
+fn copy_marker_galley(ui: &egui::Ui, marker: char) -> Arc<egui::Galley> {
+    let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+    ui.fonts_mut(|fonts| {
+        fonts.layout_no_wrap(marker.to_string(), font_id, egui::Color32::TRANSPARENT)
+    })
 }
 
 /// Ghost text is visual-only: it is kept out of the label text so egui can neither select nor
@@ -997,7 +1086,15 @@ mod tests {
 
     use crate::ui_egui::copy_harness::{CopyHarness, Side};
 
-    use super::insert_ghost_gaps;
+    use super::{COPY_MARKER_BLANK_LINE, COPY_MARKER_NO_LINE, insert_ghost_gaps, strip_copy_markers};
+
+    #[test]
+    fn copy_markers_drop_non_file_rows_and_keep_blank_lines() {
+        let (no_line, blank) = (COPY_MARKER_NO_LINE.to_string(), COPY_MARKER_BLANK_LINE.to_string());
+        let copied = [no_line.as_str(), "a", &no_line, &blank, &blank, "b", &no_line].join("\n");
+
+        assert_eq!(strip_copy_markers(&copied), "a\n\n\nb");
+    }
 
     fn job_with_one_section(text: &str) -> eframe::egui::text::LayoutJob {
         eframe::egui::text::LayoutJob::simple_singleline(
