@@ -1275,6 +1275,9 @@ mod tests {
 
             // The app diffs whatever side did load, so the pair becomes one-sided.
             open(&mut processor, &input(&missing_file, &b.1));
+            let one_sided = settle(&mut processor)
+                .expect("one-sided diff after the failed load never completed");
+            assert!(one_sided.input.file_1.is_none());
             open(&mut processor, &input(&a.0, &a.1));
 
             let ctx = settle(&mut processor).expect("pair after the failed load never completed");
