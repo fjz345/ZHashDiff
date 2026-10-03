@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     clamped_cursor::ClampedCursor,
-    diff_ctx::{MinimalDiffCtx, ScrollSpan},
+    diff_ctx::{DiffStageTimes, MinimalDiffCtx, ScrollSpan},
     ui_egui::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
         panes::ZAppPane,
@@ -18,6 +18,7 @@ use zdiff::{
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent},
     diff_ir::{DiffOp, DiffResult},
     lexer::RawTokenTrait,
+    myers::MyersNumAddDelete,
     row_text::build_row_text,
     universal_path::UniversalPath,
 };
@@ -239,6 +240,16 @@ impl FileDiffPane {
                     }
                 }
             });
+            // No diff ctx while a diff is in flight, so a partial time is never shown.
+            if let Some(diff_ctx) = ctx.diff_ctx {
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    let (label, tooltip) =
+                        diff_status_text(diff_ctx.num_add_deletes, &diff_ctx.stage_times);
+                    // Not selectable, so a drag-copy over the rows can't pick it up.
+                    ui.add(egui::Label::new(label).selectable(false))
+                        .on_hover_text(tooltip);
+                });
+            }
         });
 
         let diff_rows = ctx.diff_ctx.as_ref().and_then(|f| Some(&f.diff_rows));
@@ -945,6 +956,22 @@ impl FileDiffPane {
     }
 }
 
+/// Label and per-stage tooltip of a completed diff. Plain text so the segment can move into a
+/// shared status line.
+fn diff_status_text(
+    num_add_deletes: MyersNumAddDelete,
+    times: &DiffStageTimes,
+) -> (String, String) {
+    let (adds, deletes) = num_add_deletes;
+    (
+        format!("+{adds}/-{deletes}  {:.1?}", times.total()),
+        format!(
+            "Myers: {:.1?}\nIR: {:.1?}\nRows: {:.1?}",
+            times.myers, times.diff_ir, times.diff_rows
+        ),
+    )
+}
+
 /// Rows that are not file text get a one-character selectable label holding one of these
 /// noncharacters. egui's cross-label copy adds a blank line for any vertical gap between copied
 /// labels (and skips empty ones), so without them a Void or ghost-only row would copy as a blank
@@ -1082,11 +1109,19 @@ fn handle_drops(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use zdiff::diff_builder::{DiffBuilderOptions, DiffRow, LineContent};
 
-    use crate::ui_egui::copy_harness::{CopyHarness, Side};
+    use crate::{
+        diff_ctx::DiffStageTimes,
+        ui_egui::copy_harness::{CopyHarness, Side},
+    };
 
-    use super::{COPY_MARKER_BLANK_LINE, COPY_MARKER_NO_LINE, insert_ghost_gaps, strip_copy_markers};
+    use super::{
+        COPY_MARKER_BLANK_LINE, COPY_MARKER_NO_LINE, diff_status_text, insert_ghost_gaps,
+        strip_copy_markers,
+    };
 
     #[test]
     fn copy_markers_drop_non_file_rows_and_keep_blank_lines() {
@@ -1131,6 +1166,20 @@ mod tests {
             .map(|s| (s.byte_range.clone(), s.leading_space))
             .collect();
         assert_eq!(sections, [(0..4, 3.0)]);
+    }
+
+    #[test]
+    fn diff_status_shows_counts_and_total_time_with_each_stage_in_the_tooltip() {
+        let times = DiffStageTimes {
+            myers: Duration::from_micros(12_340),
+            diff_ir: Duration::from_micros(500),
+            diff_rows: Duration::from_millis(2),
+        };
+
+        let (label, tooltip) = diff_status_text((7, 3), &times);
+
+        assert_eq!(label, "+7/-3  14.8ms");
+        assert_eq!(tooltip, "Myers: 12.3ms\nIR: 500.0µs\nRows: 2.0ms");
     }
 
     const SOURCE: &str = "fn main() {\n    let x = 1;\n    let y = 2;\n}\n";

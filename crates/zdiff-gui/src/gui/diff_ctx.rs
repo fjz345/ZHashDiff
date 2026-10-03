@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self},
+    },
+    time::{Duration, Instant},
 };
 
 #[cfg(debug_assertions)]
@@ -152,11 +155,13 @@ pub struct MyersCtx {
 
     num_add_delete: MyersNumAddDelete,
     path: MyersPath,
+    elapsed: Duration,
 }
 #[derive(Debug)]
 pub struct DiffIRCtx {
     input: DiffIRInput,
     diff_ir: DiffIR,
+    elapsed: Duration,
 }
 #[derive(Debug)]
 pub struct DiffRowsCtx {
@@ -164,6 +169,21 @@ pub struct DiffRowsCtx {
     rows: Arc<DiffRows>,
     precomputed_diffs: Arc<PrecomputedDiffs>,
     precomputed_file_rows: Arc<PrecomputedFileRows>,
+    elapsed: Duration,
+}
+
+/// Compute time of each stage behind a diff. A stage served from its cache keeps the time it
+/// took when it ran, so the total is what the shown diff cost, not what the last request did.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct DiffStageTimes {
+    pub myers: Duration,
+    pub diff_ir: Duration,
+    pub diff_rows: Duration,
+}
+impl DiffStageTimes {
+    pub fn total(&self) -> Duration {
+        self.myers + self.diff_ir + self.diff_rows
+    }
 }
 
 #[derive(Debug)]
@@ -176,6 +196,7 @@ pub struct MinimalDiffCtx {
     pub input: UpdateDiffRowsInput,
 
     pub num_add_deletes: MyersNumAddDelete,
+    pub stage_times: DiffStageTimes,
     pub precomputed_diffs: Arc<PrecomputedDiffs>,
     pub precomputed_file_rows: Arc<PrecomputedFileRows>,
     pub diff_rows: Arc<DiffRows>,
@@ -415,6 +436,7 @@ impl DiffCtx {
             std::thread::Builder::new()
                 .name("MyersCtxTHREAD".into())
                 .spawn(move || {
+                    let start = Instant::now();
                     let (c1, c2, _) = resolve_files(&input.file_1, &input.file_2);
                     let cmp = |a: &RawToken, b: &RawToken| compare_tokens(a, b, c1, c2);
 
@@ -427,6 +449,7 @@ impl DiffCtx {
                             input,
                             num_add_delete,
                             path,
+                            elapsed: start.elapsed(),
                         }));
                     } else if !cancel_ref.load(Ordering::Relaxed) {
                         let _ = tx.send(None);
@@ -468,9 +491,14 @@ impl DiffCtx {
             std::thread::Builder::new()
                 .name("DiffIrTHREAD".into())
                 .spawn(move || {
+                    let start = Instant::now();
                     let cancel_ref = cancel.clone();
                     if let Some(diff_ir) = DiffIR::new(&input.myers_path, is_equal_left, cancel) {
-                        let _ = tx.send(Some(DiffIRCtx { input, diff_ir }));
+                        let _ = tx.send(Some(DiffIRCtx {
+                            input,
+                            diff_ir,
+                            elapsed: start.elapsed(),
+                        }));
                     } else if !cancel_ref.load(Ordering::Relaxed) {
                         let _ = tx.send(None);
                     }
@@ -516,6 +544,7 @@ impl DiffCtx {
             std::thread::Builder::new()
                 .name("DiffRowsTHREAD".into())
                 .spawn(move || {
+                    let start = Instant::now();
                     let (c1, c2, _) = resolve_files(&input.file_1, &input.file_2);
                     let diff_rows = build_diff_rows(
                         input.diff_ir.clone(),
@@ -546,6 +575,7 @@ impl DiffCtx {
                             rows: Arc::new(rows),
                             precomputed_diffs: Arc::new(precomputed_diffs),
                             precomputed_file_rows: Arc::new(precomputed_file_rows),
+                            elapsed: start.elapsed(),
                         }));
                     } else if !cancel.load(Ordering::Relaxed) {
                         let _ = tx.send(None);
@@ -560,12 +590,26 @@ impl DiffCtx {
         &mut self,
         cancel_flag: Arc<AtomicBool>,
     ) -> Option<MinimalDiffCtx> {
-        let num_add_deletes = self.request_myers(cancel_flag.clone())?.num_add_delete;
+        let myers_ctx = self.request_myers(cancel_flag.clone())?;
+        let (num_add_deletes, myers_elapsed) = (myers_ctx.num_add_delete, myers_ctx.elapsed);
         let diff_row_ctx = self.request_diff_rows(cancel_flag)?;
 
         let diff_rows = diff_row_ctx.rows.clone();
         let precomputed_diffs = diff_row_ctx.precomputed_diffs.clone();
         let precomputed_file_rows = diff_row_ctx.precomputed_file_rows.clone();
+        let diff_rows_elapsed = diff_row_ctx.elapsed;
+        // Rows are only returned when they were built from the current IR ctx. Read it here
+        // rather than requesting it again, which would clone and compare the Myers path.
+        let diff_ir_elapsed = self
+            .diff_ir_ctx
+            .as_ref()
+            .expect("diff rows without a diff IR ctx")
+            .elapsed;
+        let stage_times = DiffStageTimes {
+            myers: myers_elapsed,
+            diff_ir: diff_ir_elapsed,
+            diff_rows: diff_rows_elapsed,
+        };
 
         Some(MinimalDiffCtx {
             #[cfg(debug_assertions)]
@@ -574,6 +618,7 @@ impl DiffCtx {
             debug_file_2_path: self.debug_file_2_path.clone(),
             input: self.update_diff_rows_input.clone(),
             num_add_deletes,
+            stage_times,
             precomputed_diffs,
             precomputed_file_rows,
             diff_rows,
@@ -951,6 +996,7 @@ fn update_diff_rows_minimal_diff_ctx(
     let cmp = |a: &RawToken, b: &RawToken| compare_tokens(a, b, c1, c2);
 
     track_alloc!(reg, "before myers_diff");
+    let start = Instant::now();
     let myers_path = myers_diff_path(
         input.myers_diff_algorithm,
         &c1.tokens,
@@ -958,15 +1004,19 @@ fn update_diff_rows_minimal_diff_ctx(
         cmp,
         cancel_flag.clone(),
     )?;
+    let myers_elapsed = start.elapsed();
     track_alloc!(reg, "myers_diff");
     check_cancel!(cancel_flag, "myers_diff_path");
 
     let is_equal_left = one_sided_diff_is_left.unwrap_or(true);
+    let start = Instant::now();
     let diff_ir = DiffIR::new(&myers_path, is_equal_left, cancel_flag.clone())?;
+    let diff_ir_elapsed = start.elapsed();
     track_alloc!(reg, "DiffIR::new()");
     check_cancel!(cancel_flag, "DiffIR::new");
 
     track_alloc!(reg, "hash_file");
+    let start = Instant::now();
     let diff_rows = build_diff_rows(
         diff_ir,
         Some(&c1.tokens),
@@ -990,6 +1040,11 @@ fn update_diff_rows_minimal_diff_ctx(
         c1.metadata.line_starts.len(),
         c2.metadata.line_starts.len(),
     );
+    let stage_times = DiffStageTimes {
+        myers: myers_elapsed,
+        diff_ir: diff_ir_elapsed,
+        diff_rows: start.elapsed(),
+    };
     Some(MinimalDiffCtx {
         #[cfg(debug_assertions)]
         debug_file_1_path: c1.path.clone(),
@@ -997,6 +1052,7 @@ fn update_diff_rows_minimal_diff_ctx(
         debug_file_2_path: c2.path.clone(),
         input: input.clone(),
         num_add_deletes: myers_count_add_deletes(&myers_path),
+        stage_times,
         precomputed_diffs: Arc::new(precomputed_diffs),
         precomputed_file_rows: Arc::new(precomputed_file_rows),
         diff_rows: Arc::new(final_rows),
@@ -1283,6 +1339,57 @@ mod tests {
             let ctx = settle(&mut processor).expect("pair after the failed load never completed");
             assert!(ctx.input == input(&a.0, &a.1), "diff shows {:?}", ctx.input);
             assert!(!ctx.diff_rows.is_empty());
+        }
+
+        #[test]
+        fn completed_diff_carries_each_stage_time_and_their_sum() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 1000, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 1000, 2)),
+            );
+            let mut processor = DiffProcessor::default();
+
+            open(&mut processor, &input(&a.0, &a.1));
+            let times = settle(&mut processor)
+                .expect("diff never completed")
+                .stage_times;
+
+            assert!(times.myers > Duration::ZERO, "{times:?}");
+            assert!(times.diff_ir > Duration::ZERO, "{times:?}");
+            assert!(times.diff_rows > Duration::ZERO, "{times:?}");
+            assert_eq!(times.total(), times.myers + times.diff_ir + times.diff_rows);
+        }
+
+        #[test]
+        fn no_stage_times_until_a_diff_completes_and_none_while_another_is_in_flight() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 1000, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 1000, 2)),
+            );
+            let b = (
+                load(&write_source(&dir.path().join("b1.rs"), 40, 3)),
+                load(&write_source(&dir.path().join("b2.rs"), 40, 4)),
+            );
+            let mut processor = DiffProcessor::default();
+            assert!(processor.get_minimal_diff_ctx().is_none());
+
+            open(&mut processor, &input(&b.0, &b.1));
+            assert!(processor.get_minimal_diff_ctx().is_none());
+            let times_b = settle(&mut processor)
+                .expect("diff of B never completed")
+                .stage_times;
+
+            open(&mut processor, &input(&a.0, &a.1));
+            assert!(processor.is_in_progress(), "A should still be diffing");
+            assert!(processor.get_minimal_diff_ctx().is_none());
+
+            // B again is served from the stage caches, so it shows what B cost when it ran.
+            open(&mut processor, &input(&b.0, &b.1));
+            assert!(!processor.is_in_progress());
+            let ctx = processor.get_minimal_diff_ctx().expect("cached B");
+            assert_eq!(ctx.stage_times, times_b);
         }
     }
 }
