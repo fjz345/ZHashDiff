@@ -665,7 +665,7 @@ impl FileDiffPane {
         egui_tiles::UiResponse::None
     }
 
-    fn render_side_row<T: RawTokenTrait>(
+    pub(super) fn render_side_row<T: RawTokenTrait>(
         ui: &mut egui::Ui,
         file_source: Option<Arc<CachedFile<T>>>,
         file_target: Option<Arc<CachedFile<T>>>,
@@ -907,4 +907,38 @@ fn handle_drops(
     // }
 
     return did_drop;
+}
+
+#[cfg(test)]
+mod tests {
+    use zdiff::diff_builder::{DiffBuilderOptions, LineContent};
+
+    use crate::ui_egui::copy_harness::{CopyHarness, Side};
+
+    const SOURCE: &str = "fn main() {\n    let x = 1;\n    let y = 2;\n}\n";
+    const TARGET: &str = "fn main() {\n    let x = 1;\n    let z = 3 + 4;\n}\n";
+
+    #[test]
+    fn single_row_selection_copies_that_rows_text() {
+        let mut harness = CopyHarness::new(SOURCE, TARGET, &DiffBuilderOptions::default());
+
+        let copied = harness.drag_and_copy(Side::Left, (1, 4), (1, 9));
+        assert_eq!(copied.as_deref(), Some("let x"));
+
+        let copied = harness.drag_and_copy(Side::Right, (2, 4), (2, 9));
+        assert_eq!(copied.as_deref(), Some("let z"));
+    }
+
+    #[test]
+    fn harness_builds_rows_with_ghost_tokens() {
+        let harness = CopyHarness::new(SOURCE, TARGET, &DiffBuilderOptions::default());
+
+        let has_ghost = harness.rows().iter().any(|row| {
+            [&row.left, &row.right].into_iter().any(|side| match side {
+                LineContent::Code { tokens, .. } => tokens.iter().any(|(_, _, is_ghost)| *is_ghost),
+                _ => false,
+            })
+        });
+        assert!(has_ghost, "expected at least one ghost token in {:?}", harness.rows());
+    }
 }
