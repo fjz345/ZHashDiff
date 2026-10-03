@@ -1,6 +1,7 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     io,
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -251,10 +252,13 @@ impl FileSystemView {
     }
 }
 
+pub const PENDING_DELETION_COLOR: egui::Color32 = egui::Color32::LIGHT_RED;
+
 pub fn draw_ui_folder_tree_with_checkbox(
     ui: &mut egui::Ui,
     file_system_view: &mut FileSystemView,
     hash_service: &mut HashService,
+    pending_deletion: &HashSet<PathBuf>,
 ) -> egui::Response {
     let root_id = file_system_view.file_system.get_root_node_id();
     let root_path_clone = file_system_view
@@ -326,6 +330,7 @@ pub fn draw_ui_folder_tree_with_checkbox(
                             render_row_folder_tree_with_checkbox(
                                 hash_service,
                                 file_system_view,
+                                pending_deletion,
                                 &mut row,
                                 entry,
                                 row_height,
@@ -920,6 +925,7 @@ fn render_row_folder_tree_diff_column(
 fn render_row_folder_tree_with_checkbox(
     hash_service: &mut HashService,
     file_system_view: &mut FileSystemView,
+    pending_deletion: &HashSet<PathBuf>,
     row: &mut egui_extras::TableRow,
     entry: &VisibleRow,
     row_height: f32,
@@ -977,6 +983,8 @@ fn render_row_folder_tree_with_checkbox(
                 if ui.label(label).interact(egui::Sense::click()).clicked() {
                     toggle_collapse = true;
                 }
+            } else if pending_deletion.contains(node.as_path().as_ref()) {
+                ui.label(RichText::new(node.display_name()).color(PENDING_DELETION_COLOR));
             } else {
                 ui.label(node.display_name());
             }
