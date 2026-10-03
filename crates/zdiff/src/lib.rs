@@ -5,6 +5,7 @@ pub mod diff_builder;
 pub mod diff_ir;
 pub mod lexer;
 pub mod myers;
+pub mod row_text;
 #[cfg(test)]
 pub mod test_harness;
 pub mod universal_path;

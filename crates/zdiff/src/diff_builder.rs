@@ -3,7 +3,7 @@ use crate::{
     lexer::{RawTokenTrait, TokenKind},
 };
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Color32(pub [u8; 4]);
 
 impl Color32 {
