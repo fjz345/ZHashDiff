@@ -3,7 +3,10 @@ use std::sync::Arc;
 use crate::{
     clamped_cursor::ClampedCursor,
     diff_ctx::{MinimalDiffCtx, ScrollSpan},
-    ui_egui::panes::ZAppPane,
+    ui_egui::{
+        active_side::{ActiveSide, ActiveSideState, outline_stroke},
+        panes::ZAppPane,
+    },
 };
 use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility};
 use serde::{Deserialize, Serialize};
@@ -53,6 +56,8 @@ pub struct FileDiffPaneCtx<'a> {
 #[derive(Serialize, Deserialize)]
 pub struct FileDiffPane {
     pub title: Option<String>,
+    #[serde(skip)]
+    active_side: ActiveSideState,
 }
 
 impl ZAppPane for FileDiffPane {
@@ -63,7 +68,10 @@ impl ZAppPane for FileDiffPane {
 
 impl FileDiffPane {
     pub fn new(title: Option<String>) -> Self {
-        Self { title }
+        Self {
+            title,
+            active_side: ActiveSideState::default(),
+        }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut FileDiffPaneCtx) -> egui_tiles::UiResponse {
@@ -236,6 +244,16 @@ impl FileDiffPane {
             .map(|f| f.input.file_2.as_ref().and_then(|f| Some(&f.path)))
             .unwrap_or_default();
 
+        let press_pos = ui.input(|i| {
+            i.pointer
+                .primary_pressed()
+                .then(|| i.pointer.interact_pos())
+                .flatten()
+        });
+        let active_side =
+            self.active_side
+                .begin_frame(press_pos, source_path.is_some(), target_path.is_some());
+
         let mut waiting_for_diff = false;
         let mut do_not_render_diff = match (&diff_rows, source_path, target_path) {
             (Some(_), None, None) | (None, None, None) => true,
@@ -261,11 +279,12 @@ impl FileDiffPane {
 
         let mut left_rect = egui::Rect::NOTHING;
         let mut right_rect = egui::Rect::NOTHING;
+        let mut table_rect = egui::Rect::NOTHING;
         ui.vertical(|ui| {
             ui.set_min_width(available_width);
 
             if table_height > 0.0 && diff_rows_len > 0 {
-                ui.allocate_ui(egui::vec2(ui.available_width(), table_height), |ui| {
+                table_rect = ui.allocate_ui(egui::vec2(ui.available_width(), table_height), |ui| {
                     egui::Frame::default()
                         .fill(egui::Color32::from_gray(15))
                         .show(ui, |ui| {
@@ -580,7 +599,9 @@ impl FileDiffPane {
                                     );
                                 });
                         });
-                });
+                })
+                .response
+                .rect;
             }
 
             if waiting_for_diff {
@@ -613,6 +634,23 @@ impl FileDiffPane {
                 });
             }
         });
+
+        // Rows are laid out inside the table's scroll area, so clip to it: a partially visible
+        // edge row would otherwise push the outline past the table.
+        let active_rect = match active_side {
+            ActiveSide::Left => left_rect,
+            ActiveSide::Right => right_rect,
+        }
+        .intersect(table_rect);
+        if active_rect.is_positive() {
+            ui.painter().rect_stroke(
+                active_rect,
+                0.0,
+                outline_stroke(),
+                egui::StrokeKind::Inside,
+            );
+        }
+        self.active_side.end_frame(left_rect, right_rect);
 
         handle_drops(
             ui,
