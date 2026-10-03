@@ -8,11 +8,15 @@ use crate::{
         panes::ZAppPane,
     },
 };
-use eframe::egui::{self, Layout, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility};
+use eframe::egui::{
+    self, Layout, TextEdit, UiBuilder, Vec2, WidgetInfo, WidgetType::Label,
+    text_selection::LabelSelectionState,
+    scroll_area::ScrollBarVisibility,
+};
 use serde::{Deserialize, Serialize};
 use zdiff::{
     cached_file::CachedFile,
-    diff_builder::{DiffBuilderOptions, DiffRow, LineContent},
+    diff_builder::{DiffBuilderOptions, LineContent},
     diff_ir::{DiffOp, DiffResult},
     lexer::RawTokenTrait,
     row_text::{RowText, build_row_text},
@@ -50,7 +54,6 @@ pub struct FileDiffPaneCtx<'a> {
     pub set_file_1_root_request: &'a mut Option<UniversalPath>,
     pub set_file_2_root_request: &'a mut Option<UniversalPath>,
     pub pivot: &'a mut (Option<usize>, Option<usize>),
-    pub revert_request: &'a mut Option<DiffResult>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -476,6 +479,7 @@ impl FileDiffPane {
                                                                 &diff_row.left,
                                                                 widths[0],
                                                                 is_highlighted,
+                                                                active_side == ActiveSide::Left,
                                                                 ctx.code_language,
                                                             );
                                                         });
@@ -501,7 +505,7 @@ impl FileDiffPane {
                                                     }
                                                 };
 
-                                                    let symbol_text =
+                                                    let text =
                                                         match (&diff_row.left, &diff_row.right) {
                                                             (
                                                                 LineContent::Void,
@@ -560,9 +564,8 @@ impl FileDiffPane {
                                                     ui.centered_and_justified(|ui| {
                                                         ui.add(
                                                             egui::Label::new(
-                                                                egui::RichText::new(text).color(
-                                                                    egui::Color32::DARK_GRAY,
-                                                                ),
+                                                                egui::RichText::new(text)
+                                                                    .color(egui::Color32::DARK_GRAY),
                                                             )
                                                             .selectable(false),
                                                         );
@@ -589,6 +592,7 @@ impl FileDiffPane {
                                                                 &diff_row.right,
                                                                 widths[2],
                                                                 is_highlighted,
+                                                                active_side == ActiveSide::Right,
                                                                 ctx.code_language,
                                                             );
                                                         });
@@ -670,6 +674,7 @@ impl FileDiffPane {
         content: &LineContent,
         width: f32,
         is_highlighted: bool,
+        selectable: bool,
         code_language: &str,
     ) {
         let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
@@ -707,8 +712,11 @@ impl FileDiffPane {
 
                         ui.add_space(4.0);
 
-                        let row_text =
-                            build_row_text(tokens, file_source.as_deref(), file_target.as_deref());
+                        let row_text = build_row_text(
+                            tokens,
+                            file_source.as_deref(),
+                            file_target.as_deref(),
+                        );
                         let (text, ghost_ranges) = inline_ghosts(&row_text);
 
                         let theme = egui_extras::syntax_highlighting::CodeTheme::from_memory(
@@ -732,11 +740,35 @@ impl FileDiffPane {
                             }
                         }
 
-                        ui.add(
-                            egui::Label::new(layout_job)
-                                .selectable(true)
-                                .wrap_mode(egui::TextWrapMode::Extend),
+                        layout_job.wrap.max_width = f32::INFINITY;
+                        let galley = ui.fonts_mut(|fonts| fonts.layout_job(layout_job));
+                        // The hit area spans the rest of the row, not just the text, so a press
+                        // anywhere in the block starts a selection. Drag sense on both sides:
+                        // egui hit-tests against the previous frame, so the side that becomes
+                        // selectable on a press needs it already, or that press is lost.
+                        let hit_size = egui::vec2(
+                            galley.size().x.max(ui.available_width()),
+                            galley.size().y.max(row_h),
                         );
+                        let (hit_rect, response) =
+                            ui.allocate_exact_size(hit_size, egui::Sense::click_and_drag());
+                        let text_color = ui.style().visuals.text_color();
+                        if selectable {
+                            LabelSelectionState::label_text_selection(
+                                ui,
+                                &response,
+                                hit_rect.left_top(),
+                                galley,
+                                text_color,
+                                egui::Stroke::NONE,
+                            );
+                        } else {
+                            ui.painter().add(egui::epaint::TextShape::new(
+                                hit_rect.left_top(),
+                                galley,
+                                text_color,
+                            ));
+                        }
 
                         ui.painter().rect_filled(
                             extended_rect,
@@ -886,6 +918,7 @@ mod tests {
         assert_eq!(copied.as_deref(), Some("let z"));
     }
 
+
     // Same on both sides except the last line, so rows 0..=2 carry no ghosts and are identical
     // on both sides.
     const SHARED_SOURCE: &str = "fn main() {\n    foo(bar, baz);\n    let x = 1;\n}\nold\n";
@@ -944,8 +977,7 @@ mod tests {
 
     #[test]
     fn crlf_rows_are_joined_with_lf() {
-        let mut harness =
-            CopyHarness::new("a\r\nb\r\n", "a\r\nb\r\n", &DiffBuilderOptions::default());
+        let mut harness = CopyHarness::new("a\r\nb\r\n", "a\r\nb\r\n", &DiffBuilderOptions::default());
 
         let copied = harness.drag_and_copy(Side::Left, (0, 0), (1, 1));
         assert_eq!(copied.as_deref(), Some("a\nb"));
@@ -989,6 +1021,215 @@ mod tests {
         assert_only_real_text(harness.drag_and_copy(Side::Left, (0, 0), (2, 14)));
     }
 
+
+    fn options_variants() -> [(&'static str, DiffBuilderOptions); 2] {
+        [
+            ("default", DiffBuilderOptions::default()),
+            (
+                "ignore_whitespace",
+                DiffBuilderOptions {
+                    ignore_whitespace: true,
+                    ..Default::default()
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn inline_ghost_tokens_add_no_characters() {
+        for (name, options) in options_variants() {
+            let mut harness = CopyHarness::new("let x = old(1);\nkeep\n", "let x = new(1);\nkeep\n", &options);
+
+            let copied = harness.drag_and_copy(Side::Left, (0, 0), (1, 4));
+            assert_eq!(copied.as_deref(), Some("let x = old(1);\nkeep"), "left, {name}");
+            let copied = harness.drag_and_copy(Side::Right, (0, 0), (1, 4));
+            assert_eq!(copied.as_deref(), Some("let x = new(1);\nkeep"), "right, {name}");
+        }
+    }
+
+    #[test]
+    fn inline_ghost_row_copies_partial_real_text_on_either_side_of_the_ghost() {
+        let mut harness = CopyHarness::new("let x = old(1);\nkeep\n", "let x = new(1);\nkeep\n", &DiffBuilderOptions::default());
+
+        let copied = harness.drag_and_copy(Side::Left, (0, 4), (0, 11));
+        assert_eq!(copied.as_deref(), Some("x = old("));
+        let copied = harness.drag_and_copy(Side::Left, (0, 9), (1, 2));
+        assert_eq!(copied.as_deref(), Some("ld(1);\nke"));
+    }
+
+    #[test]
+    fn selection_spanning_a_ghost_only_row_joins_the_surrounding_real_lines() {
+        for (name, options) in options_variants() {
+            let mut harness = CopyHarness::new("a\nb\n", "a\nx\nb\n", &options);
+
+            let copied = harness.drag_and_copy(Side::Left, (0, 0), (2, 1));
+            assert_eq!(copied.as_deref(), Some("a\nb"), "left, {name}");
+            let copied = harness.drag_and_copy(Side::Right, (0, 0), (2, 1));
+            assert_eq!(copied.as_deref(), Some("a\nx\nb"), "right, {name}");
+        }
+    }
+
+    #[test]
+    fn real_blank_line_inside_a_selection_is_preserved() {
+        for (name, options) in options_variants() {
+            let mut harness = CopyHarness::new("a\n\nb\n", "a\n\nb\n", &options);
+
+            let copied = harness.drag_and_copy(Side::Left, (0, 0), (2, 1));
+            assert_eq!(copied.as_deref(), Some("a\n\nb"), "{name}");
+        }
+    }
+
+    #[test]
+    fn hidden_whitespace_tokens_are_copied_in_ignore_whitespace_mode() {
+        let options = DiffBuilderOptions {
+            ignore_whitespace: true,
+            ..Default::default()
+        };
+        let mut harness = CopyHarness::new("a  b\nc\n", "a b\nc\n", &options);
+
+        let copied = harness.drag_and_copy(Side::Left, (0, 0), (1, 1));
+        assert_eq!(copied.as_deref(), Some("a  b\nc"));
+        let copied = harness.drag_and_copy(Side::Right, (0, 0), (1, 1));
+        assert_eq!(copied.as_deref(), Some("a b\nc"));
+    }
+
+    const REAL_SOURCE: &str = "trait Processor {\n    fn run(&self);\n}\n\nstruct Item {\n    id: u64,\n    inner: u8,\n}\n\nfn go() {\n    println!(\"hello\");\n    old_body();\n}\n";
+    const REAL_TARGET: &str = "trait NewProcessor {\n    fn run(&self);\n}\n\nstruct Item {\n    id: usize,\n}\n\nfn go() {\n    println!(\"hello world\");\n    new_body();\n    more();\n}\n";
+
+    #[test]
+    fn whole_diff_copies_each_files_exact_text() {
+        for (name, options) in options_variants() {
+            let mut harness = CopyHarness::new(REAL_SOURCE, REAL_TARGET, &options);
+            let last = harness.rows().len() - 1;
+
+            let copied = harness.drag_and_copy(Side::Left, (0, 0), (last, 1));
+            assert_eq!(copied.as_deref(), Some(REAL_SOURCE.trim_end()), "left, {name}");
+            let copied = harness.drag_and_copy(Side::Right, (0, 0), (last, 1));
+            assert_eq!(copied.as_deref(), Some(REAL_TARGET.trim_end()), "right, {name}");
+        }
+    }
+
+    // Each side has one line the other lacks. Ghost rows are off so the missing line is a Void
+    // row, not ghost text, and a side's copy therefore holds only its own marker.
+    const SIDES_SOURCE: &str = "top\nLEFTONLY\nm1\nm2\nm3\nbottom\n";
+    const SIDES_TARGET: &str = "top\nm1\nm2\nm3\nRIGHTONLY\nbottom\n";
+
+    fn sides_harness() -> CopyHarness {
+        let options = DiffBuilderOptions {
+            ghost_rows: false,
+            ..Default::default()
+        };
+        CopyHarness::new(SIDES_SOURCE, SIDES_TARGET, &options)
+    }
+
+    fn code_rows(harness: &CopyHarness, side: Side) -> (usize, usize) {
+        let is_code = |row: &DiffRow| {
+            matches!(
+                match side {
+                    Side::Left => &row.left,
+                    Side::Right => &row.right,
+                },
+                LineContent::Code { .. }
+            )
+        };
+        let rows = harness.rows();
+        let first = rows.iter().position(is_code).expect("side has code rows");
+        let last = rows.iter().rposition(is_code).expect("side has code rows");
+        (first, last)
+    }
+
+    fn whole_side(harness: &mut CopyHarness, side: Side) -> String {
+        let (first, last) = code_rows(harness, side);
+        harness
+            .drag_and_copy(side, (first, 0), (last, usize::MAX))
+            .expect("selection exists")
+    }
+
+    fn assert_only(copied: &str, own: &str, other: &str) {
+        assert!(copied.contains(own), "missing {own}: {copied:?}");
+        assert!(!copied.contains(other), "contains {other}: {copied:?}");
+    }
+
+    #[test]
+    fn first_press_on_the_inactive_side_starts_a_selection_there() {
+        let mut harness = sides_harness();
+
+        // Left is active at startup, so this press is the first one on the inactive side.
+        let copied = whole_side(&mut harness, Side::Right);
+        assert_only(&copied, "RIGHTONLY", "LEFTONLY");
+    }
+
+    #[test]
+    fn switching_sides_leaves_only_the_new_sides_selection() {
+        let mut harness = sides_harness();
+
+        assert_only(&whole_side(&mut harness, Side::Left), "LEFTONLY", "RIGHTONLY");
+        assert_only(&whole_side(&mut harness, Side::Right), "RIGHTONLY", "LEFTONLY");
+        assert_only(&whole_side(&mut harness, Side::Left), "LEFTONLY", "RIGHTONLY");
+    }
+
+    #[test]
+    fn drag_ending_on_the_opposite_side_copies_only_the_active_side() {
+        let mut harness = sides_harness();
+        let (left_first, left_last) = code_rows(&harness, Side::Left);
+        let (right_first, right_last) = code_rows(&harness, Side::Right);
+
+        let copied = harness
+            .drag_across_and_copy(
+                (Side::Left, (left_first, 0)),
+                (Side::Right, (right_last, 3)),
+            )
+            .expect("selection exists");
+        assert!(!copied.contains("RIGHTONLY"), "{copied:?}");
+
+        let copied = harness
+            .drag_across_and_copy(
+                (Side::Right, (right_first, 0)),
+                (Side::Left, (left_last, 3)),
+            )
+            .expect("selection exists");
+        assert!(!copied.contains("LEFTONLY"), "{copied:?}");
+    }
+
+    #[test]
+    fn press_in_the_blank_part_of_a_row_starts_a_selection() {
+        let mut harness = shared_harness();
+
+        let copied = harness.drag_from_blank_and_copy(Side::Left, 0, (2, 5));
+        assert_eq!(
+            copied.as_deref(),
+            Some("fn main() {\n    foo(bar, baz);\n    l")
+        );
+    }
+
+    #[test]
+    fn escape_clears_the_selection() {
+        let mut harness = sides_harness();
+
+        whole_side(&mut harness, Side::Left);
+        harness.press_escape();
+        assert_eq!(harness.copy(), None);
+    }
+
+    #[test]
+    fn recompute_leaves_a_valid_or_cleared_selection() {
+        let mut harness = sides_harness();
+        whole_side(&mut harness, Side::Left);
+
+        harness.set_row(
+            2,
+            DiffRow {
+                left: LineContent::Void,
+                right: LineContent::Void,
+            },
+        );
+        if let Some(copied) = harness.copy() {
+            for line in copied.lines().filter(|l| !l.is_empty()) {
+                assert!(SIDES_SOURCE.lines().any(|s| s == line), "garbled line {line:?}");
+            }
+        }
+    }
+
     #[test]
     fn harness_builds_rows_with_ghost_tokens() {
         let harness = CopyHarness::new(SOURCE, TARGET, &DiffBuilderOptions::default());
@@ -999,10 +1240,6 @@ mod tests {
                 _ => false,
             })
         });
-        assert!(
-            has_ghost,
-            "expected at least one ghost token in {:?}",
-            harness.rows()
-        );
+        assert!(has_ghost, "expected at least one ghost token in {:?}", harness.rows());
     }
 }

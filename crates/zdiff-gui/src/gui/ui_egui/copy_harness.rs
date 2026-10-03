@@ -6,17 +6,23 @@
 
 use std::sync::{Arc, atomic::AtomicBool};
 
-use eframe::egui::{self, Event, Modifiers, OutputCommand, PointerButton, Pos2, Rect, Shape};
+use eframe::egui::{
+    self, Event, Galley, Modifiers, OutputCommand, PointerButton, Pos2, Rect, Shape,
+};
 use zdiff::{
     cached_file::{CachedFile, FileMetadata},
-    diff_builder::{DiffBuilderOptions, DiffRow, build_diff_rows},
+    diff_builder::{DiffBuilderOptions, DiffRow, LineContent, build_diff_rows},
     diff_ir::DiffIR,
     lexer::{LEXER_MODE_DEFAULT, LexerDefault, RawToken},
     myers::{MyersDiffAlgorithm, myers_diff_path},
+    row_text::build_row_text,
     universal_path::UniversalPath,
 };
 
-use crate::ui_egui::diff_pane::FileDiffPane;
+use crate::ui_egui::{
+    active_side::{ActiveSide, ActiveSideState},
+    diff_pane::FileDiffPane,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -37,11 +43,15 @@ pub struct CopyHarness {
     file_target: Arc<CachedFile<RawToken>>,
     rows: Vec<DiffRow>,
     time: f64,
+    active_side: ActiveSideState,
 }
 
 struct FrameLayout {
     row_rects: [Vec<Rect>; 2],
-    text_origins: [Vec<f32>; 2],
+    /// Per side and row: x of each real-text column plus the end of the text, read from the
+    /// painted galley so gaps left for ghost text are accounted for. Empty if the row paints no
+    /// real text.
+    col_xs: [Vec<Vec<f32>>; 2],
     char_width: f32,
 }
 
@@ -56,6 +66,13 @@ fn cached_file(path: &str, contents: &str) -> CachedFile<RawToken> {
     }
 }
 
+fn active_side_of(side: Side) -> ActiveSide {
+    match side {
+        Side::Left => ActiveSide::Left,
+        Side::Right => ActiveSide::Right,
+    }
+}
+
 fn side_index(side: Side) -> usize {
     match side {
         Side::Left => 0,
@@ -63,9 +80,20 @@ fn side_index(side: Side) -> usize {
     }
 }
 
-fn collect_text_shapes(shape: &Shape, out: &mut Vec<Pos2>) {
+fn pos_of(layout: &FrameLayout, (side, (row, col)): (Side, RowCol)) -> Pos2 {
+    let i = side_index(side);
+    let rect = layout.row_rects[i][row];
+    let xs = &layout.col_xs[i][row];
+    let x = match xs.last() {
+        Some(end) => xs.get(col).copied().unwrap_or(*end),
+        None => rect.left() + FALLBACK_TEXT_OFFSET + col as f32 * layout.char_width,
+    };
+    Pos2::new(x, rect.center().y)
+}
+
+fn collect_text_shapes(shape: &Shape, out: &mut Vec<(Pos2, Arc<Galley>)>) {
     match shape {
-        Shape::Text(text) => out.push(text.pos),
+        Shape::Text(text) => out.push((text.pos, text.galley.clone())),
         Shape::Vec(shapes) => shapes.iter().for_each(|s| collect_text_shapes(s, out)),
         _ => {}
     }
@@ -106,6 +134,7 @@ impl CopyHarness {
             file_target: Arc::new(file_target),
             rows,
             time: 0.0,
+            active_side: ActiveSideState::default(),
         }
     }
 
@@ -121,17 +150,36 @@ impl CopyHarness {
     /// Drags from `from` to `to` on `side`, copies, and returns the copied text
     /// (`None` if no copy command was emitted).
     pub fn drag_and_copy(&mut self, side: Side, from: RowCol, to: RowCol) -> Option<String> {
-        let layout = self.run_frame(vec![]).0;
-        let pos_of = |(row, col): RowCol| -> Pos2 {
-            let i = side_index(side);
-            let rect = layout.row_rects[i][row];
-            Pos2::new(
-                layout.text_origins[i][row] + col as f32 * layout.char_width,
-                rect.center().y,
-            )
-        };
-        let (p_from, p_to) = (pos_of(from), pos_of(to));
+        self.drag_across_and_copy((side, from), (side, to))
+    }
 
+    /// Like `drag_and_copy`, but the release point may be on the other side.
+    pub fn drag_across_and_copy(
+        &mut self,
+        from: (Side, RowCol),
+        to: (Side, RowCol),
+    ) -> Option<String> {
+        let layout = self.run_frame(vec![]).0;
+        let (p_from, p_to) = (pos_of(&layout, from), pos_of(&layout, to));
+        self.drag_positions_and_copy(p_from, p_to)
+    }
+
+    /// Presses in the blank part of `side`'s row `from_row`, right of its text, drags to `to` on
+    /// the same side, copies, and returns the copied text.
+    pub fn drag_from_blank_and_copy(
+        &mut self,
+        side: Side,
+        from_row: usize,
+        to: RowCol,
+    ) -> Option<String> {
+        let layout = self.run_frame(vec![]).0;
+        let rect = layout.row_rects[side_index(side)][from_row];
+        let p_from = Pos2::new(rect.right() - 20.0, rect.center().y);
+        let p_to = pos_of(&layout, (side, to));
+        self.drag_positions_and_copy(p_from, p_to)
+    }
+
+    fn drag_positions_and_copy(&mut self, p_from: Pos2, p_to: Pos2) -> Option<String> {
         let button = |pos, pressed| Event::PointerButton {
             pos,
             button: PointerButton::Primary,
@@ -149,6 +197,11 @@ impl CopyHarness {
             self.run_frame(events);
         }
 
+        self.copy()
+    }
+
+    /// Emits a copy command and returns the copied text (`None` if nothing is selected).
+    pub fn copy(&mut self) -> Option<String> {
         let output = self.run_frame(vec![Event::Copy]).1;
         output
             .platform_output
@@ -161,8 +214,30 @@ impl CopyHarness {
             })
     }
 
+    pub fn press_escape(&mut self) {
+        self.run_frame(vec![Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }]);
+    }
+
     fn run_frame(&mut self, events: Vec<Event>) -> (FrameLayout, egui::FullOutput) {
         self.time += 0.1;
+        let press_pos = events.iter().find_map(|e| match e {
+            Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed: true,
+                ..
+            } => Some(*pos),
+            _ => None,
+        });
+        // Mirrors FileDiffPane::ui: the press is resolved against the previous frame's rects
+        // before any row is laid out.
+        let active_side = self.active_side.begin_frame(press_pos, true, true);
         let raw = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1400.0, 2000.0))),
             time: Some(self.time),
@@ -172,7 +247,7 @@ impl CopyHarness {
 
         let mut layout = FrameLayout {
             row_rects: [vec![], vec![]],
-            text_origins: [vec![], vec![]],
+            col_xs: [vec![], vec![]],
             char_width: 0.0,
         };
         let (file_source, file_target, rows) = (&self.file_source, &self.file_target, &self.rows);
@@ -204,6 +279,7 @@ impl CopyHarness {
                                             content,
                                             SIDE_WIDTH,
                                             false,
+                                            active_side == active_side_of(side),
                                             "rs",
                                         );
                                     })
@@ -217,28 +293,60 @@ impl CopyHarness {
             });
         });
 
-        for i in 0..2 {
-            layout.text_origins[i] = layout.row_rects[i]
+        for side in [Side::Left, Side::Right] {
+            let i = side_index(side);
+            layout.col_xs[i] = layout.row_rects[i]
                 .iter()
-                .map(|rect| text_origin_x(&output, *rect))
+                .zip(rows.iter())
+                .map(|(rect, row)| {
+                    let content = match side {
+                        Side::Left => &row.left,
+                        Side::Right => &row.right,
+                    };
+                    let real_text = match content {
+                        LineContent::Code { tokens, .. } => {
+                            build_row_text(tokens, Some(&**file_source), Some(&**file_target)).text
+                        }
+                        _ => String::new(),
+                    };
+                    col_xs(&output, *rect, &real_text)
+                })
                 .collect();
         }
+        let side_rect = |i: usize| {
+            layout.row_rects[i]
+                .iter()
+                .fold(Rect::NOTHING, |acc, r| acc.union(*r))
+        };
+        self.active_side
+            .end_frame(side_rect(0), side_rect(1));
         (layout, output)
     }
 }
 
-/// X of the text painted in `rect`, found from the painted shapes so the harness does not
-/// depend on how the renderer lays out its gutter or widget margins. The code text is the
-/// rightmost text shape in the row; the gutter number is always left of it.
-fn text_origin_x(output: &egui::FullOutput, rect: Rect) -> f32 {
-    let mut positions = Vec::new();
-    for clipped in &output.shapes {
-        collect_text_shapes(&clipped.shape, &mut positions);
+/// X of every column of `real_text` as painted in `rect`, plus the end of the text. Found from
+/// the painted shapes so the harness does not depend on how the renderer lays out its gutter or
+/// widget margins. The shape is identified by its text; the rightmost match is the code text
+/// (the gutter is left of it). Empty if the row paints no such text.
+fn col_xs(output: &egui::FullOutput, rect: Rect, real_text: &str) -> Vec<f32> {
+    if real_text.is_empty() {
+        return Vec::new();
     }
-    positions
+    let mut shapes = Vec::new();
+    for clipped in &output.shapes {
+        collect_text_shapes(&clipped.shape, &mut shapes);
+    }
+    let Some((pos, galley)) = shapes
         .into_iter()
-        .filter(|p| p.y >= rect.top() && p.y <= rect.bottom() && p.x < rect.right())
-        .map(|p| p.x)
-        .reduce(f32::max)
-        .unwrap_or(rect.left() + FALLBACK_TEXT_OFFSET)
+        .filter(|(p, g)| {
+            p.y >= rect.top() && p.y <= rect.bottom() && p.x < rect.right() && g.text() == real_text
+        })
+        .max_by(|a, b| a.0.x.total_cmp(&b.0.x))
+    else {
+        return Vec::new();
+    };
+    let glyphs = &galley.rows[0].glyphs;
+    let mut xs: Vec<f32> = glyphs.iter().map(|g| pos.x + g.pos.x).collect();
+    xs.push(pos.x + glyphs.last().map_or(0.0, |g| g.max_x()));
+    xs
 }
