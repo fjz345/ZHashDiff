@@ -337,6 +337,15 @@ impl DiffCtx {
         self.update_diff_rows_input = input;
     }
 
+    /// A stage thread whose cancel flag is set exits without sending, so its in-flight input would
+    /// never clear and would block respawning the same input later. Results still arriving for a
+    /// forgotten input are dropped by `poll`.
+    pub fn forget_inflight(&mut self) {
+        self.myers_inflight_input = None;
+        self.diff_ir_inflight_input = None;
+        self.diff_rows_inflight_input = None;
+    }
+
     pub fn poll(&mut self) {
         while let Ok(myers_res) = self.channel_myers.1.try_recv() {
             match myers_res {
@@ -644,6 +653,7 @@ impl DiffProcessor {
 
         self.cancel_in_progress();
         self.cancel_flag = Arc::new(AtomicBool::new(false));
+        self.ctx.forget_inflight();
         self.in_progress_input = Some(input.clone());
         log::trace!(
             "Diff Processor new in_progress_input: {:?}",
@@ -1119,5 +1129,157 @@ mod tests {
     #[test]
     fn goto_in_an_empty_file_has_no_row() {
         assert_eq!(row_for_line(1, &[]), None);
+    }
+
+    mod pipeline {
+        use std::{
+            path::Path,
+            time::{Duration, Instant},
+        };
+
+        use zcommon::logger::LogCollector;
+        use zdiff::universal_path::UniversalPath;
+
+        use super::*;
+        use crate::file::FileProcessor;
+
+        const SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+        /// `lines` lines where every 7th line depends on `seed`, so two seeds give a scattered diff.
+        fn write_source(path: &Path, lines: usize, seed: usize) -> UniversalPath {
+            let contents: String = (0..lines)
+                .map(|i| {
+                    if i % 7 == 0 {
+                        format!("let edited_{i} = {};\n", seed * 31 + i)
+                    } else {
+                        format!("fn line_{i}() -> usize {{ {} }}\n", i * 3)
+                    }
+                })
+                .collect();
+            std::fs::write(path, contents).unwrap();
+            UniversalPath::from(path.to_path_buf())
+        }
+
+        /// Loads through a `FileProcessor` like the app does. `None` when the load failed.
+        fn load(path: &UniversalPath) -> Option<Arc<CachedFile<RawToken>>> {
+            let mut file = FileProcessor::new();
+            file.set_path(path.clone());
+            let start = Instant::now();
+            loop {
+                let cached = file.get_cached_file();
+                if file.get_loading_path().is_none() {
+                    return cached;
+                }
+                assert!(
+                    start.elapsed() < SETTLE_TIMEOUT,
+                    "load of {path:?} never finished"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        fn input(
+            file_1: &Option<Arc<CachedFile<RawToken>>>,
+            file_2: &Option<Arc<CachedFile<RawToken>>>,
+        ) -> UpdateDiffRowsInput {
+            UpdateDiffRowsInput {
+                file_1: file_1.clone(),
+                file_2: file_2.clone(),
+                ..Default::default()
+            }
+        }
+
+        /// One frame of the app opening a pair: request it, then poll once.
+        fn open(processor: &mut DiffProcessor, input: &UpdateDiffRowsInput) {
+            processor.request_update(input.clone());
+            processor.update();
+        }
+
+        fn settle(processor: &mut DiffProcessor) -> Option<MinimalDiffCtx> {
+            let start = Instant::now();
+            while processor.is_in_progress() {
+                if start.elapsed() > SETTLE_TIMEOUT {
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+                processor.update();
+            }
+            processor.get_minimal_diff_ctx()
+        }
+
+        #[test]
+        fn reopening_a_pair_after_a_cached_pair_interrupted_it_completes() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 1000, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 1000, 2)),
+            );
+            let b = (
+                load(&write_source(&dir.path().join("b1.rs"), 40, 3)),
+                load(&write_source(&dir.path().join("b2.rs"), 40, 4)),
+            );
+            let (input_a, input_b) = (input(&a.0, &a.1), input(&b.0, &b.1));
+            let mut processor = DiffProcessor::default();
+
+            open(&mut processor, &input_b);
+            assert!(
+                settle(&mut processor).is_some(),
+                "first diff of B never completed"
+            );
+
+            open(&mut processor, &input_a);
+            assert!(processor.is_in_progress(), "A should still be diffing");
+            open(&mut processor, &input_b);
+            assert!(
+                !processor.is_in_progress(),
+                "B should be served from the stage caches"
+            );
+            open(&mut processor, &input_a);
+
+            let ctx = settle(&mut processor).expect("re-opened pair A never completed");
+            assert!(ctx.input == input_a, "diff shows {:?}", ctx.input);
+        }
+
+        #[test]
+        fn failed_load_mid_sequence_is_logged_and_next_request_diffs() {
+            let logs = LogCollector::init().expect("no other logger in the test binary");
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 300, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 300, 2)),
+            );
+            let b = (
+                load(&write_source(&dir.path().join("b1.rs"), 300, 3)),
+                load(&write_source(&dir.path().join("b2.rs"), 300, 4)),
+            );
+            let mut processor = DiffProcessor::default();
+
+            open(&mut processor, &input(&b.0, &b.1));
+            assert!(
+                settle(&mut processor).is_some(),
+                "diff of B never completed"
+            );
+            open(&mut processor, &input(&a.0, &a.1));
+
+            let missing = dir.path().join("missing.rs");
+            let missing_file = load(&UniversalPath::from(missing.clone()));
+            assert!(missing_file.is_none());
+            let missing_display = missing.display().to_string();
+            assert!(
+                logs.lock()
+                    .unwrap()
+                    .iter()
+                    .any(|l| l.starts_with("[ERROR]") && l.contains(&missing_display)),
+                "no error logged for {missing_display}"
+            );
+
+            // The app diffs whatever side did load, so the pair becomes one-sided.
+            open(&mut processor, &input(&missing_file, &b.1));
+            open(&mut processor, &input(&a.0, &a.1));
+
+            let ctx = settle(&mut processor).expect("pair after the failed load never completed");
+            assert!(ctx.input == input(&a.0, &a.1), "diff shows {:?}", ctx.input);
+            assert!(!ctx.diff_rows.is_empty());
+        }
     }
 }
