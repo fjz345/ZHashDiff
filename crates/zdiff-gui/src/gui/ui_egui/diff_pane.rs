@@ -12,6 +12,7 @@ use zdiff::{
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent},
     diff_ir::{DiffOp, DiffResult},
     lexer::RawTokenTrait,
+    row_text::{RowText, build_row_text},
     universal_path::UniversalPath,
 };
 
@@ -538,55 +539,14 @@ impl FileDiffPane {
                                                             _ => " ",
                                                         };
                                                     ui.centered_and_justified(|ui| {
-                                                        ui.horizontal(|ui|{
-                                                            let revert_func = |diff_row: &DiffRow|{
-                                                                match &diff_row.left
-                                                                {
-                                                                    LineContent::Code { tokens, line_num, bg } => {
-                                                                        let diff_result = tokens.first().map(|a|a.0.clone());
-                                                                        let diff_result = match diff_result{
-                                                                            Some(diff) => {
-                                                                                match &diff.operation {
-                                                                                    DiffOp::Equal(_) => {None},
-                                                                                    DiffOp::Delete => {Some(diff)},
-                                                                                    DiffOp::Insert => {Some(diff)},
-                                                                                }
-                                                                            },
-                                                                            None => {None},
-                                                                        };
-                                                                        diff_result
-                                                                    },
-                                                                    LineContent::Void => {None},
-                                                                    LineContent::Collapsed => {None},
-                                                                }
-                                                            };
-                                                            let can_revert_left = match &diff_row.left {
-                                                                LineContent::Code { tokens, line_num, bg } => tokens.iter().any(|a|matches!(a.0.operation, DiffOp::Delete)),
-                                                                LineContent::Void | LineContent::Collapsed => false,
-                                                            };
-                                                            let can_revert_right = match &diff_row.right {
-                                                                LineContent::Code { tokens, line_num, bg } => tokens.iter().any(|a|matches!(a.0.operation, DiffOp::Insert)),
-                                                                LineContent::Void | LineContent::Collapsed => false,
-                                                            };
-                                                            if  can_revert_left && ui.button("<").clicked(){
-                                                                let diff = revert_func(&diff_row);
-                                                                *ctx.revert_request = diff;
-                                                                if let Some(new_diff) = ctx.revert_request{
-                                                                        log::info!("revert_reqeust updated: {:?}", new_diff);
-                                                                }
-                                                            };
-                                                            ui.label(
-                                                                egui::RichText::new(symbol_text)
-                                                                    .color(egui::Color32::DARK_GRAY),
-                                                            );
-                                                            if can_revert_right && ui.button(">").clicked(){
-                                                                let diff = revert_func(&diff_row);
-                                                                *ctx.revert_request = diff;
-                                                                if let Some(new_diff) = ctx.revert_request{
-                                                                    log::info!("revert_reqeust updated: {:?}", new_diff);
-                                                                }
-                                                            };
-                                                        });
+                                                        ui.add(
+                                                            egui::Label::new(
+                                                                egui::RichText::new(text).color(
+                                                                    egui::Color32::DARK_GRAY,
+                                                                ),
+                                                            )
+                                                            .selectable(false),
+                                                        );
                                                     });
                                                 });
 
@@ -703,108 +663,42 @@ impl FileDiffPane {
                                 egui::RichText::new(&line_num_str)
                                     .color(egui::Color32::DARK_GRAY)
                                     .size(10.0),
-                            ),
+                            )
+                            .selectable(false),
                         );
 
                         ui.add_space(4.0);
 
-                        let read_string = |diff_result: &DiffResult| -> Option<&str> {
-                            let (file, token_idx) = match diff_result.operation {
-                                zdiff::diff_ir::DiffOp::Equal(is_source) => (
-                                    if is_source {
-                                        file_source.as_ref()?
-                                    } else {
-                                        file_target.as_ref()?
-                                    },
-                                    diff_result.token_source_idx?,
-                                ),
-                                zdiff::diff_ir::DiffOp::Delete => {
-                                    (file_source.as_ref()?, diff_result.token_source_idx?)
-                                }
-                                zdiff::diff_ir::DiffOp::Insert => {
-                                    (file_target.as_ref()?, diff_result.token_target_idx?)
-                                }
-                            };
-
-                            let token = &file.tokens[token_idx as usize];
-
-                            Some(file.read_content_span(token.as_ref().span.clone()))
-                        };
-                        log::trace!("-----------------------------------------------");
-                        let mut concat_str = String::new();
-                        let mut ghost_ranges = Vec::new();
-                        let mut current_byte_idx = 0;
-
-                        for (diff_result, color, is_ghost) in tokens {
-                            let str = read_string(diff_result).unwrap_or_default();
-                            if str.is_empty() || str == "\n" || str == "\r\n" {
-                                continue;
-                            }
-
-                            let byte_len = str.len();
-
-                            if *is_ghost {
-                                let ghost_color = egui::Color32::from_rgba_unmultiplied(
-                                    color.0[0], color.0[1], color.0[2], color.0[3],
-                                );
-                                ghost_ranges.push((
-                                    current_byte_idx..(current_byte_idx + byte_len),
-                                    ghost_color,
-                                ));
-                            }
-
-                            concat_str.push_str(&str);
-                            current_byte_idx += byte_len;
-                        }
-
-                        let mut text_buffer = concat_str.trim_end().to_string();
+                        let row_text =
+                            build_row_text(tokens, file_source.as_deref(), file_target.as_deref());
+                        let (text, ghost_ranges) = inline_ghosts(&row_text);
 
                         let theme = egui_extras::syntax_highlighting::CodeTheme::from_memory(
                             ui.ctx(),
                             ui.style(),
                         );
-                        let language = "rs";
-
-                        let mut layouter =
-                            |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                                let mut layout_job = egui_extras::syntax_highlighting::highlight(
-                                    ui.ctx(),
-                                    ui.style(),
-                                    &theme,
-                                    buf.as_str(),
-                                    code_language,
-                                );
-
-                                let buf_len = buf.as_str().len();
-                                for section in &mut layout_job.sections {
-                                    for (ghost_range, ghost_color) in &ghost_ranges {
-                                        // Clamp ranges in case text_buffer.trim_end() shortened the string
-                                        let start = ghost_range.start.min(buf_len);
-                                        let end = ghost_range.end.min(buf_len);
-
-                                        if section.byte_range.start < end
-                                            && section.byte_range.end > start
-                                        {
-                                            section.format.color = *ghost_color;
-                                        }
-                                    }
+                        let mut layout_job = egui_extras::syntax_highlighting::highlight(
+                            ui.ctx(),
+                            ui.style(),
+                            &theme,
+                            &text,
+                            code_language,
+                        );
+                        for section in &mut layout_job.sections {
+                            for (ghost_range, ghost_color) in &ghost_ranges {
+                                if section.byte_range.start < ghost_range.end
+                                    && section.byte_range.end > ghost_range.start
+                                {
+                                    section.format.color = *ghost_color;
                                 }
-                                // layout_job.wrap.max_width = wrap_width;
-                                ui.fonts_mut(|f| f.layout_job(layout_job))
-                            };
+                            }
+                        }
 
-                        let id_salt = line_num_str.clone();
-                        ui.push_id(&id_salt, |ui| {
-                            let editor = egui::TextEdit::multiline(&mut text_buffer)
-                                .font(egui::TextStyle::Monospace)
-                                .code_editor()
-                                .desired_rows(1)
-                                .lock_focus(true)
-                                .desired_width(f32::INFINITY)
-                                .frame(false)
-                                .layouter(&mut layouter);
-                            ui.add(editor);
-                        });
+                        ui.add(
+                            egui::Label::new(layout_job)
+                                .selectable(true)
+                                .wrap_mode(egui::TextWrapMode::Extend),
+                        );
 
                         ui.painter().rect_filled(
                             extended_rect,
@@ -850,20 +744,45 @@ impl FileDiffPane {
                             egui::RichText::new("|") // Mid-line ellipsis fits a gutter better than "-"
                             .color(egui::Color32::from_gray(100))
                             .size(12.0))
+                            .selectable(false)
                         );
 
                         ui.add_space(4.0);
 
-                        ui.label(
-                            egui::RichText::new("Collapsed context")
-                                .color(egui::Color32::from_gray(130))
-                                .size(11.0),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new("Collapsed context")
+                                    .color(egui::Color32::from_gray(130))
+                                    .size(11.0),
+                            )
+                            .selectable(false),
                         );
                     });
                 });
             }
         }
     }
+}
+
+/// Ghost text is still shown inline (dimmed) and therefore still selectable; the copy-exclusion
+/// handling is a later slice. Returns the displayed text and the byte ranges of the ghosts in it.
+fn inline_ghosts(row_text: &RowText) -> (String, Vec<(std::ops::Range<usize>, egui::Color32)>) {
+    let mut text = String::with_capacity(row_text.text.len());
+    let mut ghost_ranges = Vec::with_capacity(row_text.ghosts.len());
+    let mut copied = 0;
+    for ghost in &row_text.ghosts {
+        text.push_str(&row_text.text[copied..ghost.byte_offset]);
+        copied = ghost.byte_offset;
+        let start = text.len();
+        text.push_str(&ghost.text);
+        let [r, g, b, a] = ghost.color.0;
+        ghost_ranges.push((
+            start..text.len(),
+            egui::Color32::from_rgba_unmultiplied(r, g, b, a),
+        ));
+    }
+    text.push_str(&row_text.text[copied..]);
+    (text, ghost_ranges)
 }
 
 fn handle_drops(
@@ -911,7 +830,7 @@ fn handle_drops(
 
 #[cfg(test)]
 mod tests {
-    use zdiff::diff_builder::{DiffBuilderOptions, LineContent};
+    use zdiff::diff_builder::{DiffBuilderOptions, DiffRow, LineContent};
 
     use crate::ui_egui::copy_harness::{CopyHarness, Side};
 
@@ -929,6 +848,109 @@ mod tests {
         assert_eq!(copied.as_deref(), Some("let z"));
     }
 
+    // Same on both sides except the last line, so rows 0..=2 carry no ghosts and are identical
+    // on both sides.
+    const SHARED_SOURCE: &str = "fn main() {\n    foo(bar, baz);\n    let x = 1;\n}\nold\n";
+    const SHARED_TARGET: &str = "fn main() {\n    foo(bar, baz);\n    let x = 1;\n}\nnew\n";
+
+    fn shared_harness() -> CopyHarness {
+        CopyHarness::new(SHARED_SOURCE, SHARED_TARGET, &DiffBuilderOptions::default())
+    }
+
+    #[test]
+    fn multi_row_selection_copies_exact_file_text() {
+        let mut harness = shared_harness();
+
+        let expected = Some("fn main() {\n    foo(bar, baz);\n    let x = 1;\n}");
+        let copied = harness.drag_and_copy(Side::Left, (0, 0), (3, 1));
+        assert_eq!(copied.as_deref(), expected);
+        let copied = harness.drag_and_copy(Side::Right, (0, 0), (3, 1));
+        assert_eq!(copied.as_deref(), expected);
+    }
+
+    #[test]
+    fn multi_row_selection_keeps_punctuation_spacing() {
+        let mut harness = shared_harness();
+
+        let copied = harness.drag_and_copy(Side::Left, (1, 4), (1, 18));
+        assert_eq!(copied.as_deref(), Some("foo(bar, baz);"));
+    }
+
+    #[test]
+    fn partial_first_and_last_row() {
+        let mut harness = shared_harness();
+
+        let copied = harness.drag_and_copy(Side::Left, (0, 3), (2, 9));
+        assert_eq!(
+            copied.as_deref(),
+            Some("main() {\n    foo(bar, baz);\n    let x")
+        );
+    }
+
+    #[test]
+    fn upward_drag_copies_same_text_as_downward() {
+        let mut harness = shared_harness();
+
+        let down = harness.drag_and_copy(Side::Left, (0, 3), (2, 9));
+        let up = harness.drag_and_copy(Side::Left, (2, 9), (0, 3));
+        assert_eq!(up, down);
+    }
+
+    #[test]
+    fn trailing_whitespace_is_kept() {
+        let mut harness = CopyHarness::new("a  \nb\n", "a  \nb\n", &DiffBuilderOptions::default());
+
+        let copied = harness.drag_and_copy(Side::Left, (0, 0), (1, 1));
+        assert_eq!(copied.as_deref(), Some("a  \nb"));
+    }
+
+    #[test]
+    fn crlf_rows_are_joined_with_lf() {
+        let mut harness =
+            CopyHarness::new("a\r\nb\r\n", "a\r\nb\r\n", &DiffBuilderOptions::default());
+
+        let copied = harness.drag_and_copy(Side::Left, (0, 0), (1, 1));
+        assert_eq!(copied.as_deref(), Some("a\nb"));
+    }
+
+    fn collapsed_row_between(row: &DiffRow) -> DiffRow {
+        DiffRow {
+            left: LineContent::Collapsed,
+            right: LineContent::Collapsed,
+            ..row.clone()
+        }
+    }
+
+    /// Phantom blank lines from rows without a label are a known gap, handled with the ghost
+    /// fidelity work; this only pins that no placeholder text reaches the clipboard.
+    fn assert_only_real_text(copied: Option<String>) {
+        let copied = copied.expect("copy command emitted");
+        let without_newlines: String = copied.chars().filter(|c| *c != '\n').collect();
+        assert_eq!(without_newlines, "fn main() {    let x = 1;");
+    }
+
+    #[test]
+    fn collapsed_row_contributes_nothing() {
+        let mut harness = shared_harness();
+        let collapsed = collapsed_row_between(&harness.rows()[1]);
+        harness.set_row(1, collapsed);
+
+        assert_only_real_text(harness.drag_and_copy(Side::Left, (0, 0), (2, 14)));
+    }
+
+    #[test]
+    fn void_row_contributes_nothing() {
+        let mut harness = shared_harness();
+        let void = DiffRow {
+            left: LineContent::Void,
+            right: LineContent::Void,
+            ..harness.rows()[1].clone()
+        };
+        harness.set_row(1, void);
+
+        assert_only_real_text(harness.drag_and_copy(Side::Left, (0, 0), (2, 14)));
+    }
+
     #[test]
     fn harness_builds_rows_with_ghost_tokens() {
         let harness = CopyHarness::new(SOURCE, TARGET, &DiffBuilderOptions::default());
@@ -939,6 +961,10 @@ mod tests {
                 _ => false,
             })
         });
-        assert!(has_ghost, "expected at least one ghost token in {:?}", harness.rows());
+        assert!(
+            has_ghost,
+            "expected at least one ghost token in {:?}",
+            harness.rows()
+        );
     }
 }

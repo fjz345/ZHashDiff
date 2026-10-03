@@ -113,6 +113,11 @@ impl CopyHarness {
         &self.rows
     }
 
+    /// Replaces a row, e.g. to inject Collapsed rows that are created outside the zdiff pipeline.
+    pub fn set_row(&mut self, index: usize, row: DiffRow) {
+        self.rows[index] = row;
+    }
+
     /// Drags from `from` to `to` on `side`, copies, and returns the copied text
     /// (`None` if no copy command was emitted).
     pub fn drag_and_copy(&mut self, side: Side, from: RowCol, to: RowCol) -> Option<String> {
