@@ -7,14 +7,14 @@ use std::{
 };
 use zcommon::{hash::HashService, ui_egui::common::show_custom_popup};
 use zhashdiff::{
-    comparison::PathComparissonMethod,
+    comparison::{PathComparissonMethod, compare_paths},
     external_diff_tool::{DiffToolConfig, DiffToolDefaultArgs},
     fs::FileSystemModel,
 };
 
 use crate::ui_egui::{
     duplicate_files_pane::DuplicateFilesPane,
-    fs_tree::{FileSystemView, VisibleRowTwoFolderDiff},
+    fs_tree::{FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff},
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::PathDiffPane,
 };
@@ -36,6 +36,8 @@ pub struct AppStateCtx {
     pub file_system_model_2_view: Option<FileSystemView>,
     #[serde(skip)]
     two_folder_diff_visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
+    #[serde(skip)]
+    two_folder_diff_compare_cache: FileCompareCache,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -500,7 +502,10 @@ impl eframe::App for ZApp {
                         FileSystemView::build_two_folder_diff_rows(
                             state.file_system_model_1_view.as_ref(),
                             state.file_system_model_2_view.as_ref(),
-                            &PathComparissonMethod::CrC,
+                            &mut state.two_folder_diff_compare_cache,
+                            |path_1, path_2| {
+                                compare_paths(path_1, path_2, &PathComparissonMethod::CrC)
+                            },
                         )
                         .ok();
                 }

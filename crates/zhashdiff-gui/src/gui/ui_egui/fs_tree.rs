@@ -1,8 +1,8 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
-    path::PathBuf,
-    sync::Arc,
+    path::{Path, PathBuf},
+    sync::{Arc, Weak},
 };
 
 use eframe::egui::{self, RichText};
@@ -10,7 +10,7 @@ use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
 use zcommon::hash::HashService;
 use zhashdiff::{
-    comparison::{PathComparissonMethod, compare_paths},
+    comparison::PathComparisonResult,
     external_diff_tool::{DiffToolConfig, open_diff_tool},
     fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, TreeIter},
 };
@@ -26,11 +26,55 @@ pub struct FileSystemView {
     pub selected: HashMap<FsNodeId, bool>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct VisibleRowTwoFolderDiff {
+    /// Relative to the roots, with `/` separators. Empty for the root row.
+    pub rel_path: String,
     pub is_dir: bool,
     pub depth: FsNodeDepth,
     pub diff_state: DiffState,
+}
+
+/// File comparison results of the two loaded trees, so rebuilding the two-folder rows
+/// doesn't read the files again.
+#[derive(Debug, Default)]
+pub struct FileCompareCache {
+    // Node ids only mean something in the model they came from. Every reload or rescan
+    // makes a new model, whichever code path does it, so the cache follows the models
+    // rather than relying on each reload site to clear it. Weak, so a replaced model is
+    // freed but its address can't be reused by a new one while it is held here.
+    trees: (Weak<FileSystemModel>, Weak<FileSystemModel>),
+    states: HashMap<(FsNodeId, FsNodeId), DiffState>,
+}
+
+impl FileCompareCache {
+    fn retain_for(
+        &mut self,
+        file_system_1: Option<&FileSystemView>,
+        file_system_2: Option<&FileSystemView>,
+    ) {
+        let tree = |view: Option<&FileSystemView>| {
+            view.map_or_else(Weak::new, |v| Arc::downgrade(&v.file_system))
+        };
+        let trees = (tree(file_system_1), tree(file_system_2));
+        if !Weak::ptr_eq(&trees.0, &self.trees.0) || !Weak::ptr_eq(&trees.1, &self.trees.1) {
+            self.states.clear();
+            self.trees = trees;
+        }
+    }
+
+    fn file_diff_state(
+        &mut self,
+        left: (FsNodeId, &FsNode),
+        right: (FsNodeId, &FsNode),
+        compare: &mut impl FnMut(&Path, &Path) -> io::Result<PathComparisonResult>,
+        partial_threshold: f32,
+    ) -> DiffState {
+        self.states
+            .entry((left.0, right.0))
+            .or_insert_with(|| file_diff_state(left, right, compare, partial_threshold))
+            .clone()
+    }
 }
 
 #[derive(Debug)]
@@ -133,8 +177,11 @@ impl FileSystemView {
     pub fn build_two_folder_diff_rows(
         file_system_1: Option<&FileSystemView>,
         file_system_2: Option<&FileSystemView>,
-        method: &PathComparissonMethod,
+        compare_cache: &mut FileCompareCache,
+        mut compare: impl FnMut(&Path, &Path) -> io::Result<PathComparisonResult>,
     ) -> io::Result<Vec<VisibleRowTwoFolderDiff>> {
+        compare_cache.retain_for(file_system_1, file_system_2);
+
         let mut entries_map: BTreeMap<
             String,
             (
@@ -200,9 +247,20 @@ impl FileSystemView {
                 (Some((l_id, l_node, _)), Some((r_id, r_node, _))) => {
                     let partial_threshold = 1.0f32;
                     if l_node.is_dir() {
-                        folder_diff_state(rel_path, &entries_map, method, partial_threshold)
+                        folder_diff_state(
+                            rel_path,
+                            &entries_map,
+                            compare_cache,
+                            &mut compare,
+                            partial_threshold,
+                        )
                     } else {
-                        file_diff_state((*l_id, l_node), (*r_id, r_node), method, partial_threshold)
+                        compare_cache.file_diff_state(
+                            (*l_id, l_node),
+                            (*r_id, r_node),
+                            &mut compare,
+                            partial_threshold,
+                        )
                     }
                 }
                 (Some((l_id, _, _)), None) => DiffState::OnlyInFirst(*l_id),
@@ -211,6 +269,7 @@ impl FileSystemView {
             };
 
             out_rows.push(VisibleRowTwoFolderDiff {
+                rel_path: rel_path.clone(),
                 is_dir,
                 depth,
                 diff_state,
@@ -575,7 +634,7 @@ fn handle_drops(
     });
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 pub enum DiffState {
     Different(FsNodeId, FsNodeId),
     Same(FsNodeId, FsNodeId),
@@ -624,13 +683,13 @@ pub fn ui_custom_diff_state(ui: &mut egui::Ui, state: &DiffState) -> egui::respo
 fn file_diff_state(
     left: (FsNodeId, &FsNode),
     right: (FsNodeId, &FsNode),
-    method: &PathComparissonMethod,
+    compare: &mut impl FnMut(&Path, &Path) -> io::Result<PathComparisonResult>,
     partial_threshold: f32,
 ) -> DiffState {
     let path1 = left.1.as_path();
     let path2 = right.1.as_path();
 
-    let result = match compare_paths(path1, path2, method) {
+    let result = match compare(path1.as_ref(), path2.as_ref()) {
         Ok(r) => r,
         Err(_) => return DiffState::Different(left.0, right.0),
     };
@@ -655,7 +714,8 @@ fn folder_diff_state(
             Option<(FsNodeId, &FsNode, FsNodeDepth)>,
         ),
     >,
-    method: &PathComparissonMethod,
+    compare_cache: &mut FileCompareCache,
+    compare: &mut impl FnMut(&Path, &Path) -> io::Result<PathComparisonResult>,
     threshold: f32,
 ) -> DiffState {
     let (current_left, current_right) = entries_map
@@ -684,7 +744,7 @@ fn folder_diff_state(
             (Some(_), None) | (None, Some(_)) => return DiffState::Different(l_id, r_id),
             (Some((li, ln, _)), Some((ri, rn, _))) => {
                 if !ln.is_dir() {
-                    let s = file_diff_state((*li, ln), (*ri, rn), method, threshold);
+                    let s = compare_cache.file_diff_state((*li, ln), (*ri, rn), compare, threshold);
                     // Use your specific enum variant names
                     if !matches!(s, DiffState::Same(..)) {
                         return DiffState::Different(l_id, r_id);
@@ -1098,13 +1158,17 @@ fn get_folder_selection_state(
 
 #[cfg(test)]
 mod tests {
-    use crate::ui_egui::fs_tree::{DiffState, FileSystemView};
+    use crate::ui_egui::fs_tree::{
+        DiffState, FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff,
+    };
 
+    use std::cell::Cell;
     use std::collections::HashMap;
     use std::fs::{self, File};
     use std::path::Path;
     use std::sync::Arc;
-    use tempfile::tempdir;
+    use tempfile::{TempDir, tempdir};
+    use zhashdiff::comparison::compare_crc;
     use zhashdiff::fs::{FileSystemModel, FsIsDir, FsNodeDepth, FsNodeId};
 
     struct CollapsedTestCase {
@@ -1223,6 +1287,185 @@ mod tests {
             output.push_str(&format!("{:<30} | {:<30} | {:<30}\n", l_row, d_row, r_row));
         }
         output
+    }
+
+    fn write_files(root: &Path, files: &[(&str, &str)]) {
+        for (rel_path, content) in files {
+            let path = root.join(rel_path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+        }
+    }
+
+    fn load_view(root: &Path) -> FileSystemView {
+        FileSystemView::new(Arc::new(FileSystemModel::new(root).unwrap()))
+    }
+
+    /// b.txt differs, a.txt and everything under sub/ is equal, and each side has a file
+    /// of its own.
+    fn two_folder_trees() -> (TempDir, TempDir) {
+        let left = tempdir().unwrap();
+        let right = tempdir().unwrap();
+        let shared = [
+            ("a.txt", "same a"),
+            ("sub/c.txt", "same c"),
+            ("sub/deep/d.txt", "same d"),
+        ];
+        write_files(left.path(), &shared);
+        write_files(right.path(), &shared);
+        write_files(left.path(), &[("b.txt", "left b"), ("left_only.txt", "l")]);
+        write_files(
+            right.path(),
+            &[("b.txt", "right b"), ("right_only.txt", "r")],
+        );
+        (left, right)
+    }
+
+    fn state_kind(state: &DiffState) -> &'static str {
+        match state {
+            DiffState::Different(..) => "Different",
+            DiffState::Same(..) => "Same",
+            DiffState::Partial(..) => "Partial",
+            DiffState::OnlyInFirst(..) => "OnlyInFirst",
+            DiffState::OnlyInSecond(..) => "OnlyInSecond",
+        }
+    }
+
+    #[test]
+    fn two_folder_rows_have_the_expected_paths_states_and_order() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+
+        let rows = build_counting(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+        );
+
+        let actual: Vec<(String, &str, FsNodeDepth, bool)> = rows
+            .iter()
+            .map(|row| {
+                let rel = get_rel_from_diff_state(
+                    &left.file_system,
+                    &right.file_system,
+                    left_dir.path(),
+                    right_dir.path(),
+                    &row.diff_state,
+                );
+                (rel, state_kind(&row.diff_state), row.depth, row.is_dir)
+            })
+            .collect();
+        let expected = [
+            ("", "Different", 0, true),
+            ("a.txt", "Same", 1, false),
+            ("b.txt", "Different", 1, false),
+            ("left_only.txt", "OnlyInFirst", 1, false),
+            ("right_only.txt", "OnlyInSecond", 1, false),
+            ("sub", "Same", 1, true),
+            ("sub/c.txt", "Same", 2, false),
+            ("sub/deep", "Same", 2, true),
+            ("sub/deep/d.txt", "Same", 3, false),
+        ]
+        .map(|(rel, kind, depth, is_dir)| (rel.to_string(), kind, depth, is_dir));
+        assert_eq!(actual, expected);
+    }
+
+    fn build_counting(
+        left: &FileSystemView,
+        right: &FileSystemView,
+        cache: &mut FileCompareCache,
+        comparisons: &Cell<usize>,
+    ) -> Vec<VisibleRowTwoFolderDiff> {
+        FileSystemView::build_two_folder_diff_rows(Some(left), Some(right), cache, |a, b| {
+            comparisons.set(comparisons.get() + 1);
+            compare_crc(a, b)
+        })
+        .unwrap()
+    }
+
+    fn kind_at(rows: &[VisibleRowTwoFolderDiff], rel_path: &str) -> &'static str {
+        let row = rows.iter().find(|r| r.rel_path == rel_path).unwrap();
+        state_kind(&row.diff_state)
+    }
+
+    #[test]
+    fn two_folder_rows_carry_their_relative_path_with_slash_separators() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+
+        let rows = build_counting(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+        );
+
+        let paths: Vec<&str> = rows.iter().map(|r| r.rel_path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "",
+                "a.txt",
+                "b.txt",
+                "left_only.txt",
+                "right_only.txt",
+                "sub",
+                "sub/c.txt",
+                "sub/deep",
+                "sub/deep/d.txt",
+            ]
+        );
+    }
+
+    #[test]
+    fn rebuilding_two_folder_rows_compares_no_files_and_builds_identical_rows() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let comparisons = Cell::new(0);
+        let mut cache = FileCompareCache::default();
+
+        let first = build_counting(&left, &right, &mut cache, &comparisons);
+        // a.txt, b.txt, sub/c.txt and sub/deep/d.txt are on both sides.
+        assert_eq!(comparisons.get(), 4);
+
+        let second = build_counting(&left, &right, &mut cache, &comparisons);
+        assert_eq!(comparisons.get(), 4);
+        assert_eq!(second, first);
+    }
+
+    #[test]
+    fn reloading_either_root_recompares_its_files() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let mut left = load_view(left_dir.path());
+        let mut right = load_view(right_dir.path());
+        let comparisons = Cell::new(0);
+        let mut cache = FileCompareCache::default();
+        let rows = build_counting(&left, &right, &mut cache, &comparisons);
+        assert_eq!(kind_at(&rows, "b.txt"), "Different");
+
+        fs::write(right_dir.path().join("b.txt"), "left b").unwrap();
+        let rows = build_counting(&left, &right, &mut cache, &comparisons);
+        assert_eq!(
+            comparisons.get(),
+            4,
+            "the same trees are not compared again"
+        );
+        assert_eq!(kind_at(&rows, "b.txt"), "Different");
+
+        right = load_view(right_dir.path());
+        let rows = build_counting(&left, &right, &mut cache, &comparisons);
+        assert_eq!(comparisons.get(), 8);
+        assert_eq!(kind_at(&rows, "b.txt"), "Same");
+
+        fs::write(left_dir.path().join("b.txt"), "changed b").unwrap();
+        left = load_view(left_dir.path());
+        let rows = build_counting(&left, &right, &mut cache, &comparisons);
+        assert_eq!(comparisons.get(), 12);
+        assert_eq!(kind_at(&rows, "b.txt"), "Different");
     }
 
     #[test]
