@@ -5,11 +5,13 @@ use std::sync::Arc;
 use eframe::egui;
 use serde::Deserialize;
 use serde::Serialize;
+use zcommon::hash::HashRepresentation;
 use zcommon::hash::HashService;
 use zcommon::ui_egui::common::show_custom_popup;
 use zcommon::ui_egui::common::show_custom_popup_with_color;
 use zhashdiff::conflict::ResolveConflictsInput;
 use zhashdiff::conflict::execute_resolution;
+use zhashdiff::conflict::group_duplicates;
 use zhashdiff::fs::FileSystemModel;
 
 use crate::ui_egui::fs_tree::FileSystemView;
@@ -21,6 +23,43 @@ use zcommon::ui_egui::common::hash_to_color;
 use zcommon::ui_egui::common::ui_custom_checkbox;
 
 const MAX_CONCURRENT_HASHES: usize = 16;
+
+struct CheckedFileHashes {
+    hashed: Vec<(PathBuf, HashRepresentation)>,
+    unhashed: usize,
+}
+
+/// Checked files of `view` paired with their hash; checked files without a hash yet
+/// are only counted.
+fn checked_file_hashes(
+    view: &FileSystemView,
+    hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
+) -> CheckedFileHashes {
+    let mut checked = CheckedFileHashes {
+        hashed: Vec::new(),
+        unhashed: 0,
+    };
+
+    for node_id in view.file_system.iter_files() {
+        if !view.selected.get(&node_id).copied().unwrap_or(false) {
+            continue;
+        }
+        let path = view
+            .file_system
+            .get_node(node_id)
+            .expect("iter_files yields valid node ids")
+            .as_path()
+            .as_ref()
+            .to_path_buf();
+        match hashes.get(&path) {
+            Some(Some(hash)) => checked.hashed.push((path, hash.clone())),
+            _ => checked.unhashed += 1,
+        }
+    }
+
+    checked
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct DuplicateFilesPane {
     pub title: Option<String>,
@@ -56,6 +95,44 @@ impl DuplicateFilesPane {
             open_diff_popup: false,
             open_dir_window: false,
         }
+    }
+
+    /// Diff button: groups the checked, already hashed files by hash and opens the
+    /// conflicts window. Returns the notice logged about checked files that were left
+    /// out because they are not hashed yet.
+    fn diff_checked_files(
+        &mut self,
+        ctx: &mut DuplicateFilesPaneCtx,
+        hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
+    ) -> Option<String> {
+        let view = ctx.path_diff_view.file_system_1_view.as_ref()?;
+        let checked = checked_file_hashes(view, hashes);
+
+        let notice = (checked.unhashed > 0).then(|| {
+            format!(
+                "Diff left out {} checked files that are not hashed yet",
+                checked.unhashed
+            )
+        });
+        if let Some(notice) = &notice {
+            log::warn!("{notice}");
+        }
+
+        let groups = group_duplicates(checked.hashed);
+        log::info!("Diff found {} duplicate groups", groups.len());
+        *ctx.conflict_map = groups.into_iter().collect();
+
+        // Keepers from an earlier Diff survive only if they still belong to their group.
+        let conflict_map = &*ctx.conflict_map;
+        ctx.conflict_map_resolved.retain(|hash, keeper| {
+            conflict_map
+                .get(hash)
+                .is_some_and(|paths| paths.contains(keeper))
+        });
+        *ctx.active_conflict_hash = None;
+        self.open_diff_popup = true;
+
+        notice
     }
 
     pub fn ui(
@@ -138,12 +215,8 @@ impl DuplicateFilesPane {
 
         if show_diff_button {
             if ui.button("Diff").clicked() {
-                log::info!("Selected files for diff");
-                todo!();
-                // let snapshot = ctx.hash_service.snapshot();
-                // *ctx.conflict_map = find_conflicts(&snapshot.hashes, &ctx.path_diff_view.selected);
-                // *ctx.diff_action_pressed = true;
-                // self.open_diff_popup = true;
+                let snapshot = ctx.hash_service.snapshot();
+                self.diff_checked_files(ctx, &snapshot.hashes);
             }
         }
 
@@ -184,7 +257,10 @@ impl DuplicateFilesPane {
             conflicts.sort_by(|a, b| a.0.cmp(&b.0));
 
             let total_conflicts = conflicts.len();
-            let resolved_count = ctx.conflict_map_resolved.len();
+            let resolved_count = conflicts
+                .iter()
+                .filter(|(_, _, is_resolved)| *is_resolved)
+                .count();
 
             show_custom_popup(
                 ui.ctx(),
@@ -193,10 +269,7 @@ impl DuplicateFilesPane {
                 true,
                 |ui| {
                     ui.vertical(|ui| {
-                        ui.label(format!(
-                            "Conflicts: ({}/{})",
-                            resolved_count, total_conflicts
-                        ));
+                        ui.label(format!("Resolved: {}/{}", resolved_count, total_conflicts));
                         ui.separator();
 
                         let row_height = 24.0;
@@ -398,5 +471,187 @@ impl DuplicateFilesPane {
                 *ctx.active_conflict_hash = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui_egui::fs_tree::VisibleRowTwoFolderDiff;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::{TempDir, tempdir};
+    use zcommon::hash::hash_file_mmap;
+
+    /// Owns everything a `DuplicateFilesPaneCtx` borrows.
+    struct PaneState {
+        hash_service: HashService,
+        root_1: Option<PathBuf>,
+        root_2: Option<PathBuf>,
+        view_1: Option<FileSystemView>,
+        view_2: Option<FileSystemView>,
+        visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
+        active_conflict_hash: Option<String>,
+        conflict_map: HashMap<String, Vec<PathBuf>>,
+        conflict_map_resolved: HashMap<String, PathBuf>,
+        diff_action_pressed: bool,
+    }
+
+    impl PaneState {
+        fn new(view: FileSystemView) -> Self {
+            Self {
+                hash_service: HashService::new(0),
+                root_1: None,
+                root_2: None,
+                view_1: Some(view),
+                view_2: None,
+                visible_rows: None,
+                active_conflict_hash: None,
+                conflict_map: HashMap::new(),
+                conflict_map_resolved: HashMap::new(),
+                diff_action_pressed: false,
+            }
+        }
+
+        fn press_diff(
+            &mut self,
+            pane: &mut DuplicateFilesPane,
+            hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
+        ) -> Option<String> {
+            let mut path_diff_view = PathDiffView {
+                file_system_1_root_path: &mut self.root_1,
+                file_system_2_root_path: &mut self.root_2,
+                file_system_1_view: &mut self.view_1,
+                file_system_2_view: &mut self.view_2,
+                visible_rows: &mut self.visible_rows,
+            };
+            let mut ctx = DuplicateFilesPaneCtx {
+                hash_service: &mut self.hash_service,
+                path_diff_view: &mut path_diff_view,
+                active_conflict_hash: &mut self.active_conflict_hash,
+                conflict_map: &mut self.conflict_map,
+                conflict_map_resolved: &mut self.conflict_map_resolved,
+                diff_action_pressed: &mut self.diff_action_pressed,
+            };
+            pane.diff_checked_files(&mut ctx, hashes)
+        }
+    }
+
+    /// a.txt, b.txt, sub/c.txt and e.txt share content, d.txt is unique.
+    /// Everything is checked except e.txt.
+    fn duplicate_tree() -> (TempDir, FileSystemView) {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        for name in ["a.txt", "b.txt", "sub/c.txt", "e.txt"] {
+            fs::write(dir.path().join(name), "same").unwrap();
+        }
+        fs::write(dir.path().join("d.txt"), "other").unwrap();
+
+        let model = FileSystemModel::new(dir.path()).unwrap();
+        let mut view = FileSystemView::new(Arc::new(model));
+        view.recursive_selection(view.file_system.get_root_node_id(), true);
+        let e_id = view
+            .file_system
+            .find_path(dir.path().join("e.txt"))
+            .unwrap();
+        view.selected.insert(e_id, false);
+        (dir, view)
+    }
+
+    fn hashes_of(paths: &[&Path]) -> HashMap<PathBuf, Option<HashRepresentation>> {
+        paths
+            .iter()
+            .map(|p| (p.to_path_buf(), Some(hash_file_mmap(p).unwrap())))
+            .collect()
+    }
+
+    fn same_hash(dir: &Path) -> String {
+        hash_file_mmap(dir.join("a.txt")).unwrap()
+    }
+
+    #[test]
+    fn diff_opens_conflicts_window_with_groups_of_checked_hashed_files() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let hashes = hashes_of(&[
+            &root.join("a.txt"),
+            &root.join("b.txt"),
+            &root.join("sub").join("c.txt"),
+            &root.join("d.txt"),
+            &root.join("e.txt"),
+        ]);
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+
+        let notice = state.press_diff(&mut pane, &hashes);
+
+        assert_eq!(notice, None);
+        assert!(pane.open_diff_popup);
+        assert_eq!(
+            state.conflict_map,
+            HashMap::from([(
+                same_hash(root),
+                vec![
+                    root.join("a.txt"),
+                    root.join("b.txt"),
+                    root.join("sub").join("c.txt")
+                ],
+            )])
+        );
+    }
+
+    #[test]
+    fn diff_reports_checked_files_that_are_not_hashed() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        // sub/c.txt is queued but not hashed, d.txt was never requested, e.txt is unchecked.
+        let mut hashes = hashes_of(&[&root.join("a.txt"), &root.join("b.txt")]);
+        hashes.insert(root.join("sub").join("c.txt"), None);
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+
+        let notice = state
+            .press_diff(&mut pane, &hashes)
+            .expect("unhashed checked files are reported");
+
+        assert!(
+            notice.contains(" 2 "),
+            "notice doesn't name the count: {notice}"
+        );
+        assert!(pane.open_diff_popup);
+        assert_eq!(
+            state.conflict_map,
+            HashMap::from([(
+                same_hash(root),
+                vec![root.join("a.txt"), root.join("b.txt")]
+            )])
+        );
+    }
+
+    #[test]
+    fn diff_again_keeps_valid_keepers_only() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let hashes = hashes_of(&[&root.join("a.txt"), &root.join("b.txt")]);
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+        state.press_diff(&mut pane, &hashes);
+
+        let hash = same_hash(root);
+        state
+            .conflict_map_resolved
+            .insert(hash.clone(), root.join("b.txt"));
+        state
+            .conflict_map_resolved
+            .insert("gone".to_string(), PathBuf::new());
+        state.active_conflict_hash = Some("gone".to_string());
+
+        state.press_diff(&mut pane, &hashes);
+
+        assert_eq!(
+            state.conflict_map_resolved,
+            HashMap::from([(hash, root.join("b.txt"))])
+        );
+        assert_eq!(state.active_conflict_hash, None);
     }
 }
