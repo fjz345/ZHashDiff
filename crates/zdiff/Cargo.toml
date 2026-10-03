@@ -6,6 +6,10 @@ edition = "2024"
 [lib]
 name = "zdiff"
 
+[[bench]]
+name = "pipeline"
+harness = false
+
 [features]
 default = []
 pretty-backtrace = ["dep:color-backtrace"]
