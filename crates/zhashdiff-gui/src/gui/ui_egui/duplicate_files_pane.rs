@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt::Display;
+use std::io;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use eframe::egui;
 use serde::Deserialize;
@@ -10,9 +13,13 @@ use zcommon::hash::HashRepresentation;
 use zcommon::hash::HashService;
 use zcommon::ui_egui::common::show_custom_popup;
 use zcommon::ui_egui::common::show_custom_popup_with_color;
-use zhashdiff::conflict::ResolveConflictsInput;
+use zhashdiff::conflict::ResolutionSummary;
 use zhashdiff::conflict::execute_resolution;
 use zhashdiff::conflict::group_duplicates;
+use zhashdiff::conflict::plan_resolution;
+use zhashdiff::conflict::recycle;
+use zhashdiff::fs::FileSystemModel;
+use zhashdiff::fs::FsNodeId;
 
 use crate::ui_egui::fs_tree::FileSystemView;
 use crate::ui_egui::fs_tree::PENDING_DELETION_COLOR;
@@ -74,17 +81,49 @@ fn keeper_of<'a>(
     keepers.get(hash).filter(|keeper| paths.contains(keeper))
 }
 
-/// Files a resolve would delete: every non-keeper of each group that has a keeper.
+/// Files a resolve would delete. Taken from the resolve's own plan so the marks can't
+/// drift from what is removed.
 fn pending_deletions(
     conflict_map: &HashMap<String, Vec<PathBuf>>,
     keepers: &HashMap<String, PathBuf>,
 ) -> HashSet<PathBuf> {
-    conflict_map
-        .iter()
-        .filter_map(|(hash, paths)| Some((paths, keeper_of(paths, keepers, hash)?)))
-        .flat_map(|(paths, keeper)| paths.iter().filter(move |path| *path != keeper))
-        .cloned()
+    plan_resolution(conflict_map, keepers)
+        .deletions
+        .into_iter()
         .collect()
+}
+
+/// A fresh scan of the view's folder that keeps the checked and collapsed state of
+/// every path still present.
+fn rescan(view: &FileSystemView) -> io::Result<FileSystemView> {
+    let node_path = |model: &FileSystemModel, id: FsNodeId| {
+        model
+            .get_node(id)
+            .expect("iter_nodes yields valid node ids")
+            .as_path()
+            .as_ref()
+            .to_path_buf()
+    };
+    let old_model = &view.file_system;
+    let old_ids: HashMap<PathBuf, FsNodeId> = old_model
+        .iter_nodes()
+        .map(|id| (node_path(old_model, id), id))
+        .collect();
+
+    let model = FileSystemModel::new(old_model.get_root().as_path())?;
+    let mut rescanned = FileSystemView::new(Arc::new(model));
+    for id in rescanned.file_system.iter_nodes() {
+        let Some(old_id) = old_ids.get(&node_path(&rescanned.file_system, id)) else {
+            continue;
+        };
+        if let Some(&selected) = view.selected.get(old_id) {
+            rescanned.selected.insert(id, selected);
+        }
+        if let Some(&collapsed) = view.collapsed.get(old_id) {
+            rescanned.collapsed.insert(id, collapsed);
+        }
+    }
+    Ok(rescanned)
 }
 
 /// The only way keepers are stored, so a group is either without a keeper or kept by
@@ -129,6 +168,9 @@ pub struct DuplicateFilesPane {
     /// Root of the folder the conflict state was computed for.
     #[serde(skip)]
     conflicts_root: Option<PathBuf>,
+    /// Outcome of the last Resolve, shown until closed.
+    #[serde(skip)]
+    resolution_summary: Option<ResolutionSummary>,
 }
 
 impl ZAppPane for DuplicateFilesPane {
@@ -156,6 +198,7 @@ impl DuplicateFilesPane {
             open_diff_popup: false,
             open_dir_window: false,
             conflicts_root: None,
+            resolution_summary: None,
         }
     }
 
@@ -196,6 +239,38 @@ impl DuplicateFilesPane {
         self.open_diff_popup = true;
 
         notice
+    }
+
+    /// Resolve All Selected: removes every non-keeper of the groups with a keeper through
+    /// `delete`, then forgets the conflicts and rescans the folder.
+    fn resolve_selected<E: Display>(
+        &mut self,
+        ctx: &mut DuplicateFilesPaneCtx,
+        delete: impl FnMut(&Path) -> Result<(), E>,
+    ) {
+        let plan = plan_resolution(ctx.conflict_map, ctx.conflict_map_resolved);
+        let summary = execute_resolution(&plan, delete);
+
+        for path in &summary.removed {
+            ctx.hash_service.remove(path);
+        }
+        ctx.conflict_map.clear();
+        ctx.conflict_map_resolved.clear();
+        *ctx.active_conflict_hash = None;
+        self.open_diff_popup = false;
+
+        if let Some(view) = ctx.path_diff_view.file_system_1_view.as_mut() {
+            match rescan(view) {
+                Ok(rescanned) => {
+                    *view = rescanned;
+                    // The two-folder rows hold node ids of the old tree.
+                    *ctx.path_diff_view.visible_rows = None;
+                }
+                Err(e) => log::error!("Failed to rescan the folder after resolving: {e}"),
+            }
+        }
+
+        self.resolution_summary = Some(summary);
     }
 
     /// Any click on a conflicts table row opens its detail window. Keepers are only
@@ -461,22 +536,6 @@ impl DuplicateFilesPane {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     if ui.button("Resolve All Selected").clicked() {
-                                        let resolution_input = ResolveConflictsInput {
-                                            conflict_map: ctx.conflict_map.clone(),
-                                            conflict_map_resolved: ctx
-                                                .conflict_map_resolved
-                                                .clone(),
-                                        };
-
-                                        let removed_files =
-                                            execute_resolution(&resolution_input).removed_files;
-                                        for path in removed_files {
-                                            ctx.hash_service.remove(&path);
-                                        }
-
-                                        ctx.conflict_map.clear();
-                                        ctx.conflict_map_resolved.clear();
-                                        *ctx.active_conflict_hash = None;
                                         did_resolve = true;
                                     }
                                 },
@@ -490,10 +549,49 @@ impl DuplicateFilesPane {
                 self.click_conflict_row(ctx, hash);
             }
 
-            self.open_diff_popup = temp_show_diff_popup && !did_resolve;
+            self.open_diff_popup = temp_show_diff_popup;
+            if did_resolve {
+                self.resolve_selected(ctx, recycle);
+            }
         }
 
         self.ui_conflict_details(ui, ctx);
+        self.ui_resolution_summary(ui);
+    }
+
+    fn ui_resolution_summary(&mut self, ui: &mut egui::Ui) {
+        let Some(summary) = &self.resolution_summary else {
+            return;
+        };
+        let mut is_open = true;
+        let mut close_clicked = false;
+        show_custom_popup(ui.ctx(), &mut is_open, "Resolve Summary", true, |ui| {
+            ui.label(format!(
+                "Recycled {} files, {} failed",
+                summary.removed.len(),
+                summary.failed.len()
+            ));
+            if !summary.failed.is_empty() {
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        for (path, error) in &summary.failed {
+                            ui.label(
+                                egui::RichText::new(format!("{}: {error}", path.display()))
+                                    .color(ui.visuals().error_fg_color),
+                            );
+                        }
+                    });
+            }
+            ui.separator();
+            if ui.button("Close").clicked() {
+                close_clicked = true;
+            }
+        });
+        if !is_open || close_clicked {
+            self.resolution_summary = None;
+        }
     }
 
     fn ui_conflict_details(&mut self, ui: &mut egui::Ui, ctx: &mut DuplicateFilesPaneCtx) {
@@ -571,6 +669,7 @@ mod tests {
     use super::*;
     use crate::ui_egui::fs_tree::VisibleRowTwoFolderDiff;
     use std::fs;
+    use std::io;
     use std::path::Path;
     use std::sync::Arc;
     use tempfile::{TempDir, tempdir};
@@ -914,5 +1013,109 @@ mod tests {
         assert!(state.conflict_map_resolved.is_empty());
         assert_eq!(state.active_conflict_hash, None);
         assert!(pending_deletions(&state.conflict_map, &state.conflict_map_resolved).is_empty());
+    }
+
+    /// Removes files for real, except `failing`, whose removal fails and leaves it in place.
+    fn remove_except(failing: &Path) -> impl FnMut(&Path) -> io::Result<()> + '_ {
+        move |path| {
+            if path == failing {
+                Err(io::Error::other("file is in use"))
+            } else {
+                fs::remove_file(path)
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_removes_non_keepers_and_a_later_diff_no_longer_sees_them() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let a = root.join("a.txt");
+        let b = root.join("b.txt");
+        let c = root.join("sub").join("c.txt");
+        let hashes = hashes_of(&[&a, &b, &c, &root.join("d.txt")]);
+        let mut state = PaneState::new(view);
+        for path in [&a, &b, &c] {
+            state.hash_service.request(path);
+        }
+        let mut pane = DuplicateFilesPane::new(None);
+        state.press_diff(&mut pane, &hashes);
+        let hash = same_hash(root);
+        set_keeper(
+            &state.conflict_map,
+            &mut state.conflict_map_resolved,
+            &hash,
+            Some(&a),
+        );
+        state.active_conflict_hash = Some(hash.clone());
+
+        state.with_ctx(|ctx| pane.resolve_selected(ctx, remove_except(&c)));
+
+        let summary = pane
+            .resolution_summary
+            .as_ref()
+            .expect("resolve leaves a summary to show");
+        assert_eq!(summary.removed, vec![b.clone()]);
+        assert_eq!(
+            summary.failed,
+            vec![(c.clone(), "file is in use".to_string())]
+        );
+        assert!(a.exists());
+        assert!(!b.exists());
+        assert!(c.exists());
+
+        assert!(!pane.open_diff_popup);
+        assert!(state.conflict_map.is_empty());
+        assert!(state.conflict_map_resolved.is_empty());
+        assert_eq!(state.active_conflict_hash, None);
+
+        let known_hashes = state.hash_service.snapshot().hashes;
+        assert!(!known_hashes.contains_key(&b));
+        assert!(known_hashes.contains_key(&a));
+        assert!(
+            known_hashes.contains_key(&c),
+            "a failed file keeps its hash"
+        );
+
+        let view = state.view_1.as_ref().unwrap();
+        assert_eq!(view.file_system.find_path(&b), None);
+        assert!(view.file_system.find_path(&c).is_some());
+
+        // b's stale hash is still passed in: only the tree decides what is diffed.
+        state.press_diff(&mut pane, &hashes);
+        assert_eq!(state.conflict_map, HashMap::from([(hash, vec![a, c])]));
+    }
+
+    #[test]
+    fn resolve_keeps_the_checked_and_collapsed_state_of_the_rescanned_tree() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let a = root.join("a.txt");
+        let hashes = hashes_of(&[&a, &root.join("b.txt")]);
+        let mut state = PaneState::new(view);
+        let view = state.view_1.as_mut().unwrap();
+        let sub_id = view.file_system.find_path(root.join("sub")).unwrap();
+        view.collapsed.insert(sub_id, true);
+        // Rows of the two-folder diff hold node ids of the old tree.
+        state.visible_rows = Some(Vec::new());
+        let mut pane = DuplicateFilesPane::new(None);
+        state.press_diff(&mut pane, &hashes);
+        set_keeper(
+            &state.conflict_map,
+            &mut state.conflict_map_resolved,
+            &same_hash(root),
+            Some(&a),
+        );
+
+        state.with_ctx(|ctx| pane.resolve_selected(ctx, remove_except(Path::new(""))));
+
+        assert!(state.visible_rows.is_none());
+        let view = state.view_1.as_ref().unwrap();
+        let id_of = |path: PathBuf| view.file_system.find_path(path).unwrap();
+        assert_eq!(view.file_system.find_path(root.join("b.txt")), None);
+        assert!(view.is_collapsed(id_of(root.join("sub"))));
+        assert_eq!(view.selected.get(&id_of(a.clone())), Some(&true));
+        assert_eq!(view.selected.get(&id_of(root.join("d.txt"))), Some(&true));
+        assert_eq!(view.selected.get(&id_of(root.join("e.txt"))), Some(&false));
     }
 }

@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    path::PathBuf,
+    fmt::Display,
+    path::{Path, PathBuf},
 };
 
 /// Groups files by content hash. Only groups of two or more files are returned,
@@ -24,63 +25,90 @@ pub fn group_duplicates(
         .collect()
 }
 
-pub struct ResolveConflictsInput {
-    pub conflict_map: HashMap<String, Vec<PathBuf>>,
-    pub conflict_map_resolved: HashMap<String, PathBuf>,
+/// What a resolve removes.
+#[derive(Debug, Default, PartialEq)]
+pub struct ResolutionPlan {
+    /// Every non-keeper of each group whose keeper is one of its files, ordered by
+    /// group hash, then by the group's order.
+    pub deletions: Vec<PathBuf>,
+    /// Groups whose keeper is not one of their files. Nothing of them is planned.
+    pub rejected: Vec<String>,
 }
 
-pub struct ResolveConflictsOutput {
-    pub removed_files: Vec<PathBuf>,
+/// Groups without a keeper are left out.
+pub fn plan_resolution(
+    conflict_map: &HashMap<String, Vec<PathBuf>>,
+    keepers: &HashMap<String, PathBuf>,
+) -> ResolutionPlan {
+    let mut hashes: Vec<&String> = conflict_map.keys().collect();
+    hashes.sort();
+
+    let mut plan = ResolutionPlan::default();
+    for hash in hashes {
+        let Some(keeper) = keepers.get(hash) else {
+            continue;
+        };
+        let paths = &conflict_map[hash];
+        // A keeper outside the group would otherwise remove every copy.
+        if !paths.contains(keeper) {
+            plan.rejected.push(hash.clone());
+            continue;
+        }
+        plan.deletions
+            .extend(paths.iter().filter(|path| *path != keeper).cloned());
+    }
+    plan
 }
 
-pub fn execute_resolution(input: &ResolveConflictsInput) -> ResolveConflictsOutput {
-    let mut output = ResolveConflictsOutput {
-        removed_files: Vec::new(),
-    };
+#[derive(Debug, Default, PartialEq)]
+pub struct ResolutionSummary {
+    pub removed: Vec<PathBuf>,
+    /// Files `delete` failed on, with its error. They are left in place.
+    pub failed: Vec<(PathBuf, String)>,
+}
 
-    log::info!("Starting file resolution process...");
+/// Removes the planned files through `delete`, which is `recycle` outside of tests.
+pub fn execute_resolution<E: Display>(
+    plan: &ResolutionPlan,
+    mut delete: impl FnMut(&Path) -> Result<(), E>,
+) -> ResolutionSummary {
+    for hash in &plan.rejected {
+        log::error!("Skipping conflict {hash}: its keeper is not one of its files");
+    }
 
-    let conflicts = &input.conflict_map;
-    let resolutions = &input.conflict_map_resolved;
-
-    for (hash, paths) in conflicts {
-        if let Some(path_to_keep) = resolutions.get(hash) {
-            // A keeper outside the group (e.g. the table's empty-path placeholder) would
-            // otherwise delete every copy.
-            if !paths.contains(path_to_keep) {
-                log::error!(
-                    "Skipping conflict {hash}: keeper {path_to_keep:?} is not one of its files"
-                );
-                continue;
+    let mut summary = ResolutionSummary::default();
+    for path in &plan.deletions {
+        match delete(path) {
+            Ok(()) => {
+                log::info!("Removed duplicate {path:?}");
+                summary.removed.push(path.clone());
             }
-            for path in paths {
-                if path != path_to_keep {
-                    match std::fs::remove_file(&path) {
-                        Ok(_) => {
-                            log::info!("Deleted duplicate: {:?}", path);
-                            output.removed_files.push(path.clone());
-                        }
-                        Err(e) => {
-                            log::error!("Failed to delete {:?}: {}", path, e);
-                        }
-                    }
-                }
+            Err(e) => {
+                log::error!("Failed to remove {path:?}: {e}");
+                summary.failed.push((path.clone(), e.to_string()));
             }
         }
     }
 
     log::info!(
-        "Resolution complete. Removed {} files.",
-        output.removed_files.len()
+        "Resolution complete: {} removed, {} failed",
+        summary.removed.len(),
+        summary.failed.len()
     );
-    output
+    summary
+}
+
+/// Moves `path` to the Recycle Bin.
+pub fn recycle(path: &Path) -> Result<(), trash::Error> {
+    trash::delete(path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-    use tempfile::tempdir;
+    use std::io;
+    use tempfile::{TempDir, tempdir};
 
     fn pair(path: &str, hash: &str) -> (PathBuf, String) {
         (PathBuf::from(path), hash.to_string())
@@ -161,44 +189,151 @@ mod tests {
         }
     }
 
-    #[test]
-    fn execute_resolution_skips_group_whose_keeper_is_not_a_member() {
-        let dir = tempdir().unwrap();
-        let a = dir.path().join("a.txt");
-        let b = dir.path().join("b.txt");
-        fs::write(&a, "same").unwrap();
-        fs::write(&b, "same").unwrap();
+    fn conflict_map(groups: &[(&str, &[&str])]) -> HashMap<String, Vec<PathBuf>> {
+        groups
+            .iter()
+            .map(|(hash, paths)| (hash.to_string(), paths.iter().map(PathBuf::from).collect()))
+            .collect()
+    }
 
-        let input = ResolveConflictsInput {
-            conflict_map: HashMap::from([("h".to_string(), vec![a.clone(), b.clone()])]),
-            // The conflicts table toggle stores an empty path as a "resolved" placeholder.
-            conflict_map_resolved: HashMap::from([("h".to_string(), PathBuf::new())]),
-        };
+    fn keepers(keepers: &[(&str, &str)]) -> HashMap<String, PathBuf> {
+        keepers
+            .iter()
+            .map(|(hash, path)| (hash.to_string(), PathBuf::from(path)))
+            .collect()
+    }
 
-        let output = execute_resolution(&input);
-
-        assert!(output.removed_files.is_empty());
-        assert!(a.exists());
-        assert!(b.exists());
+    fn paths(paths: &[&str]) -> Vec<PathBuf> {
+        paths.iter().map(PathBuf::from).collect()
     }
 
     #[test]
-    fn execute_resolution_deletes_non_keepers_only() {
+    fn plan_never_includes_the_keeper() {
+        let groups = conflict_map(&[("h", &["a", "b", "c"])]);
+
+        for keeper in ["a", "b", "c"] {
+            let plan = plan_resolution(&groups, &keepers(&[("h", keeper)]));
+
+            let others: Vec<&str> = ["a", "b", "c"]
+                .into_iter()
+                .filter(|path| *path != keeper)
+                .collect();
+            assert_eq!(plan.deletions, paths(&others));
+            assert!(plan.rejected.is_empty());
+        }
+    }
+
+    #[test]
+    fn plan_leaves_groups_without_a_keeper_untouched() {
+        let groups = conflict_map(&[("h1", &["a", "b"]), ("h2", &["c", "d"])]);
+
+        assert_eq!(
+            plan_resolution(&groups, &HashMap::new()),
+            ResolutionPlan::default()
+        );
+        assert_eq!(
+            plan_resolution(&groups, &keepers(&[("h2", "d")])).deletions,
+            paths(&["c"])
+        );
+        // A keeper for a group that no longer exists plans nothing and rejects nothing.
+        assert_eq!(
+            plan_resolution(&groups, &keepers(&[("gone", "a")])),
+            ResolutionPlan::default()
+        );
+    }
+
+    #[test]
+    fn plan_covers_multiple_groups_in_hash_order() {
+        let groups = conflict_map(&[
+            ("hb", &["x/1", "y/1", "z/1"]),
+            ("hc", &["q", "r"]),
+            ("ha", &["x/2", "y/2"]),
+        ]);
+
+        let plan = plan_resolution(&groups, &keepers(&[("hb", "y/1"), ("ha", "x/2")]));
+
+        assert_eq!(plan.deletions, paths(&["y/2", "x/1", "z/1"]));
+        assert!(plan.rejected.is_empty());
+    }
+
+    #[test]
+    fn plan_rejects_a_keeper_that_is_not_a_member() {
+        let groups = conflict_map(&[
+            ("h1", &["a", "b"]),
+            ("h2", &["c", "d"]),
+            ("h3", &["e", "f"]),
+        ]);
+
+        // An empty path was the old conflicts table placeholder.
+        let plan = plan_resolution(
+            &groups,
+            &keepers(&[("h1", ""), ("h2", "c"), ("h3", "elsewhere")]),
+        );
+
+        assert_eq!(plan.deletions, paths(&["d"]));
+        assert_eq!(plan.rejected, vec!["h1".to_string(), "h3".to_string()]);
+    }
+
+    /// a.txt, b.txt and c.txt in a temp dir, all with the same content.
+    fn same_files() -> (TempDir, PathBuf, PathBuf, PathBuf) {
         let dir = tempdir().unwrap();
-        let a = dir.path().join("a.txt");
-        let b = dir.path().join("b.txt");
-        fs::write(&a, "same").unwrap();
-        fs::write(&b, "same").unwrap();
+        let [a, b, c] = ["a.txt", "b.txt", "c.txt"].map(|name| dir.path().join(name));
+        for path in [&a, &b, &c] {
+            fs::write(path, "same").unwrap();
+        }
+        (dir, a, b, c)
+    }
 
-        let input = ResolveConflictsInput {
-            conflict_map: HashMap::from([("h".to_string(), vec![a.clone(), b.clone()])]),
-            conflict_map_resolved: HashMap::from([("h".to_string(), a.clone())]),
-        };
+    #[test]
+    fn execute_resolution_removes_non_keepers_only() {
+        let (_dir, a, b, c) = same_files();
+        let groups = HashMap::from([("h".to_string(), vec![a.clone(), b.clone(), c.clone()])]);
+        let plan = plan_resolution(&groups, &HashMap::from([("h".to_string(), a.clone())]));
 
-        let output = execute_resolution(&input);
+        let summary = execute_resolution(&plan, |path| fs::remove_file(path));
 
-        assert_eq!(output.removed_files, vec![b.clone()]);
+        assert_eq!(summary.removed, vec![b.clone(), c.clone()]);
+        assert!(summary.failed.is_empty());
         assert!(a.exists());
         assert!(!b.exists());
+        assert!(!c.exists());
+    }
+
+    #[test]
+    fn execute_resolution_of_a_placeholder_keeper_removes_nothing() {
+        let (_dir, a, b, c) = same_files();
+        let groups = HashMap::from([("h".to_string(), vec![a.clone(), b.clone(), c.clone()])]);
+        let plan = plan_resolution(&groups, &HashMap::from([("h".to_string(), PathBuf::new())]));
+
+        let summary = execute_resolution(&plan, |path| fs::remove_file(path));
+
+        assert_eq!(summary, ResolutionSummary::default());
+        assert!(a.exists());
+        assert!(b.exists());
+        assert!(c.exists());
+    }
+
+    #[test]
+    fn execute_resolution_reports_a_failed_removal_and_leaves_the_file() {
+        let (_dir, a, b, c) = same_files();
+        let groups = HashMap::from([("h".to_string(), vec![a.clone(), b.clone(), c.clone()])]);
+        let plan = plan_resolution(&groups, &HashMap::from([("h".to_string(), a.clone())]));
+
+        let summary = execute_resolution(&plan, |path| {
+            if path == b {
+                Err(io::Error::other("file is in use"))
+            } else {
+                fs::remove_file(path)
+            }
+        });
+
+        assert_eq!(summary.removed, vec![c.clone()]);
+        assert_eq!(
+            summary.failed,
+            vec![(b.clone(), "file is in use".to_string())]
+        );
+        assert!(a.exists(), "the keeper is never touched");
+        assert!(b.exists(), "a failed removal leaves the file in place");
+        assert!(!c.exists());
     }
 }

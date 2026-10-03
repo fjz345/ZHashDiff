@@ -24,4 +24,7 @@ log = "0.4.27"
 blake3 = { version = "1.8.2", features = ["rayon", "mmap"] }
 crc32fast = "1.5.0"
 tempfile = "3.25.0"
+# Apartment-threaded COM init: the GUI thread is already an OLE STA (winit drag and
+# drop), where a multithreaded init fails and trash panics.
+trash = { version = "5.2.9", default-features = false, features = ["coinit_apartmentthreaded"] }
 color-backtrace = { version = "0.7.2", optional = true }
