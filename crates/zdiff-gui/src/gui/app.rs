@@ -600,6 +600,7 @@ impl<'a> ZApp {
             let mut conflict_cursor = diff_processor.conflict_cursor.clone();
             let mut pivot: (Option<usize>, Option<usize>) = diff_processor.pivot;
             let mut find_cursor = diff_processor.find_cursor.clone();
+            let mut active_side = diff_processor.active_side;
 
             let diff_ctx = diff_processor.get_minimal_diff_ctx();
             let mut behavior = TreeBehavior {
@@ -637,6 +638,7 @@ impl<'a> ZApp {
                     conflict_cursor: &mut conflict_cursor,
                     pivot: &mut pivot,
                     find_cursor: &mut find_cursor,
+                    active_side: &mut active_side,
                     diff_loading: diff_processor.is_in_progress(),
                     code_language,
                     revert_request: &mut None,
@@ -661,6 +663,7 @@ impl<'a> ZApp {
 
             // TODO: Remove clones
             let clone_find = behavior.ctx_file_diff.find_cursor.clone();
+            let clone_active_side = *behavior.ctx_file_diff.active_side;
             let clone_conflict = behavior.ctx_file_diff.conflict_cursor.clone();
             let clone_pivot = behavior.ctx_file_diff.pivot.clone();
 
@@ -730,6 +733,7 @@ impl<'a> ZApp {
             drop(behavior);
             diff_processor.pivot = clone_pivot;
             diff_processor.find_cursor = clone_find;
+            diff_processor.active_side = clone_active_side;
             diff_processor.conflict_cursor = clone_conflict;
 
             for (_tile_id, tile) in self.tree.tiles.iter() {

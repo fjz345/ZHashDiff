@@ -48,6 +48,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub active_highlights: &'a Vec<usize>,
     pub conflict_cursor: &'a mut ClampedCursor,
     pub find_cursor: &'a mut ClampedCursor,
+    pub active_side: &'a mut ActiveSide,
     pub load_file_1_request: &'a mut Option<UniversalPath>,
     pub load_file_2_request: &'a mut Option<UniversalPath>,
     pub set_file_1_root_request: &'a mut Option<UniversalPath>,
@@ -256,6 +257,7 @@ impl FileDiffPane {
         let active_side =
             self.active_side
                 .begin_frame(press_pos, source_path.is_some(), target_path.is_some());
+        *ctx.active_side = active_side;
 
         let mut waiting_for_diff = false;
         let mut do_not_render_diff = match (&diff_rows, source_path, target_path) {

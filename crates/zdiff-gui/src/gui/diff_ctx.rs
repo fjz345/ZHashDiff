@@ -16,7 +16,7 @@ use zdiff::{
     },
 };
 
-use crate::clamped_cursor::ClampedCursor;
+use crate::{clamped_cursor::ClampedCursor, ui_egui::active_side::ActiveSide};
 
 #[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -585,9 +585,9 @@ pub struct DiffProcessor {
     pub find_cursor: ClampedCursor,
     pub find_ctx: FindCtx,
     goto_line_number: Option<usize>,
+    pub active_side: ActiveSide,
 
     last_conflict_scroll_to_row: Option<ScrollSpan>,
-    last_goto_scroll_to_row: Option<ScrollSpan>,
     last_find_scroll_to_row: Option<ScrollSpan>,
 }
 
@@ -603,8 +603,8 @@ impl Default for DiffProcessor {
             find_cursor: ClampedCursor::default(),
             find_ctx: FindCtx::default(),
             goto_line_number: None,
+            active_side: ActiveSide::default(),
             last_conflict_scroll_to_row: None,
-            last_goto_scroll_to_row: None,
             last_find_scroll_to_row: None,
         }
     }
@@ -622,7 +622,6 @@ impl DiffProcessor {
         self.pivot = (None, None);
         self.active_highlights.clear();
         self.last_conflict_scroll_to_row = None;
-        self.last_goto_scroll_to_row = None;
         self.last_find_scroll_to_row = None;
     }
 
@@ -700,13 +699,7 @@ impl DiffProcessor {
             &mut self.last_conflict_scroll_to_row,
         );
 
-        let goto = check_update(
-            self.goto_line_number.map(|f| ScrollSpan {
-                start: f.saturating_sub(1),
-                maybe_end: None,
-            }),
-            &mut self.last_goto_scroll_to_row,
-        );
+        let goto = self.goto_scroll_to_row();
 
         let find = check_update(self.find_scroll_to_row(), &mut self.last_find_scroll_to_row);
 
@@ -722,6 +715,23 @@ impl DiffProcessor {
         }
 
         scroll_to_row
+    }
+
+    /// One-shot: the request is kept until the diff is ready, then consumed, so going to the
+    /// same line again scrolls again.
+    fn goto_scroll_to_row(&mut self) -> Option<ScrollSpan> {
+        let line = self.goto_line_number?;
+        let side = self.active_side;
+        let diff_ctx = self.get_minimal_diff_ctx()?;
+        self.goto_line_number = None;
+        let line_to_row = match side {
+            ActiveSide::Left => &diff_ctx.precomputed_file_rows.0,
+            ActiveSide::Right => &diff_ctx.precomputed_file_rows.1,
+        };
+        row_for_line(line, line_to_row).map(|start| ScrollSpan {
+            start,
+            maybe_end: None,
+        })
     }
 
     pub fn conflict_scroll_to_row(&mut self) -> Option<ScrollSpan> {
@@ -766,6 +776,13 @@ impl DiffProcessor {
         }
         self.ctx.request_minimal_diff_ctx(self.cancel_flag.clone())
     }
+}
+
+/// Diff row of the 1-based file `line`, given each file line's row. Line 0 counts as the first
+/// line and a line past the end as the last. `None` for an empty file.
+fn row_for_line(line: usize, line_to_row: &[usize]) -> Option<usize> {
+    let last = line_to_row.len().checked_sub(1)?;
+    line_to_row.get(line.saturating_sub(1).min(last)).copied()
 }
 
 fn precompute_diff_spans(diff_rows: &[DiffRow]) -> PrecomputedDiffs {
@@ -1068,4 +1085,39 @@ fn finalize_diff_rows(
     }
 
     Some((diff_rows, precomputed_diffs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Row of each line, 0-based. A ghost/void row sits at row 1, another at row 4.
+    const LINE_TO_ROW: [usize; 4] = [0, 2, 3, 5];
+
+    #[test]
+    fn goto_line_one_is_the_first_line() {
+        assert_eq!(row_for_line(1, &LINE_TO_ROW), Some(0));
+    }
+
+    #[test]
+    fn goto_line_after_ghost_rows_lands_on_that_lines_row() {
+        assert_eq!(row_for_line(2, &LINE_TO_ROW), Some(2));
+        assert_eq!(row_for_line(4, &LINE_TO_ROW), Some(5));
+    }
+
+    #[test]
+    fn goto_past_the_last_line_clamps_to_it() {
+        assert_eq!(row_for_line(5, &LINE_TO_ROW), Some(5));
+        assert_eq!(row_for_line(usize::MAX, &LINE_TO_ROW), Some(5));
+    }
+
+    #[test]
+    fn goto_line_zero_is_the_first_line() {
+        assert_eq!(row_for_line(0, &LINE_TO_ROW), Some(0));
+    }
+
+    #[test]
+    fn goto_in_an_empty_file_has_no_row() {
+        assert_eq!(row_for_line(1, &[]), None);
+    }
 }
