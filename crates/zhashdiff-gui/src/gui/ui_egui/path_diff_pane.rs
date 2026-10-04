@@ -19,6 +19,9 @@ pub struct PathDiffPaneCtx<'a, 'b> {
     // User Interaction State
     pub diff_tool_config: &'a DiffToolConfig,
     pub path_filter: &'a mut PathFilter,
+    /// A widget had keyboard focus when the frame started, so the tree's keys are not
+    /// for the cursor.
+    pub keyboard_taken: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -147,6 +150,7 @@ impl PathDiffPane {
                     &mut self.open_dir_window_2,
                     &ctx.diff_tool_config,
                     &mut self.cursor,
+                    ctx.keyboard_taken,
                 );
             });
 

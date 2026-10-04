@@ -283,6 +283,9 @@ impl ZApp {
     }
 
     fn ui(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame, app_ctx: &mut AppStateCtx) {
+        // Read before any widget runs: a single-line TextEdit gives up focus on Enter without
+        // consuming the key, so a later check would hand that Enter to the tree cursor.
+        let keyboard_taken = ctx.wants_keyboard_input();
         egui::CentralPanel::default().show(ctx, |ui| {
             self.show_menu(ui, app_ctx);
 
@@ -309,6 +312,7 @@ impl ZApp {
                     diff_tool_config: &app_ctx.diff_config,
                     path_filter: &mut app_ctx.path_filter,
                     path_diff_view: &mut path_diff_view,
+                    keyboard_taken,
                 };
 
                 self.tree.ui(&mut behavior, ui);

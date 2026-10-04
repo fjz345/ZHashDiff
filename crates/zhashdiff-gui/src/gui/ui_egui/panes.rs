@@ -36,6 +36,7 @@ pub struct TreeBehavior<'a, 'b> {
     pub diff_action_pressed: &'a mut bool,
     pub diff_tool_config: &'a DiffToolConfig,
     pub path_filter: &'a mut PathFilter,
+    pub keyboard_taken: bool,
 }
 
 impl<'a, 'b> TreeBehavior<'a, 'b> {
@@ -44,6 +45,7 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
             diff_tool_config: self.diff_tool_config,
             path_filter: self.path_filter,
             path_diff_view: self.path_diff_view,
+            keyboard_taken: self.keyboard_taken,
         }
     }
 

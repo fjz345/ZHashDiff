@@ -478,6 +478,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     open_dir_window_2: &mut bool,
     diff_tool_config: &DiffToolConfig,
     cursor: &mut TreeCursor,
+    keyboard_taken: bool,
 ) -> egui::response::Response {
     if file_system_1_view.is_none() && file_system_2_view.is_none() {
         return ui
@@ -508,7 +509,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
 
     // Scroll only when the keys moved the cursor, so manual scrolling isn't fought.
     let mut scroll_to_cursor = false;
-    if !ui.ctx().wants_keyboard_input() {
+    if !keyboard_taken {
         for key in ui.input(cursor_keys) {
             // Each key sees the rows the previous key's fold left.
             let cursor_rows = two_folder_cursor_rows(
@@ -1110,8 +1111,9 @@ fn apply_cursor_request(
     }
 }
 
-/// The arrows and Enter without modifiers, in press order, key repeats included. Modified
-/// arrows are left to other bindings.
+/// The arrows and Enter without modifiers, in press order. Arrow repeats are kept, Enter
+/// repeats are dropped: a held Enter would open the diff tool or flip a folder per repeat.
+/// Modified arrows are left to other bindings.
 fn cursor_keys(input: &egui::InputState) -> Vec<egui::Key> {
     if !input.modifiers.is_none() {
         return Vec::new();
@@ -1125,11 +1127,16 @@ fn cursor_keys(input: &egui::InputState) -> Vec<egui::Key> {
                     key @ (egui::Key::ArrowDown
                     | egui::Key::ArrowUp
                     | egui::Key::ArrowLeft
-                    | egui::Key::ArrowRight
-                    | egui::Key::Enter),
+                    | egui::Key::ArrowRight),
                 pressed: true,
                 ..
             } => Some(*key),
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                pressed: true,
+                repeat: false,
+                ..
+            } => Some(egui::Key::Enter),
             _ => None,
         })
         .collect()
@@ -1313,7 +1320,7 @@ fn get_folder_selection_state(
 mod tests {
     use crate::ui_egui::fs_tree::{
         DiffState, FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff, apply_cursor_request,
-        two_folder_cursor_rows,
+        cursor_keys, two_folder_cursor_rows,
     };
     use crate::ui_egui::tree_cursor::CursorRequest;
     use zhashdiff::external_diff_tool::DiffToolConfig;
@@ -1854,6 +1861,39 @@ mod tests {
         let collapse = CursorRequest::Collapse("sub".to_string());
         apply_cursor_request(Some(&mut left), Some(&mut right), &rows, &collapse, &config);
         assert!(left.is_collapsed(left_sub) && right.is_collapsed(right_sub));
+    }
+
+    #[test]
+    fn cursor_keys_keep_arrow_repeats_and_press_order_but_drop_enter_repeats() {
+        use eframe::egui::{Event, InputState, Key, Modifiers};
+        let press = |key, repeat| Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        };
+        let mut input = InputState::default();
+        input.events = vec![
+            press(Key::ArrowDown, false),
+            press(Key::ArrowDown, true),
+            press(Key::Enter, false),
+            // Held Enter would open the diff tool once per repeat.
+            press(Key::Enter, true),
+            press(Key::ArrowLeft, false),
+            press(Key::ArrowUp, true),
+        ];
+
+        assert_eq!(
+            cursor_keys(&input),
+            [
+                Key::ArrowDown,
+                Key::ArrowDown,
+                Key::Enter,
+                Key::ArrowLeft,
+                Key::ArrowUp
+            ]
+        );
     }
 
     #[test]
