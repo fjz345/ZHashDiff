@@ -21,6 +21,7 @@ use zcommon::ui_egui::common::{
 };
 
 use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
+use crate::ui_egui::tree_sort::{SortKey, TreeSort};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemView {
@@ -552,6 +553,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     open_dir_window_2: &mut bool,
     diff_tool_config: &DiffToolConfig,
     cursor: &mut TreeCursor,
+    sort: &mut TreeSort,
     keyboard_taken: bool,
 ) -> egui::response::Response {
     if file_system_1_view.is_none() && file_system_2_view.is_none() {
@@ -705,17 +707,20 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 .header(row_height_header, |mut header| {
                     header.col(|ui| {
                         col0_rect = ui.max_rect();
-                        let available = ui.available_width();
                         ui.vertical(|ui| {
-                            if ui
-                                .add_sized(
-                                    [available, row_height_header],
-                                    egui::Button::new("Open Folder 1"),
-                                )
-                                .clicked()
-                            {
-                                *open_dir_window_1 = true;
-                            }
+                            ui.horizontal(|ui| {
+                                sort_header(ui, "Name", SortKey::Name, sort);
+                                let available = ui.available_width();
+                                if ui
+                                    .add_sized(
+                                        [available, row_height_header],
+                                        egui::Button::new("Open Folder 1"),
+                                    )
+                                    .clicked()
+                                {
+                                    *open_dir_window_1 = true;
+                                }
+                            });
                             let text = if let Some(fs1_view) = file_system_1_view {
                                 fs1_view
                                     .file_system
@@ -739,7 +744,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                     });
                     header.col(|ui| {
                         ui.vertical(|ui| {
-                            ui.label("≠");
+                            sort_header(ui, "≠", SortKey::State, sort);
                             if let Some(fs1_view) = file_system_1_view {
                                 let root_1_id = fs1_view.file_system.get_root_node_id();
                                 if let Some(row) = visible_rows
@@ -828,6 +833,27 @@ pub fn draw_ui_two_folder_tree_with_diff(
     );
 
     frame_output.response
+}
+
+/// A clickable column header for `key`. The active one shows the direction.
+fn sort_header(ui: &mut egui::Ui, text: &str, key: SortKey, sort: &mut TreeSort) {
+    let active = sort.key == key;
+    let text = match (active, sort.descending) {
+        (false, _) => text.to_owned(),
+        (true, false) => format!("{text} ⏶"),
+        (true, true) => format!("{text} ⏷"),
+    };
+    let hover = match key {
+        SortKey::Name => "Sort by name",
+        SortKey::State => "Sort by state",
+    };
+    if ui
+        .selectable_label(active, text)
+        .on_hover_text(hover)
+        .clicked()
+    {
+        *sort = sort.clicked(key);
+    }
 }
 
 fn handle_drops(
@@ -1465,6 +1491,7 @@ mod tests {
         apply_cursor_request, cursor_keys, diff_jump_keys, tree_hidden, two_folder_cursor_rows,
     };
     use crate::ui_egui::tree_cursor::CursorRequest;
+    use crate::ui_egui::tree_sort::{SortKey, TreeSort, sort_two_folder_rows};
     use zhashdiff::external_diff_tool::DiffToolConfig;
 
     use std::cell::Cell;
@@ -2034,6 +2061,124 @@ mod tests {
             dup_tree_rows(dir.path(), &PathFilter::default()).len(),
             1 + 8 + 8,
             "the root, 8 files and 8 folders"
+        );
+    }
+
+    fn row_paths(rows: &[VisibleRowTwoFolderDiff]) -> Vec<&str> {
+        rows.iter().map(|r| r.rel_path.as_str()).collect()
+    }
+
+    #[test]
+    fn sorted_children_stay_under_their_parent() {
+        let (left_dir, right_dir) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left_dir.path(), right_dir.path()] {
+            // a.txt sorts between a and a/... by bytes ('.' < '/').
+            write_files(
+                root,
+                &[
+                    ("a/b.txt", "b"),
+                    ("a/z/deep.txt", "deep"),
+                    ("a.txt", "a"),
+                    ("c/d.txt", "d"),
+                ],
+            );
+        }
+        let (left, right) = (load_view(left_dir.path()), load_view(right_dir.path()));
+        let rows = build_counting(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+        );
+
+        let rows = sort_two_folder_rows(rows, TreeSort::default());
+
+        assert_eq!(
+            row_paths(&rows),
+            [
+                "",
+                "a",
+                "a/z",
+                "a/z/deep.txt",
+                "a/b.txt",
+                "c",
+                "c/d.txt",
+                "a.txt"
+            ]
+        );
+    }
+
+    #[test]
+    fn sorted_rows_keep_both_sides_on_the_same_relative_path() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let rows = build_counting(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+        );
+        let by_state = TreeSort::default().clicked(SortKey::State);
+
+        let rows = sort_two_folder_rows(rows, by_state);
+
+        assert_eq!(
+            row_paths(&rows),
+            [
+                "",
+                "sub",
+                "sub/deep",
+                "sub/deep/d.txt",
+                "sub/c.txt",
+                "b.txt",
+                "left_only.txt",
+                "right_only.txt",
+                "a.txt"
+            ]
+        );
+        for row in &rows {
+            if let Some(id) = row.diff_state.first() {
+                assert_eq!(
+                    get_rel(&left.file_system, left_dir.path(), id),
+                    row.rel_path
+                );
+            }
+            if let Some(id) = row.diff_state.second() {
+                assert_eq!(
+                    get_rel(&right.file_system, right_dir.path(), id),
+                    row.rel_path
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn filtered_entries_are_absent_from_the_sorted_rows() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let rows = build_filtered(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+            &blacklist("b.txt, deep/"),
+        );
+        let by_state = TreeSort::default().clicked(SortKey::State);
+
+        let rows = sort_two_folder_rows(rows, by_state);
+
+        assert_eq!(
+            row_paths(&rows),
+            [
+                "",
+                "sub",
+                "sub/c.txt",
+                "left_only.txt",
+                "right_only.txt",
+                "a.txt"
+            ]
         );
     }
 

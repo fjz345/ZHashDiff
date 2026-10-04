@@ -13,6 +13,7 @@ use crate::ui_egui::{
     duplicate_files_pane::{DuplicateFilesPane, DuplicateFilesPaneCtx},
     fs_tree::{FileSystemView, VisibleRowTwoFolderDiff},
     path_diff_pane::{PathDiffPane, PathDiffPaneCtx},
+    tree_sort::TreeSort,
 };
 
 pub struct PathDiffView<'a> {
@@ -36,6 +37,7 @@ pub struct TreeBehavior<'a, 'b> {
     pub diff_action_pressed: &'a mut bool,
     pub diff_tool_config: &'a DiffToolConfig,
     pub path_filter: &'a mut PathFilter,
+    pub tree_sort: &'a mut TreeSort,
     pub keyboard_taken: bool,
 }
 
@@ -44,6 +46,7 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
         PathDiffPaneCtx {
             diff_tool_config: self.diff_tool_config,
             path_filter: self.path_filter,
+            tree_sort: self.tree_sort,
             path_diff_view: self.path_diff_view,
             keyboard_taken: self.keyboard_taken,
         }

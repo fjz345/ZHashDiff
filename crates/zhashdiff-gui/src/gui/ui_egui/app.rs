@@ -18,6 +18,7 @@ use crate::ui_egui::{
     fs_tree::{FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff},
     panes::{Pane, PathDiffView, TreeBehavior},
     path_diff_pane::PathDiffPane,
+    tree_sort::{TreeSort, sort_two_folder_rows},
 };
 use eframe::{
     CreationContext,
@@ -45,6 +46,12 @@ pub struct AppStateCtx {
     /// Applies to the two-folder diff rows.
     #[serde(default)]
     pub path_filter: PathFilter,
+    /// The sort `two_folder_diff_visible_rows` were built with.
+    #[serde(skip)]
+    two_folder_diff_rows_sort: TreeSort,
+    /// Sibling order of the two-folder diff rows.
+    #[serde(default)]
+    pub tree_sort: TreeSort,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -58,10 +65,12 @@ pub struct AppStateCtx {
 }
 
 impl AppStateCtx {
-    /// Rebuilds the two-folder rows when they were dropped or the filter changed since they
-    /// were built. Here rather than at the edit, so the rows are never missing mid-frame.
+    /// Rebuilds the two-folder rows when they were dropped or the filter or sort changed since
+    /// they were built. Here rather than at the edit, so the rows are never missing mid-frame.
     fn build_two_folder_diff_rows_if_stale(&mut self) {
-        if self.two_folder_diff_rows_filter != self.path_filter {
+        if self.two_folder_diff_rows_filter != self.path_filter
+            || self.two_folder_diff_rows_sort != self.tree_sort
+        {
             self.two_folder_diff_visible_rows = None;
         }
         if self.two_folder_diff_visible_rows.is_none()
@@ -74,8 +83,10 @@ impl AppStateCtx {
                 &mut self.two_folder_diff_compare_cache,
                 |path_1, path_2| compare_paths(path_1, path_2, &PathComparissonMethod::CrC),
             )
-            .ok();
+            .ok()
+            .map(|rows| sort_two_folder_rows(rows, self.tree_sort));
             self.two_folder_diff_rows_filter = self.path_filter.clone();
+            self.two_folder_diff_rows_sort = self.tree_sort;
         }
     }
 }
@@ -311,6 +322,7 @@ impl ZApp {
 
                     diff_tool_config: &app_ctx.diff_config,
                     path_filter: &mut app_ctx.path_filter,
+                    tree_sort: &mut app_ctx.tree_sort,
                     path_diff_view: &mut path_diff_view,
                     keyboard_taken,
                 };
@@ -556,6 +568,7 @@ impl eframe::App for ZApp {
 mod tests {
     use super::AppStateCtx;
     use crate::ui_egui::fs_tree::FileSystemView;
+    use crate::ui_egui::tree_sort::{SortKey, TreeSort};
     use std::{fs, path::Path, sync::Arc};
     use tempfile::tempdir;
     use zhashdiff::{
@@ -625,5 +638,70 @@ mod tests {
         state.path_filter = PathFilter::default();
         state.build_two_folder_diff_rows_if_stale();
         assert_eq!(row_paths(&state), ["", "a.txt", "b.obj"]);
+    }
+
+    #[test]
+    fn the_sort_survives_a_restart() {
+        let mut state = AppStateCtx::default();
+        state.tree_sort = TreeSort::default()
+            .clicked(SortKey::State)
+            .clicked(SortKey::State);
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            restored.tree_sort,
+            TreeSort {
+                key: SortKey::State,
+                descending: true
+            }
+        );
+    }
+
+    #[test]
+    fn a_state_saved_before_the_sort_existed_loads_sorted_by_name_ascending() {
+        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut().unwrap().remove("tree_sort").unwrap();
+
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+
+        assert_eq!(
+            restored.tree_sort,
+            TreeSort {
+                key: SortKey::Name,
+                descending: false
+            }
+        );
+    }
+
+    #[test]
+    fn rows_are_sorted_and_changing_the_sort_reorders_them_on_the_next_update() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            fs::create_dir(root.join("z")).unwrap();
+            fs::write(root.join("z/c.txt"), "c").unwrap();
+            fs::write(root.join("a.txt"), "a").unwrap();
+        }
+        fs::write(left.path().join("b.txt"), "left b").unwrap();
+        fs::write(right.path().join("b.txt"), "right b").unwrap();
+        let mut state = AppStateCtx::default();
+        state.file_system_model_1_view = load_view(left.path());
+        state.file_system_model_2_view = load_view(right.path());
+
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "z", "z/c.txt", "a.txt", "b.txt"]);
+
+        state.tree_sort = state.tree_sort.clicked(SortKey::Name);
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "z", "z/c.txt", "b.txt", "a.txt"]);
+
+        state.tree_sort = state.tree_sort.clicked(SortKey::State);
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "z", "z/c.txt", "b.txt", "a.txt"]);
+
+        state.tree_sort = state.tree_sort.clicked(SortKey::State);
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "z", "z/c.txt", "a.txt", "b.txt"]);
     }
 }

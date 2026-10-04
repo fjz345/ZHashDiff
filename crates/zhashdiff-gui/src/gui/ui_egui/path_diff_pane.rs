@@ -11,6 +11,7 @@ use crate::ui_egui::{
     fs_tree::{DiffState, FileSystemView, draw_ui_two_folder_tree_with_diff},
     panes::{PathDiffView, ZAppPane},
     tree_cursor::TreeCursor,
+    tree_sort::TreeSort,
 };
 
 pub struct PathDiffPaneCtx<'a, 'b> {
@@ -19,6 +20,7 @@ pub struct PathDiffPaneCtx<'a, 'b> {
     // User Interaction State
     pub diff_tool_config: &'a DiffToolConfig,
     pub path_filter: &'a mut PathFilter,
+    pub tree_sort: &'a mut TreeSort,
     /// A widget had keyboard focus when the frame started, so the tree's keys are not
     /// for the cursor.
     pub keyboard_taken: bool,
@@ -150,6 +152,7 @@ impl PathDiffPane {
                     &mut self.open_dir_window_2,
                     &ctx.diff_tool_config,
                     &mut self.cursor,
+                    ctx.tree_sort,
                     ctx.keyboard_taken,
                 );
             });

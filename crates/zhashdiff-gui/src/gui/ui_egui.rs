@@ -4,3 +4,4 @@ pub mod fs_tree;
 pub mod panes;
 pub mod path_diff_pane;
 pub mod tree_cursor;
+pub mod tree_sort;
