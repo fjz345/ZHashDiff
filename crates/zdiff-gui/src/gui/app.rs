@@ -20,7 +20,7 @@ use crate::{
     file::FileProcessor,
     keybindings::{Keybindings, Shortcut, ui_keybindings},
     p4::{P4Command, get_p4_config, ui_p4config, update_p4_config},
-    revert::{self, RevertRefusal},
+    revert::{self, RevertRefusal, RevertTarget, WriteRefusal},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},
@@ -715,10 +715,27 @@ impl<'a> ZApp {
                     .ok_or(RevertRefusal::NoSuchHunk)
                     .and_then(|diff_ctx| revert::plan_hunk_revert(diff_ctx, revert_request));
                 let revert_success = match planned {
-                    Ok((path, contents)) => match std::fs::write(&path, contents) {
+                    Ok(planned) => match revert::write_guarded(
+                        &planned.path,
+                        planned.contents.as_bytes(),
+                        &planned.loaded_hash,
+                        &std::env::temp_dir(),
+                    ) {
                         Ok(()) => true,
+                        Err(WriteRefusal::Stale) => {
+                            log::error!(
+                                "Revert refused: {} changed on disk since it was loaded. Reloading it.",
+                                planned.path.display()
+                            );
+                            diff_processor.reset_ctx();
+                            match revert_request.target {
+                                RevertTarget::Left => app_ctx.file_1.invalidate_cache_file(),
+                                RevertTarget::Right => app_ctx.file_2.invalidate_cache_file(),
+                            }
+                            false
+                        }
                         Err(e) => {
-                            log::error!("Failed to revert {}: {}", path.display(), e);
+                            log::error!("Revert refused for {}: {}", planned.path.display(), e);
                             false
                         }
                     },

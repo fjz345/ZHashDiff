@@ -1,8 +1,14 @@
 //! Whole-hunk revert. A hunk is a diff span from conflict navigation. Reverting it replaces the
 //! target file's text for the hunk with the other file's text, as one edit on raw byte spans.
 
-use std::{collections::HashSet, ops::Range, path::PathBuf};
+use std::{
+    collections::HashSet,
+    io::{self, Write},
+    ops::Range,
+    path::{Path, PathBuf},
+};
 
+use zcommon::hash::hash_file_mmap;
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffRow, LineContent},
@@ -151,11 +157,19 @@ pub fn check_revert(ctx: &MinimalDiffCtx, target: RevertTarget) -> Result<(), Re
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedRevert {
+    pub path: PathBuf,
+    pub contents: String,
+    /// Hash of the target bytes the plan was made from, for the stale check.
+    pub loaded_hash: String,
+}
+
 /// The path to write and its new contents. Plans against the files the rows were built from.
 pub fn plan_hunk_revert(
     ctx: &MinimalDiffCtx,
     request: RevertRequest,
-) -> Result<(PathBuf, String), RevertRefusal> {
+) -> Result<PlannedRevert, RevertRefusal> {
     check_revert(ctx, request.target)?;
     let (Some(left), Some(right)) = (&ctx.input.file_1, &ctx.input.file_2) else {
         unreachable!("check_revert requires both files");
@@ -176,7 +190,79 @@ pub fn plan_hunk_revert(
         .expect("check_revert requires a local target")
         .to_path_buf();
     let contents = plan_revert(&target.contents, target_range, &other.contents, other_range);
-    Ok((path, contents))
+    Ok(PlannedRevert {
+        path,
+        contents,
+        loaded_hash: target.hash.clone(),
+    })
+}
+
+/// Why a guarded write left the target untouched.
+#[derive(Debug)]
+pub enum WriteRefusal {
+    TempTarget,
+    /// The bytes on disk are not the ones the revert was planned from.
+    Stale,
+    ReadOnly,
+    Io(io::Error),
+}
+
+impl std::fmt::Display for WriteRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WriteRefusal::TempTarget => f.write_str("the target is a temporary file"),
+            WriteRefusal::Stale => f.write_str("the file changed on disk since it was loaded"),
+            WriteRefusal::ReadOnly => f.write_str("the file is read-only"),
+            WriteRefusal::Io(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// Replaces `path` with `contents`, but only if it is not under `temp_root`, still has the
+/// bytes hashed as `loaded_hash`, and is writable. Depot targets can't get here: they have no
+/// local path (see `check_revert`).
+///
+/// The contents go to a sibling temp file that is synced and then renamed over the target, so a
+/// crash leaves either the old or the new file, never a truncated one. The temp file is deleted
+/// on every failure.
+pub fn write_guarded(
+    path: &Path,
+    contents: &[u8],
+    loaded_hash: &str,
+    temp_root: &Path,
+) -> Result<(), WriteRefusal> {
+    // Canonical paths, so a short (8.3) or differently cased temp dir still matches. Issue 05's
+    // temp classifier replaces this check.
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if canonical(path).starts_with(canonical(temp_root)) {
+        return Err(WriteRefusal::TempTarget);
+    }
+    let not_found_is_stale = |e: io::Error| match e.kind() {
+        io::ErrorKind::NotFound => WriteRefusal::Stale,
+        _ => WriteRefusal::Io(e),
+    };
+    // Same hash function as CachedFile, so an untouched file always matches.
+    if hash_file_mmap(path).map_err(not_found_is_stale)? != loaded_hash {
+        return Err(WriteRefusal::Stale);
+    }
+    let permissions = std::fs::metadata(path)
+        .map_err(not_found_is_stale)?
+        .permissions();
+    if permissions.readonly() {
+        return Err(WriteRefusal::ReadOnly);
+    }
+
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let mut temp = tempfile::Builder::new()
+        .prefix(".zdiff-revert-")
+        .tempfile_in(dir)
+        .map_err(WriteRefusal::Io)?;
+    temp.write_all(contents).map_err(WriteRefusal::Io)?;
+    temp.as_file().sync_all().map_err(WriteRefusal::Io)?;
+    // The temp file is created with restrictive permissions; keep the target's.
+    std::fs::set_permissions(temp.path(), permissions).map_err(WriteRefusal::Io)?;
+    temp.persist(path).map_err(|e| WriteRefusal::Io(e.error))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -282,10 +368,10 @@ mod tests {
 
         /// Plans the revert of `hunk` and checks it targets the right file. Nothing is written.
         fn plan(&self, hunk: usize, target: RevertTarget) -> String {
-            let (path, contents) = plan_hunk_revert(&self.diff(), RevertRequest { hunk, target })
+            let planned = plan_hunk_revert(&self.diff(), RevertRequest { hunk, target })
                 .expect("revert refused");
-            assert_eq!(path, self.path(target));
-            contents
+            assert_eq!(planned.path, self.path(target));
+            planned.contents
         }
 
         fn read(&self, target: RevertTarget) -> String {
@@ -423,9 +509,9 @@ mod tests {
         let mut hunks = pair.diff().precomputed_diffs.len();
         assert!(hunks > 0);
         while hunks > 0 {
-            let (path, contents) =
+            let planned =
                 plan_hunk_revert(&pair.diff(), RevertRequest { hunk: 0, target }).unwrap();
-            std::fs::write(path, contents).unwrap();
+            std::fs::write(planned.path, planned.contents).unwrap();
             let after = pair.diff().precomputed_diffs.len();
             assert!(
                 after < hunks,
@@ -519,7 +605,11 @@ mod tests {
                     target: Right
                 }
             ),
-            Ok((pair.right.clone(), "a\nb\n".to_string()))
+            Ok(PlannedRevert {
+                path: pair.right.clone(),
+                contents: "a\nb\n".to_string(),
+                loaded_hash: hash_file_mmap(&pair.right).unwrap(),
+            })
         );
     }
 
@@ -583,5 +673,111 @@ mod tests {
             );
         }
         assert!(ctx.precomputed_diffs[0].rows().count() > 1);
+    }
+
+    mod guarded_write {
+        use super::*;
+
+        /// A target file in its own directory, and a temp root that doesn't contain it.
+        struct Target {
+            dir: tempfile::TempDir,
+            temp_root: tempfile::TempDir,
+            path: PathBuf,
+            loaded_hash: String,
+        }
+
+        impl Target {
+            fn new(contents: &[u8]) -> Self {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("target.txt");
+                std::fs::write(&path, contents).unwrap();
+                let loaded_hash = hash_file_mmap(&path).unwrap();
+                Self {
+                    dir,
+                    temp_root: tempfile::tempdir().unwrap(),
+                    path,
+                    loaded_hash,
+                }
+            }
+
+            fn write(&self, contents: &[u8]) -> Result<(), WriteRefusal> {
+                write_guarded(
+                    &self.path,
+                    contents,
+                    &self.loaded_hash,
+                    self.temp_root.path(),
+                )
+            }
+
+            fn read(&self) -> Vec<u8> {
+                std::fs::read(&self.path).unwrap()
+            }
+
+            /// The target is the only file in its directory: no sibling temp file was left.
+            fn assert_no_leftovers(&self) {
+                let entries: Vec<_> = std::fs::read_dir(self.dir.path())
+                    .unwrap()
+                    .map(|e| e.unwrap().file_name())
+                    .collect();
+                assert_eq!(entries, ["target.txt"]);
+            }
+
+            fn set_readonly(&self, readonly: bool) {
+                let mut permissions = std::fs::metadata(&self.path).unwrap().permissions();
+                permissions.set_readonly(readonly);
+                std::fs::set_permissions(&self.path, permissions).unwrap();
+            }
+        }
+
+        #[test]
+        fn successful_write_replaces_the_contents_exactly() {
+            let target = Target::new(b"old\r\nline\n");
+            let new = "new \u{e5}\u{e4}\u{f6}\r\nline\n\u{1F600}".as_bytes();
+            target.write(new).unwrap();
+            assert_eq!(target.read(), new);
+            target.assert_no_leftovers();
+        }
+
+        #[test]
+        fn stale_hash_is_refused_and_the_file_is_untouched() {
+            let target = Target::new(b"loaded\n");
+            std::fs::write(&target.path, b"edited elsewhere\n").unwrap();
+            let result = target.write(b"reverted\n");
+            assert!(matches!(result, Err(WriteRefusal::Stale)), "{result:?}");
+            assert_eq!(target.read(), b"edited elsewhere\n");
+            target.assert_no_leftovers();
+        }
+
+        #[test]
+        fn read_only_file_is_refused_and_untouched() {
+            let target = Target::new(b"loaded\n");
+            target.set_readonly(true);
+            let result = target.write(b"reverted\n");
+            target.set_readonly(false);
+            assert!(matches!(result, Err(WriteRefusal::ReadOnly)), "{result:?}");
+            assert_eq!(target.read(), b"loaded\n");
+            target.assert_no_leftovers();
+        }
+
+        /// The replace itself fails after the temp file exists: another handle holds the target
+        /// open without delete sharing.
+        #[cfg(windows)]
+        #[test]
+        fn failed_replace_leaves_no_temp_file_and_the_file_untouched() {
+            use std::os::windows::fs::OpenOptionsExt;
+
+            const FILE_SHARE_READ: u32 = 1;
+            let target = Target::new(b"loaded\n");
+            let holder = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(&target.path)
+                .unwrap();
+            let result = target.write(b"reverted\n");
+            drop(holder);
+            assert!(matches!(result, Err(WriteRefusal::Io(_))), "{result:?}");
+            assert_eq!(target.read(), b"loaded\n");
+            target.assert_no_leftovers();
+        }
     }
 }
