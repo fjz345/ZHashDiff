@@ -56,6 +56,7 @@ impl<'a, 'b> TreeBehavior<'a, 'b> {
         DuplicateFilesPaneCtx {
             hash_service: self.hash_service,
             path_diff_view: self.path_diff_view,
+            path_filter: self.path_filter,
 
             active_conflict_hash: self.active_conflict_hash,
             conflict_map: self.conflict_map,

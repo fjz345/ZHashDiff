@@ -325,15 +325,20 @@ impl FileSystemView {
         Ok(out_rows)
     }
 
+    /// `hidden` is per node id of the view's model, as from [`tree_hidden`].
     pub fn build_collapsed_rows(
         &self,
         start_id: FsNodeId,
         start_depth: FsNodeDepth,
+        hidden: &[bool],
     ) -> Vec<VisibleRow> {
         let mut out = Vec::new();
         let mut stack = vec![(start_id, start_depth)];
 
         while let Some((id, depth)) = stack.pop() {
+            if hidden[id] {
+                continue;
+            }
             if let Some(node) = self.file_system.get_node(id) {
                 let is_dir = node.is_dir();
 
@@ -380,6 +385,38 @@ fn filtered_out(view: &FileSystemView, filter: &PathFilter) -> Vec<bool> {
     hidden
 }
 
+/// Per node id of the view's model, true when the filter hides the node in a single-tree view
+/// (the duplicate finder): [`filtered_out`], and with a whitelist set, every non-root folder with
+/// no visible file below it.
+pub fn tree_hidden(view: &FileSystemView, filter: &PathFilter) -> Vec<bool> {
+    let mut hidden = filtered_out(view, filter);
+    if filter.whitelist.is_empty() {
+        return hidden;
+    }
+    let model = &view.file_system;
+    let mut has_visible_file = vec![false; hidden.len()];
+    for id in model.iter_files() {
+        if hidden[id] {
+            continue;
+        }
+        let mut ancestor = model.get_parent_id(id);
+        // Stops at the first ancestor already marked: its own ancestors are marked too.
+        while let Some(folder) = ancestor {
+            if std::mem::replace(&mut has_visible_file[folder], true) {
+                break;
+            }
+            ancestor = model.get_parent_id(folder);
+        }
+    }
+    let root_id = model.get_root_node_id();
+    for (id, node, _) in model.iter_tree() {
+        if node.is_dir() && id != root_id && !has_visible_file[id] {
+            hidden[id] = true;
+        }
+    }
+    hidden
+}
+
 /// The two-folder rows as the cursor sees them. A row is hidden when it isn't drawn: the
 /// root row, or an entry inside a folder collapsed on a side the entry exists on. A folder is
 /// collapsed when it is collapsed on a side it exists on.
@@ -416,6 +453,7 @@ pub fn draw_ui_folder_tree_with_checkbox(
     file_system_view: &mut FileSystemView,
     hash_service: &mut HashService,
     pending_deletion: &HashSet<PathBuf>,
+    hidden: &[bool],
 ) -> egui::Response {
     let root_id = file_system_view.file_system.get_root_node_id();
     let root_path_clone = file_system_view
@@ -425,7 +463,7 @@ pub fn draw_ui_folder_tree_with_checkbox(
         .as_ref()
         .to_path_buf();
 
-    let visible_rows = file_system_view.build_collapsed_rows(root_id, 0);
+    let visible_rows = file_system_view.build_collapsed_rows(root_id, 0, hidden);
     let row_count = visible_rows.len();
 
     let available_height = ui.available_height();
@@ -1424,7 +1462,7 @@ fn get_folder_selection_state(
 mod tests {
     use crate::ui_egui::fs_tree::{
         DiffJump, DiffState, FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff,
-        apply_cursor_request, cursor_keys, diff_jump_keys, two_folder_cursor_rows,
+        apply_cursor_request, cursor_keys, diff_jump_keys, tree_hidden, two_folder_cursor_rows,
     };
     use crate::ui_egui::tree_cursor::CursorRequest;
     use zhashdiff::external_diff_tool::DiffToolConfig;
@@ -1924,6 +1962,81 @@ mod tests {
         state_kind(&row.diff_state)
     }
 
+    /// Relative paths of the duplicate tree's rows, everything expanded.
+    fn dup_tree_rows(root: &Path, filter: &PathFilter) -> Vec<String> {
+        let view = load_view(root);
+        let hidden = tree_hidden(&view, filter);
+        view.build_collapsed_rows(view.file_system.get_root_node_id(), 0, &hidden)
+            .into_iter()
+            .map(|row| get_rel(&view.file_system, root, row.path))
+            .collect()
+    }
+
+    /// Files and folders under a.txt, keep/, gen/ and src/, plus an empty folder.
+    fn dup_tree() -> TempDir {
+        let dir = tempdir().unwrap();
+        write_files(
+            dir.path(),
+            &[
+                ("a.txt", "a"),
+                ("b.obj", "b"),
+                ("gen/c.txt", "c"),
+                ("gen/deep/d.txt", "d"),
+                ("keep/e.txt", "e"),
+                ("keep/f.obj", "f"),
+                ("src/deep/main.rs", "m"),
+                // Named like a match, but the whitelist applies to files only.
+                ("x.rs/readme.md", "r"),
+            ],
+        );
+        fs::create_dir_all(dir.path().join("empty/nested")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn blacklisted_entries_are_absent_from_the_duplicate_tree() {
+        let dir = dup_tree();
+
+        assert_eq!(
+            dup_tree_rows(dir.path(), &blacklist("*.OBJ, gen/")),
+            [
+                "",
+                "a.txt",
+                "empty",
+                "empty/nested",
+                "keep",
+                "keep/e.txt",
+                "src",
+                "src/deep",
+                "src/deep/main.rs",
+                "x.rs",
+                "x.rs/readme.md",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_duplicate_tree_keeps_whitelisted_files_and_their_ancestors_only() {
+        let dir = dup_tree();
+
+        // keep/ has no whitelisted file left once f.obj is blacklisted.
+        assert_eq!(
+            dup_tree_rows(dir.path(), &whitelist("*.rs, *.obj", "f.obj")),
+            ["", "b.obj", "src", "src/deep", "src/deep/main.rs"]
+        );
+    }
+
+    #[test]
+    fn without_a_filter_the_duplicate_tree_shows_everything() {
+        let dir = dup_tree();
+
+        assert_eq!(
+            dup_tree_rows(dir.path(), &PathFilter::default()).len(),
+            1 + 8 + 8,
+            "the root, 8 files and 8 folders"
+        );
+    }
+
     #[test]
     fn two_folder_rows_carry_their_relative_path_with_slash_separators() {
         let (left_dir, right_dir) = two_folder_trees();
@@ -2242,7 +2355,8 @@ mod tests {
             }
 
             let root_id = view.file_system.get_root_node_id();
-            let result = view.build_collapsed_rows(root_id, 0);
+            let no_filter = vec![false; view.file_system.total_files_and_folders()];
+            let result = view.build_collapsed_rows(root_id, 0, &no_filter);
 
             let actual: Vec<(String, FsNodeDepth)> = result
                 .into_iter()

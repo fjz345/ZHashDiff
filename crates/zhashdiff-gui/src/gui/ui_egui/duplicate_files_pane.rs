@@ -18,12 +18,14 @@ use zhashdiff::conflict::execute_resolution;
 use zhashdiff::conflict::group_duplicates;
 use zhashdiff::conflict::plan_resolution;
 use zhashdiff::conflict::recycle;
+use zhashdiff::filter::PathFilter;
 use zhashdiff::fs::FileSystemModel;
 use zhashdiff::fs::FsNodeId;
 
 use crate::ui_egui::fs_tree::FileSystemView;
 use crate::ui_egui::fs_tree::PENDING_DELETION_COLOR;
 use crate::ui_egui::fs_tree::draw_ui_folder_tree_with_checkbox;
+use crate::ui_egui::fs_tree::tree_hidden;
 use crate::ui_egui::panes::PathDiffView;
 use crate::ui_egui::panes::ZAppPane;
 use zcommon::ui_egui::common::CheckboxSelectState;
@@ -38,9 +40,10 @@ struct CheckedFileHashes {
 }
 
 /// Checked files of `view` paired with their hash; checked files without a hash yet
-/// are only counted.
+/// are only counted. Files the filter hides are left out even when checked and hashed.
 fn checked_file_hashes(
     view: &FileSystemView,
+    hidden: &[bool],
     hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
 ) -> CheckedFileHashes {
     let mut checked = CheckedFileHashes {
@@ -49,7 +52,7 @@ fn checked_file_hashes(
     };
 
     for node_id in view.file_system.iter_files() {
-        if !view.selected.get(&node_id).copied().unwrap_or(false) {
+        if hidden[node_id] || !view.selected.get(&node_id).copied().unwrap_or(false) {
             continue;
         }
         let path = view
@@ -66,6 +69,22 @@ fn checked_file_hashes(
     }
 
     checked
+}
+
+/// The files "Request All Hash" queues: every file the filter leaves visible.
+fn files_to_hash(view: &FileSystemView, hidden: &[bool]) -> Vec<PathBuf> {
+    view.file_system
+        .iter_files()
+        .filter(|&node_id| !hidden[node_id])
+        .map(|node_id| {
+            view.file_system
+                .get_node(node_id)
+                .expect("iter_files yields valid node ids")
+                .as_path()
+                .as_ref()
+                .to_path_buf()
+        })
+        .collect()
 }
 
 fn view_root(view: Option<&FileSystemView>) -> Option<PathBuf> {
@@ -168,6 +187,9 @@ pub struct DuplicateFilesPane {
     /// Root of the folder the conflict state was computed for.
     #[serde(skip)]
     conflicts_root: Option<PathBuf>,
+    /// Filter the conflict state was computed with.
+    #[serde(skip)]
+    conflicts_filter: PathFilter,
     /// Outcome of the last Resolve, shown until closed.
     #[serde(skip)]
     resolution_summary: Option<ResolutionSummary>,
@@ -182,6 +204,7 @@ impl ZAppPane for DuplicateFilesPane {
 pub struct DuplicateFilesPaneCtx<'a, 'b> {
     pub hash_service: &'a mut HashService,
     pub path_diff_view: &'a mut PathDiffView<'b>,
+    pub path_filter: &'a PathFilter,
 
     // Diff Action State
     pub active_conflict_hash: &'a mut Option<String>,
@@ -198,6 +221,7 @@ impl DuplicateFilesPane {
             open_diff_popup: false,
             open_dir_window: false,
             conflicts_root: None,
+            conflicts_filter: PathFilter::default(),
             resolution_summary: None,
         }
     }
@@ -211,7 +235,7 @@ impl DuplicateFilesPane {
         hashes: &HashMap<PathBuf, Option<HashRepresentation>>,
     ) -> Option<String> {
         let view = ctx.path_diff_view.file_system_1_view.as_ref()?;
-        let checked = checked_file_hashes(view, hashes);
+        let checked = checked_file_hashes(view, &tree_hidden(view, ctx.path_filter), hashes);
 
         let notice = (checked.unhashed > 0).then(|| {
             format!(
@@ -236,6 +260,7 @@ impl DuplicateFilesPane {
         });
         *ctx.active_conflict_hash = None;
         self.conflicts_root = view_root(Some(view));
+        self.conflicts_filter = ctx.path_filter.clone();
         self.open_diff_popup = true;
 
         notice
@@ -280,14 +305,16 @@ impl DuplicateFilesPane {
     }
 
     /// Conflicts, keepers and the pending marks derived from them refer to the folder
-    /// they were computed for; drop them once a different folder (or none) is open.
-    fn forget_conflicts_of_other_root(&mut self, ctx: &mut DuplicateFilesPaneCtx) {
+    /// and filter they were computed for; drop them once a different folder (or none) is
+    /// open, or the filter changed, so a resolve can't recycle a file the user no longer sees.
+    fn forget_stale_conflicts(&mut self, ctx: &mut DuplicateFilesPaneCtx) {
         let root = view_root(ctx.path_diff_view.file_system_1_view.as_ref());
-        if root != self.conflicts_root {
+        if root != self.conflicts_root || *ctx.path_filter != self.conflicts_filter {
             ctx.conflict_map.clear();
             ctx.conflict_map_resolved.clear();
             *ctx.active_conflict_hash = None;
             self.conflicts_root = root;
+            self.conflicts_filter = ctx.path_filter.clone();
         }
     }
 
@@ -296,7 +323,7 @@ impl DuplicateFilesPane {
         ui: &mut egui::Ui,
         ctx: &mut DuplicateFilesPaneCtx,
     ) -> egui_tiles::UiResponse {
-        self.forget_conflicts_of_other_root(ctx);
+        self.forget_stale_conflicts(ctx);
 
         ui.vertical(|ui| {
             self.ui_popups(ui, ctx);
@@ -327,13 +354,9 @@ impl DuplicateFilesPane {
 
                 if ui.button("Request All Hash").clicked() {
                     if let Some(file_system_view) = ctx.path_diff_view.file_system_1_view {
-                        let file_system = &file_system_view.file_system;
-                        let all_files: Vec<_> = file_system.iter_files().collect();
-
-                        for node_id in all_files {
-                            if let Some(node) = file_system.get_node(node_id) {
-                                ctx.hash_service.request(node.as_path());
-                            }
+                        let hidden = tree_hidden(file_system_view, ctx.path_filter);
+                        for path in files_to_hash(file_system_view, &hidden) {
+                            ctx.hash_service.request(path);
                         }
                     }
                 }
@@ -362,11 +385,15 @@ impl DuplicateFilesPane {
             .max_height(500.0)
             .show(ui, |ui| {
                 if let Some(file_system_view) = ctx.path_diff_view.file_system_1_view {
+                    // Here rather than once per frame: a resolve above may have rescanned
+                    // the tree, and the ids are per model.
+                    let hidden = tree_hidden(file_system_view, ctx.path_filter);
                     draw_ui_folder_tree_with_checkbox(
                         ui,
                         file_system_view,
                         ctx.hash_service,
                         &pending_deletion,
+                        &hidden,
                     );
                     show_diff_button = true;
                 } else {
@@ -674,6 +701,7 @@ mod tests {
     use std::sync::Arc;
     use tempfile::{TempDir, tempdir};
     use zcommon::hash::hash_file_mmap;
+    use zhashdiff::filter::PatternList;
     use zhashdiff::fs::FileSystemModel;
 
     /// Owns everything a `DuplicateFilesPaneCtx` borrows.
@@ -684,6 +712,7 @@ mod tests {
         view_1: Option<FileSystemView>,
         view_2: Option<FileSystemView>,
         visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
+        path_filter: PathFilter,
         active_conflict_hash: Option<String>,
         conflict_map: HashMap<String, Vec<PathBuf>>,
         conflict_map_resolved: HashMap<String, PathBuf>,
@@ -699,6 +728,7 @@ mod tests {
                 view_1: Some(view),
                 view_2: None,
                 visible_rows: None,
+                path_filter: PathFilter::default(),
                 active_conflict_hash: None,
                 conflict_map: HashMap::new(),
                 conflict_map_resolved: HashMap::new(),
@@ -725,6 +755,7 @@ mod tests {
             let mut ctx = DuplicateFilesPaneCtx {
                 hash_service: &mut self.hash_service,
                 path_diff_view: &mut path_diff_view,
+                path_filter: &self.path_filter,
                 active_conflict_hash: &mut self.active_conflict_hash,
                 conflict_map: &mut self.conflict_map,
                 conflict_map_resolved: &mut self.conflict_map_resolved,
@@ -997,7 +1028,7 @@ mod tests {
         state.active_conflict_hash = Some(hash.clone());
 
         // A frame with the same folder keeps everything.
-        state.with_ctx(|ctx| pane.forget_conflicts_of_other_root(ctx));
+        state.with_ctx(|ctx| pane.forget_stale_conflicts(ctx));
         assert_eq!(
             state.conflict_map_resolved,
             HashMap::from([(hash.clone(), root.join("a.txt"))])
@@ -1007,7 +1038,94 @@ mod tests {
 
         let (_other_dir, other_view) = duplicate_tree();
         state.view_1 = Some(other_view);
-        state.with_ctx(|ctx| pane.forget_conflicts_of_other_root(ctx));
+        state.with_ctx(|ctx| pane.forget_stale_conflicts(ctx));
+
+        assert!(state.conflict_map.is_empty());
+        assert!(state.conflict_map_resolved.is_empty());
+        assert_eq!(state.active_conflict_hash, None);
+        assert!(pending_deletions(&state.conflict_map, &state.conflict_map_resolved).is_empty());
+    }
+
+    fn blacklist(text: &str) -> PathFilter {
+        PathFilter {
+            blacklist: PatternList::new(text),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn request_all_hash_queues_only_the_files_the_filter_leaves_visible() {
+        let (dir, _) = duplicate_tree();
+        let root = dir.path();
+        fs::write(root.join("notes.md"), "md").unwrap();
+        let view = FileSystemView::new(Arc::new(FileSystemModel::new(root).unwrap()));
+        let filter = PathFilter {
+            blacklist: PatternList::new("b.txt"),
+            whitelist: PatternList::new("*.txt"),
+        };
+
+        let mut queued = files_to_hash(&view, &tree_hidden(&view, &filter));
+        queued.sort();
+
+        assert_eq!(
+            queued,
+            [
+                root.join("a.txt"),
+                root.join("d.txt"),
+                root.join("e.txt"),
+                root.join("sub").join("c.txt"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hidden_file_is_left_out_of_the_groups_even_when_checked_and_hashed() {
+        let dir = tempdir().unwrap();
+        let (kept, hidden) = (dir.path().join("a.txt"), dir.path().join("a.obj"));
+        fs::write(&kept, "same").unwrap();
+        fs::write(&hidden, "same").unwrap();
+        let mut view = FileSystemView::new(Arc::new(FileSystemModel::new(dir.path()).unwrap()));
+        view.recursive_selection(view.file_system.get_root_node_id(), true);
+        let hashes = hashes_of(&[&kept, &hidden]);
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+
+        state.press_diff(&mut pane, &hashes);
+        assert_eq!(
+            state.conflict_map.len(),
+            1,
+            "without a filter they are duplicates"
+        );
+
+        state.path_filter = blacklist("*.obj");
+        state.press_diff(&mut pane, &hashes);
+
+        assert!(state.conflict_map.is_empty());
+    }
+
+    #[test]
+    fn changing_the_filter_clears_conflicts_keepers_and_marks() {
+        let (dir, view) = duplicate_tree();
+        let root = dir.path();
+        let hashes = hashes_of(&[&root.join("a.txt"), &root.join("b.txt")]);
+        let mut state = PaneState::new(view);
+        let mut pane = DuplicateFilesPane::new(None);
+        state.path_filter = blacklist("*.obj");
+        state.press_diff(&mut pane, &hashes);
+        let hash = same_hash(root);
+        state
+            .conflict_map_resolved
+            .insert(hash.clone(), root.join("a.txt"));
+        state.active_conflict_hash = Some(hash.clone());
+
+        // A frame with the same filter keeps everything.
+        state.with_ctx(|ctx| pane.forget_stale_conflicts(ctx));
+        assert!(!pending_deletions(&state.conflict_map, &state.conflict_map_resolved).is_empty());
+        assert_eq!(state.active_conflict_hash, Some(hash));
+
+        // b.txt, which a resolve would recycle, is hidden now.
+        state.path_filter = blacklist("*.obj, b.txt");
+        state.with_ctx(|ctx| pane.forget_stale_conflicts(ctx));
 
         assert!(state.conflict_map.is_empty());
         assert!(state.conflict_map_resolved.is_empty());
