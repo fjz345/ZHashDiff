@@ -6,7 +6,10 @@ use std::{
     },
 };
 
-use crate::lexer::{RawTokenTrait, TokenKind};
+use crate::{
+    ignore::IgnoreMask,
+    lexer::{RawTokenTrait, TokenKind},
+};
 
 pub type MyersPath = Vec<(i32, i32)>;
 pub type MyersNumAddDelete = (u32, u32);
@@ -27,14 +30,15 @@ pub fn myers_diff_path<T, F>(
     source: &[T],
     target: &[T],
     cmp: F,
+    ignore: &IgnoreMask,
     cancel_flag: Arc<AtomicBool>,
 ) -> Option<MyersPath>
 where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool + Sync,
 {
-    let hunks = line_diff(algorithm, source, target, &cmp, cancel_flag.clone())?;
-    token_diff(algorithm, source, target, &hunks, &cmp, cancel_flag)
+    let hunks = line_diff(algorithm, source, target, &cmp, ignore, cancel_flag.clone())?;
+    token_diff(algorithm, source, target, &hunks, &cmp, ignore, cancel_flag)
 }
 
 /// A run of non-equal lines, as token ranges. Either range may be empty (pure insert/delete).
@@ -51,6 +55,7 @@ pub fn line_diff<T, F>(
     source: &[T],
     target: &[T],
     cmp: F,
+    ignore: &IgnoreMask,
     cancel_flag: Arc<AtomicBool>,
 ) -> Option<Vec<LineHunk>>
 where
@@ -60,17 +65,30 @@ where
     if cancel_flag.load(Ordering::Relaxed) {
         return None;
     }
+    assert_mask_fits(ignore, source, target);
     if source.len() == target.len() && source.iter().zip(target).all(|(a, b)| cmp(a, b)) {
         return Some(Vec::new());
     }
 
     let (source_lines, target_lines) = (split_lines(source), split_lines(target));
     let line_eq = |a: &Range<usize>, b: &Range<usize>| {
-        a.len() == b.len()
-            && source[a.clone()]
-                .iter()
-                .zip(&target[b.clone()])
-                .all(|(a, b)| cmp(a, b))
+        if ignore.is_empty() {
+            return a.len() == b.len()
+                && source[a.clone()]
+                    .iter()
+                    .zip(&target[b.clone()])
+                    .all(|(a, b)| cmp(a, b));
+        }
+        // The line key: the tokens that aren't ignored.
+        let mut a_key = a.clone().filter(|&i| !ignore.source[i]);
+        let mut b_key = b.clone().filter(|&i| !ignore.target[i]);
+        loop {
+            match (a_key.next(), b_key.next()) {
+                (None, None) => return true,
+                (Some(i), Some(j)) if cmp(&source[i], &target[j]) => {}
+                _ => return false,
+            }
+        }
     };
     let path = raw_diff_path(
         algorithm,
@@ -119,6 +137,7 @@ pub fn token_diff<T, F>(
     target: &[T],
     hunks: &[LineHunk],
     cmp: F,
+    ignore: &IgnoreMask,
     cancel_flag: Arc<AtomicBool>,
 ) -> Option<MyersPath>
 where
@@ -128,6 +147,7 @@ where
     if cancel_flag.load(Ordering::Relaxed) {
         return None;
     }
+    assert_mask_fits(ignore, source, target);
     let mut path = Vec::with_capacity(source.len() + target.len() + 1);
     path.push((0, 0));
     let (mut x, mut y) = (0, 0);
@@ -136,7 +156,8 @@ where
         if cancel_flag.load(Ordering::Relaxed) {
             return None;
         }
-        push_equal_run(&mut path, (x, y), (hunk.source.start, hunk.target.start));
+        let to = (hunk.source.start, hunk.target.start);
+        push_equal_lines(&mut path, source, target, (x, y), to, &cmp, ignore);
         (x, y) = (hunk.source.start, hunk.target.start);
 
         let (s, t) = (&source[hunk.source.clone()], &target[hunk.target.clone()]);
@@ -158,8 +179,103 @@ where
         }
         (x, y) = (hunk.source.end, hunk.target.end);
     }
-    push_equal_run(&mut path, (x, y), (source.len(), target.len()));
+    let to = (source.len(), target.len());
+    push_equal_lines(&mut path, source, target, (x, y), to, &cmp, ignore);
     Some(path)
+}
+
+fn assert_mask_fits<T>(ignore: &IgnoreMask, source: &[T], target: &[T]) {
+    if !ignore.is_empty() {
+        assert_eq!(
+            ignore.source.len(),
+            source.len(),
+            "one flag per source token"
+        );
+        assert_eq!(
+            ignore.target.len(),
+            target.len(),
+            "one flag per target token"
+        );
+    }
+}
+
+/// The tokens of equal lines between hunks, from `from` to `to`. With nothing ignored they pair
+/// one to one. Otherwise equal lines can differ in ignored tokens, so each line pair is aligned
+/// on its key tokens instead, and only ignored tokens become edits.
+fn push_equal_lines<T, F>(
+    path: &mut MyersPath,
+    source: &[T],
+    target: &[T],
+    from: (usize, usize),
+    to: (usize, usize),
+    cmp: &F,
+    ignore: &IgnoreMask,
+) where
+    T: RawTokenTrait,
+    F: Fn(&T, &T) -> bool,
+{
+    if ignore.is_empty() {
+        push_equal_run(path, from, to);
+        return;
+    }
+    let source_lines = split_lines(&source[from.0..to.0]);
+    let target_lines = split_lines(&target[from.1..to.1]);
+    assert_eq!(
+        source_lines.len(),
+        target_lines.len(),
+        "equal lines pair one to one"
+    );
+    for (s, t) in source_lines.into_iter().zip(target_lines) {
+        let (mut x, mut y) = (from.0 + s.start, from.1 + t.start);
+        let (x_end, y_end) = (from.0 + s.end, from.1 + t.end);
+        loop {
+            let key_x = (x..x_end).find(|&i| !ignore.source[i]).unwrap_or(x_end);
+            let key_y = (y..y_end).find(|&i| !ignore.target[i]).unwrap_or(y_end);
+            push_ignored_gap(path, source, target, (x, y), (key_x, key_y), cmp);
+            if key_x == x_end || key_y == y_end {
+                assert!(
+                    key_x == x_end && key_y == y_end,
+                    "equal lines must have the same key"
+                );
+                break;
+            }
+            assert!(
+                cmp(&source[key_x], &target[key_y]),
+                "equal lines must have the same key"
+            );
+            path.push(((key_x + 1) as i32, (key_y + 1) as i32));
+            (x, y) = (key_x + 1, key_y + 1);
+        }
+    }
+}
+
+/// Ignored tokens between two key tokens: an equal prefix, deletes, inserts, an equal suffix.
+/// Every edit here is hidden in the rows, so a minimal diff buys nothing; deletes come first
+/// like everywhere else. The suffix pairs a line's break when both sides end with the same one.
+fn push_ignored_gap<T, F>(
+    path: &mut MyersPath,
+    source: &[T],
+    target: &[T],
+    from: (usize, usize),
+    to: (usize, usize),
+    cmp: &F,
+) where
+    F: Fn(&T, &T) -> bool,
+{
+    let (s, t) = (&source[from.0..to.0], &target[from.1..to.1]);
+    let prefix = s.iter().zip(t).take_while(|(a, b)| cmp(a, b)).count();
+    let suffix = s[prefix..]
+        .iter()
+        .rev()
+        .zip(t[prefix..].iter().rev())
+        .take_while(|(a, b)| cmp(a, b))
+        .count();
+    let (x, y) = (from.0 + prefix, from.1 + prefix);
+    let (x_end, y_end) = (to.0 - suffix, to.1 - suffix);
+    push_equal_run(path, from, (x, y));
+    path.extend((x + 1..=x_end).map(|i| (i as i32, y as i32)));
+    path.extend((y + 1..=y_end).map(|j| (x_end as i32, j as i32)));
+    push_equal_run(path, (x_end, y_end), to);
 }
 
 /// Unit diagonal steps from `from` to `to`: the tokens of equal lines between hunks.
@@ -1474,7 +1590,10 @@ mod tests {
 
     mod line_then_token {
         use super::*;
-        use crate::lexer::{LexerDefault, RawToken};
+        use crate::{
+            ignore::IgnoreOptions,
+            lexer::{LexerDefault, RawToken},
+        };
 
         const ALGORITHMS: [MyersDiffAlgorithm; 3] = [
             MyersDiffAlgorithm::Trace,
@@ -1507,12 +1626,28 @@ mod tests {
             target: &str,
             cancel: bool,
         ) -> Option<Script> {
+            diff_with(algorithm, source, target, &IgnoreOptions::default(), cancel)
+        }
+
+        fn diff_with(
+            algorithm: MyersDiffAlgorithm,
+            source: &str,
+            target: &str,
+            ignore: &IgnoreOptions,
+            cancel: bool,
+        ) -> Option<Script> {
             let (ts, tt) = (lex(source), lex(target));
             let cmp = |a: &RawToken, b: &RawToken| {
                 a.kind == b.kind && source[a.span.clone()] == target[b.span.clone()]
             };
-            let path =
-                myers_diff_path(algorithm, &ts, &tt, cmp, Arc::new(AtomicBool::new(cancel)))?;
+            let path = myers_diff_path(
+                algorithm,
+                &ts,
+                &tt,
+                cmp,
+                &ignore.mask(&ts, &tt),
+                Arc::new(AtomicBool::new(cancel)),
+            )?;
 
             assert_eq!(path.first(), Some(&(0, 0)), "{algorithm:?}");
             assert_eq!(
@@ -1787,6 +1922,121 @@ mod tests {
                         None,
                         "{algorithm:?}: {source:?} -> {target:?}"
                     );
+                }
+            }
+        }
+
+        mod ignore_whitespace {
+            use super::*;
+
+            fn on() -> IgnoreOptions {
+                IgnoreOptions { whitespace: true }
+            }
+
+            /// The line phase's hunks, as (source text, target text).
+            fn hunks(
+                algorithm: MyersDiffAlgorithm,
+                source: &str,
+                target: &str,
+                ignore: &IgnoreOptions,
+            ) -> Vec<(String, String)> {
+                let (ts, tt) = (lex(source), lex(target));
+                let cmp = |a: &RawToken, b: &RawToken| {
+                    a.kind == b.kind && source[a.span.clone()] == target[b.span.clone()]
+                };
+                let text = |text: &str, tokens: &[RawToken], range: Range<usize>| -> String {
+                    tokens[range]
+                        .iter()
+                        .map(|t| &text[t.span.clone()])
+                        .collect()
+                };
+                line_diff(
+                    algorithm,
+                    &ts,
+                    &tt,
+                    cmp,
+                    &ignore.mask(&ts, &tt),
+                    Arc::new(AtomicBool::new(false)),
+                )
+                .expect("not cancelled")
+                .into_iter()
+                .map(|h| (text(source, &ts, h.source), text(target, &tt, h.target)))
+                .collect()
+            }
+
+            /// Lines that differ only in whitespace: indentation, inner and trailing blanks,
+            /// line endings, a missing final newline.
+            const WHITESPACE_ONLY: [(&str, &str); 4] = [
+                (
+                    "fn f() {\n    let a = 1;\n\tlet b  =  2;   \n}\n",
+                    "fn f() {\nlet a = 1;\n    let b = 2;\n}\n",
+                ),
+                // A plain token diff matches the blanks and edits `a` (see below).
+                ("\t a\n", "a\t \n"),
+                ("a\r\nb\r\n", "a\nb\n"),
+                ("a\n b", "a\nb\n"),
+            ];
+
+            #[test]
+            fn whitespace_only_line_changes_form_a_hunk_only_with_the_option_off() {
+                for algorithm in ALGORITHMS {
+                    for (source, target) in WHITESPACE_ONLY {
+                        for (s, t) in [(source, target), (target, source)] {
+                            assert_eq!(
+                                hunks(algorithm, s, t, &on()),
+                                vec![],
+                                "{algorithm:?}: {s:?} -> {t:?}"
+                            );
+                            assert_ne!(
+                                hunks(algorithm, s, t, &IgnoreOptions::default()),
+                                vec![],
+                                "{algorithm:?}: {s:?} -> {t:?}"
+                            );
+                        }
+                    }
+                }
+            }
+
+            #[test]
+            fn whitespace_only_changes_reconstruct_and_edit_only_whitespace() {
+                for algorithm in ALGORITHMS {
+                    let script = diff(algorithm, "\t a\n", "a\t \n", false).unwrap();
+                    assert!(
+                        changed_text("\t a\n", "a\t \n", &script).0.contains('a'),
+                        "{algorithm:?}: the pair no longer tests key alignment"
+                    );
+
+                    for (source, target) in WHITESPACE_ONLY {
+                        for (s, t) in [(source, target), (target, source)] {
+                            let script = diff_with(algorithm, s, t, &on(), false).unwrap();
+                            let (deleted, inserted) = changed_text(s, t, &script);
+                            assert!(
+                                deleted.trim().is_empty() && inserted.trim().is_empty(),
+                                "{algorithm:?}: {s:?} -> {t:?}: -{deleted:?} +{inserted:?}"
+                            );
+                        }
+                    }
+                }
+            }
+
+            #[test]
+            fn a_real_change_among_reindented_lines_is_the_only_hunk() {
+                let source = "fn f() {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n}\n";
+                let target = "fn f()  {\n\tlet a = 1;\n\tlet b = 20;\n\tlet c = 3;\n}";
+                let non_blank = |s: &str| s.split_whitespace().collect::<String>();
+                for algorithm in ALGORITHMS {
+                    assert_eq!(
+                        hunks(algorithm, source, target, &on()),
+                        vec![("    let b = 2;\n".into(), "\tlet b = 20;\n".into())],
+                        "{algorithm:?}"
+                    );
+                    for (s, t) in [(source, target), (target, source)] {
+                        let script = diff_with(algorithm, s, t, &on(), false).unwrap();
+                        let (deleted, inserted) = changed_text(s, t, &script);
+                        let mut changed = [non_blank(&deleted), non_blank(&inserted)];
+                        changed.sort();
+                        assert_eq!(changed, ["2", "20"], "{algorithm:?}: {s:?} -> {t:?}");
+                    }
                 }
             }
         }

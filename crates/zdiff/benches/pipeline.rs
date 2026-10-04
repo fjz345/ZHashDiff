@@ -12,6 +12,7 @@ use zdiff::{
     cached_file::FileMetadata,
     diff_builder::{DiffBuilderOptions, build_diff_rows},
     diff_ir::DiffIR,
+    ignore::IgnoreMask,
     lexer::{LexerGreedy, RawToken},
     myers::{MyersDiffAlgorithm, line_diff, myers_count_add_deletes, token_diff},
     read_file_contents,
@@ -131,6 +132,7 @@ fn run_once(source: &str, target: &str) -> Run {
         &tokens_source,
         &tokens_target,
         &cmp,
+        &IgnoreMask::default(),
         cancel.clone(),
     )
     .expect("never cancelled");
@@ -143,6 +145,7 @@ fn run_once(source: &str, target: &str) -> Run {
         &tokens_target,
         &hunks,
         &cmp,
+        &IgnoreMask::default(),
         cancel.clone(),
     )
     .expect("never cancelled");

@@ -124,7 +124,7 @@ impl FileDiffPane {
                 };
                 toggle_btn(
                     ui,
-                    &mut ctx.diff_options.ignore_whitespace,
+                    &mut ctx.diff_options.ignore.whitespace,
                     egui::RichText::new("W").strong().into(),
                     "Ignore Whitespace",
                 );
@@ -1118,7 +1118,10 @@ fn handle_drops(
 mod tests {
     use std::time::Duration;
 
-    use zdiff::diff_builder::{DiffBuilderOptions, DiffRow, LineContent};
+    use zdiff::{
+        diff_builder::{DiffBuilderOptions, DiffRow, LineContent},
+        ignore::IgnoreOptions,
+    };
 
     use crate::{
         diff_ctx::DiffStageTimes,
@@ -1317,7 +1320,7 @@ mod tests {
             (
                 "ignore_whitespace",
                 DiffBuilderOptions {
-                    ignore_whitespace: true,
+                    ignore: IgnoreOptions { whitespace: true },
                     ..Default::default()
                 },
             ),
@@ -1371,7 +1374,7 @@ mod tests {
     #[test]
     fn hidden_whitespace_tokens_are_copied_in_ignore_whitespace_mode() {
         let options = DiffBuilderOptions {
-            ignore_whitespace: true,
+            ignore: IgnoreOptions { whitespace: true },
             ..Default::default()
         };
         let mut harness = CopyHarness::new("a  b\nc\n", "a b\nc\n", &options);

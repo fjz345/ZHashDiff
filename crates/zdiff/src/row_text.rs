@@ -91,6 +91,7 @@ mod tests {
         cached_file::FileMetadata,
         diff_builder::{DiffBuilderOptions, LineContent, build_diff_rows},
         diff_ir::DiffIR,
+        ignore::IgnoreMask,
         lexer::{LEXER_MODE_DEFAULT, LexerDefault, RawToken},
         myers::{MyersDiffAlgorithm, myers_diff_path},
         universal_path::UniversalPath,
@@ -319,6 +320,7 @@ mod tests {
             &file_source.tokens,
             &file_target.tokens,
             cmp,
+            &IgnoreMask::default(),
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();

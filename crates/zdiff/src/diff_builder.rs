@@ -1,5 +1,6 @@
 use crate::{
     diff_ir::{DiffIR, DiffOp, DiffResult, diff_ir_to_no_ws},
+    ignore::IgnoreOptions,
     lexer::{RawTokenTrait, TokenKind},
 };
 
@@ -47,7 +48,8 @@ pub struct PivotLines {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DiffBuilderOptions {
-    pub ignore_whitespace: bool,
+    #[cfg_attr(feature = "serde", serde(flatten))]
+    pub ignore: IgnoreOptions,
     pub highlight_rows: bool,
     pub ghost_rows: bool,
     pub keyword_highlight: bool,
@@ -57,7 +59,7 @@ pub struct DiffBuilderOptions {
 impl Default for DiffBuilderOptions {
     fn default() -> Self {
         Self {
-            ignore_whitespace: false,
+            ignore: IgnoreOptions::default(),
             highlight_rows: true,
             ghost_rows: true,
             keyword_highlight: true,
@@ -71,7 +73,7 @@ impl DiffBuilderOptions {
     pub fn need_invalidation(old: &Self, new: &Self) -> bool {
         let mut ret = old.ghost_rows != new.ghost_rows
             || old.highlight_rows != new.highlight_rows
-            || old.ignore_whitespace != new.ignore_whitespace
+            || old.ignore != new.ignore
             || old.keyword_highlight != new.keyword_highlight;
         if !ret {
             ret = matches!(new.pivot_lines, Some(PivotLines{left: p1, right: p2 }) if p1 > 0 && p2 > 0)
@@ -343,7 +345,7 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
     options: &DiffBuilderOptions,
     estimated_num_rows: usize,
 ) -> Vec<DiffRow> {
-    if options.ignore_whitespace {
+    if options.ignore.whitespace {
         diff_ir = diff_ir_to_no_ws(diff_ir, tokens_source, tokens_target);
     }
 
@@ -400,6 +402,7 @@ mod tests {
 
         use super::*;
         use crate::{
+            ignore::IgnoreMask,
             lexer::{LexerDefault, RawToken},
             myers::{MyersDiffAlgorithm, myers_diff_path},
             test_harness::DiffTestHarness,
@@ -423,8 +426,15 @@ mod tests {
             let cmp = |a: &RawToken, b: &RawToken| {
                 a.kind == b.kind && s1[a.span.clone()] == s2[b.span.clone()]
             };
-            let path = myers_diff_path(algorithm, &t1, &t2, cmp, Arc::new(AtomicBool::new(false)))
-                .expect("not cancelled");
+            let path = myers_diff_path(
+                algorithm,
+                &t1,
+                &t2,
+                cmp,
+                &IgnoreMask::default(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .expect("not cancelled");
             DiffTestHarness::new(
                 s1,
                 s2,
@@ -548,7 +558,7 @@ mod integration_tests {
             Some(&f1.tokens),
             Some(&f2.tokens),
             &DiffBuilderOptions {
-                ignore_whitespace: false,
+                ignore: IgnoreOptions { whitespace: false },
                 ghost_rows: false,
                 ..Default::default()
             },

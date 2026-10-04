@@ -14,6 +14,7 @@ use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, DiffRow, LineContent, PivotLines, build_diff_rows},
     diff_ir::{DiffIR, DiffOp},
+    ignore::IgnoreOptions,
     lexer::RawToken,
     myers::{
         MyersDiffAlgorithm, MyersNumAddDelete, MyersPath, line_diff, myers_count_add_deletes,
@@ -125,6 +126,8 @@ pub struct MyersCtxInput {
     pub file_1: Option<Arc<CachedFile<RawToken>>>,
     pub file_2: Option<Arc<CachedFile<RawToken>>>,
     pub algo: MyersDiffAlgorithm,
+    /// Ignore options decide line equality, so changing them recomputes this stage.
+    pub ignore: IgnoreOptions,
 }
 impl From<UpdateDiffRowsInput> for MyersCtxInput {
     fn from(input: UpdateDiffRowsInput) -> Self {
@@ -132,6 +135,7 @@ impl From<UpdateDiffRowsInput> for MyersCtxInput {
             file_1: input.file_1,
             file_2: input.file_2,
             algo: input.myers_diff_algorithm,
+            ignore: input.options.ignore,
         }
     }
 }
@@ -142,6 +146,7 @@ impl From<&UpdateDiffRowsInput> for MyersCtxInput {
             file_1: input.file_1.clone(),
             file_2: input.file_2.clone(),
             algo: input.myers_diff_algorithm,
+            ignore: input.options.ignore.clone(),
         }
     }
 }
@@ -454,12 +459,20 @@ impl DiffCtx {
 
                     // myers_diff_path's two phases, timed separately.
                     let (t1, t2) = (&c1.tokens, &c2.tokens);
-                    let result =
-                        line_diff(input.algo, t1, t2, &cmp, cancel.clone()).and_then(|hunks| {
+                    let ignore = input.ignore.mask(t1, t2);
+                    let result = line_diff(input.algo, t1, t2, &cmp, &ignore, cancel.clone())
+                        .and_then(|hunks| {
                             let line_elapsed = start.elapsed();
                             let start = Instant::now();
-                            let path =
-                                token_diff(input.algo, t1, t2, &hunks, &cmp, cancel.clone())?;
+                            let path = token_diff(
+                                input.algo,
+                                t1,
+                                t2,
+                                &hunks,
+                                &cmp,
+                                &ignore,
+                                cancel.clone(),
+                            )?;
                             Some((path, line_elapsed, start.elapsed()))
                         });
                     if let Some((path, line_elapsed, token_elapsed)) = result {
@@ -1022,10 +1035,11 @@ fn update_diff_rows_minimal_diff_ctx(
     track_alloc!(reg, "before myers_diff");
     let (algo, t1, t2) = (input.myers_diff_algorithm, &c1.tokens, &c2.tokens);
     let start = Instant::now();
-    let hunks = line_diff(algo, t1, t2, &cmp, cancel_flag.clone())?;
+    let ignore = input.options.ignore.mask(t1, t2);
+    let hunks = line_diff(algo, t1, t2, &cmp, &ignore, cancel_flag.clone())?;
     let line_elapsed = start.elapsed();
     let start = Instant::now();
-    let myers_path = token_diff(algo, t1, t2, &hunks, &cmp, cancel_flag.clone())?;
+    let myers_path = token_diff(algo, t1, t2, &hunks, &cmp, &ignore, cancel_flag.clone())?;
     let token_elapsed = start.elapsed();
     track_alloc!(reg, "myers_diff");
     check_cancel!(cancel_flag, "myers_diff_path");
@@ -1418,6 +1432,39 @@ mod tests {
             assert!(!processor.is_in_progress());
             let ctx = processor.get_minimal_diff_ctx().expect("cached B");
             assert_eq!(ctx.stage_times, times_b);
+        }
+
+        #[test]
+        fn toggling_ignore_whitespace_recomputes_the_diff_stage_and_highlight_rows_does_not() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 300, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 300, 2)),
+            );
+            let mut processor = DiffProcessor::default();
+            let mut current = input(&a.0, &a.1);
+            open(&mut processor, &current);
+            let times = settle(&mut processor)
+                .expect("first diff never completed")
+                .stage_times;
+
+            // A stage served from its cache keeps its time, and spawns no thread.
+            current.options.highlight_rows = !current.options.highlight_rows;
+            open(&mut processor, &current);
+            assert!(processor.ctx.myers_inflight_input.is_none());
+            assert!(processor.ctx.diff_rows_inflight_input.is_some());
+            let after = settle(&mut processor).expect("highlight toggle never completed");
+            assert_eq!(after.stage_times.line_diff, times.line_diff);
+            assert_eq!(after.stage_times.token_diff, times.token_diff);
+
+            current.options.ignore.whitespace = !current.options.ignore.whitespace;
+            open(&mut processor, &current);
+            assert!(
+                processor.ctx.myers_inflight_input.is_some(),
+                "ignore-whitespace must recompute the diff stage"
+            );
+            let ctx = settle(&mut processor).expect("ignore toggle never completed");
+            assert!(ctx.input == current, "diff shows {:?}", ctx.input);
         }
     }
 }
