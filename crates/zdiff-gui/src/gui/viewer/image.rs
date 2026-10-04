@@ -1,6 +1,6 @@
 //! Image viewer: both sides decoded off the UI thread, uploaded once as textures and drawn side
-//! by side with one zoom and pan shared by both. A decoded pair is compared pixel by pixel off
-//! the UI thread too, for the statistics and the difference map.
+//! by side, or in one view (swipe, overlay), with one zoom and pan shared by both. A decoded pair
+//! is compared pixel by pixel off the UI thread too, for the statistics and the difference map.
 
 use std::{
     io::Cursor,
@@ -12,7 +12,7 @@ use std::{
 };
 
 use eframe::egui::{
-    self, Color32, ColorImage, Rect, Sense, Stroke, StrokeKind, TextureFilter, TextureHandle,
+    self, Color32, ColorImage, Pos2, Rect, Sense, Stroke, StrokeKind, TextureFilter, TextureHandle,
     TextureOptions, Vec2, pos2, vec2,
 };
 use zdiff::pixel::{PixelDiff, PixelStats, RgbaBuffer, pixel_diff};
@@ -161,6 +161,38 @@ pub enum ImageMode {
     SideBySide,
     /// Both sides dimmed, with the changed pixels of the union canvas drawn over them.
     Difference,
+    /// Both sides in one view: the first left of a draggable divider, the second right of it.
+    Swipe,
+    /// Both sides in one view, the second drawn over the first at an adjustable opacity.
+    Overlay,
+}
+
+/// Where an image of `size` pixels is drawn in a view whose top-left is `origin`. Every image
+/// starts at the same point, so differently sized images stay aligned at their top-left corners.
+pub fn image_screen_rect(view: ImageView, origin: Pos2, size: Vec2) -> Rect {
+    Rect::from_min_size(origin + view.pan, size * view.zoom)
+}
+
+/// The parts of `rect` left and right of a divider at `divider` (0..=1, clamped) of its width.
+pub fn swipe_clips(rect: Rect, divider: f32) -> [Rect; 2] {
+    let x = rect.left() + rect.width() * divider.clamp(0.0, 1.0);
+    [
+        Rect::from_min_max(rect.min, pos2(x, rect.bottom())),
+        Rect::from_min_max(pos2(x, rect.top()), rect.max),
+    ]
+}
+
+/// The divider fraction (0..=1) for a pointer at `x`.
+pub fn divider_at(rect: Rect, x: f32) -> f32 {
+    if rect.width() <= 0.0 {
+        return 0.5;
+    }
+    ((x - rect.left()) / rect.width()).clamp(0.0, 1.0)
+}
+
+/// The second image's tint in overlay mode. Textures are premultiplied, so every channel scales.
+fn overlay_tint(opacity: f32) -> Color32 {
+    Color32::WHITE.gamma_multiply(opacity.clamp(0.0, 1.0))
 }
 
 /// Changed pixels in the difference map.
@@ -234,6 +266,10 @@ pub struct ImageDiffProcessor {
     mode: ImageMode,
     /// The largest per-channel difference that still counts as unchanged.
     tolerance: u8,
+    /// The swipe divider, as a fraction of the view's width: it stays put while panning.
+    swipe: f32,
+    /// The second image's opacity in overlay mode.
+    opacity: f32,
     /// What the current pair was last sent to compare with; `None` until both sides decode.
     compared_tolerance: Option<u8>,
     compare_generation: u64,
@@ -255,6 +291,8 @@ impl Default for ImageDiffProcessor {
             fit_pending: false,
             mode: ImageMode::default(),
             tolerance: 0,
+            swipe: 0.5,
+            opacity: 0.5,
             compared_tolerance: None,
             compare_generation: 0,
             compare_cancel: Arc::new(AtomicBool::new(false)),
@@ -433,7 +471,8 @@ impl ImageDiffProcessor {
 }
 
 /// Both sides, left one `left_width` wide like the table's left column, in the rest of `ui`.
-/// Wheel zooms about the cursor, drag pans, double-click fits; both sides share the view.
+/// Wheel zooms about the cursor, drag pans, double-click fits; both sides share the view. Swipe
+/// and overlay draw both sides in one view over the whole area.
 pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f32) {
     let mut fit = false;
     let mut actual_size = false;
@@ -444,6 +483,13 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
         ui.separator();
         ui.selectable_value(&mut processor.mode, ImageMode::SideBySide, "Side by side");
         ui.selectable_value(&mut processor.mode, ImageMode::Difference, "Difference");
+        ui.selectable_value(&mut processor.mode, ImageMode::Swipe, "Swipe")
+            .on_hover_text("Drag the divider to reveal the other image");
+        ui.selectable_value(&mut processor.mode, ImageMode::Overlay, "Overlay");
+        if processor.mode == ImageMode::Overlay {
+            ui.add(egui::Slider::new(&mut processor.opacity, 0.0..=1.0).text("Opacity"))
+                .on_hover_text("How opaque the right image is over the left one");
+        }
         ui.add(egui::Slider::new(&mut processor.tolerance, 0..=255).text("Tolerance"))
             .on_hover_text("The largest per-channel difference that still counts as unchanged");
         ui.label(processor.compare_status());
@@ -457,13 +503,22 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
     let info_height = ui.text_style_height(&egui::TextStyle::Monospace) + 4.0;
     let gap = 12.0 + 2.0 * ui.spacing().item_spacing.x;
     let left_right = (area.left() + left_width).min(area.right());
-    let columns = [
-        Rect::from_min_max(area.min, pos2(left_right, area.bottom())),
-        Rect::from_min_max(
-            pos2((left_right + gap).min(area.right()), area.top()),
-            area.max,
-        ),
-    ];
+    // Swipe and overlay draw both sides in one view, so until both are decoded the pair is drawn
+    // side by side, where a spinner or a failure has its own column.
+    let combined = matches!(processor.mode, ImageMode::Swipe | ImageMode::Overlay)
+        && processor.decoded(0).is_some()
+        && processor.decoded(1).is_some();
+    let columns = if combined {
+        [area, area]
+    } else {
+        [
+            Rect::from_min_max(area.min, pos2(left_right, area.bottom())),
+            Rect::from_min_max(
+                pos2((left_right + gap).min(area.right()), area.top()),
+                area.max,
+            ),
+        ]
+    };
     let image_rects =
         columns.map(|c| Rect::from_min_max(pos2(c.left(), c.top() + info_height), c.max));
     // Fit for the narrower side, so the canvas fits in both.
@@ -504,6 +559,25 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
             processor.view = processor.view.zoomed_about(pointer - side_rect.min, factor);
         }
     }
+
+    // Registered after the view's drag area, so a drag on the divider moves it instead of panning.
+    let swipe = (combined && processor.mode == ImageMode::Swipe).then(|| {
+        let view_rect = image_rects[0];
+        let x = swipe_clips(view_rect, processor.swipe)[0].right();
+        let strip = Rect::from_x_y_ranges(x - 4.0..=x + 4.0, view_rect.y_range());
+        let handle = ui.interact(strip, ui.id().with("image_swipe_divider"), Sense::drag());
+        if handle.hovered() || handle.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        if handle.dragged()
+            && let Some(pointer) = handle.interact_pointer_pos()
+        {
+            processor.swipe = divider_at(view_rect, pointer.x);
+        }
+        swipe_clips(view_rect, processor.swipe)
+    });
+    let overlay_opacity =
+        (combined && processor.mode == ImageMode::Overlay).then_some(processor.opacity);
 
     let view = processor.view;
     let diff_overlay = match &mut processor.diff_map {
@@ -546,9 +620,15 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
                 );
             }
             SideState::Decoded { image, texture } => {
+                // In one view the second side's info goes on the right, where its image is shown.
+                let (info_pos, info_align) = if combined && index == 1 {
+                    (columns[index].right_top(), egui::Align2::RIGHT_TOP)
+                } else {
+                    (columns[index].min, egui::Align2::LEFT_TOP)
+                };
                 painter.text(
-                    columns[index].min,
-                    egui::Align2::LEFT_TOP,
+                    info_pos,
+                    info_align,
                     format!("{}, {} x {}", image.format, image.width, image.height),
                     font.clone(),
                     text_color,
@@ -567,16 +647,20 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
                     ui.ctx()
                         .load_texture(format!("image_diff_side_{index}"), pixels, options)
                 });
-                let drawn = Rect::from_min_size(
-                    image_rect.min + view.pan,
-                    vec2(image.width as f32, image.height as f32) * view.zoom,
+                let drawn = image_screen_rect(
+                    view,
+                    image_rect.min,
+                    vec2(image.width as f32, image.height as f32),
                 );
-                let painter = ui.painter_at(image_rect);
+                // Swipe shows each side only on its side of the divider.
+                let painter = ui.painter_at(swipe.map_or(image_rect, |clips| clips[index]));
                 let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-                // Dimmed under the difference map, so the highlight stands out.
-                let tint = match diff_overlay {
-                    Some(_) => Color32::from_gray(80),
-                    None => Color32::WHITE,
+                let tint = match (&diff_overlay, overlay_opacity) {
+                    // Dimmed under the difference map, so the highlight stands out.
+                    (Some(_), _) => Color32::from_gray(80),
+                    // Sides draw in order, so the second blends over the first.
+                    (None, Some(opacity)) if index == 1 => overlay_tint(opacity),
+                    _ => Color32::WHITE,
                 };
                 painter.image(texture.id(), drawn, uv, tint);
                 painter.rect_stroke(
@@ -617,6 +701,24 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
                 }
             }
         }
+    }
+
+    if let Some([left, _]) = swipe {
+        // Dark under light, so the divider shows on any image.
+        let painter = ui.painter_at(image_rects[0]);
+        let x = left.right();
+        painter.vline(
+            x,
+            left.y_range(),
+            Stroke::new(4.0, Color32::from_black_alpha(160)),
+        );
+        painter.vline(x, left.y_range(), Stroke::new(2.0, Color32::WHITE));
+        painter.circle(
+            pos2(x, left.center().y),
+            6.0,
+            Color32::WHITE,
+            Stroke::new(1.0, Color32::from_black_alpha(160)),
+        );
     }
 }
 
@@ -843,6 +945,72 @@ mod tests {
         let mask = mask_image(&diff);
         assert_eq!(mask.size, [2, 1]);
         assert_eq!(mask.pixels, vec![Color32::TRANSPARENT, DIFF_COLOR]);
+    }
+
+    #[test]
+    fn differently_sized_images_share_their_top_left_corner() {
+        let view = ImageView {
+            zoom: 2.0,
+            pan: vec2(10.0, -4.0),
+        };
+        let origin = pos2(100.0, 50.0);
+        let small = image_screen_rect(view, origin, vec2(3.0, 5.0));
+        let large = image_screen_rect(view, origin, vec2(40.0, 2.0));
+        assert_eq!(small.min, pos2(110.0, 46.0));
+        assert_eq!(large.min, small.min);
+        assert_eq!(small.size(), vec2(6.0, 10.0));
+        assert_eq!(large.size(), vec2(80.0, 4.0));
+    }
+
+    #[test]
+    fn swipe_clips_tile_the_view_at_the_divider() {
+        let rect = Rect::from_min_max(pos2(100.0, 20.0), pos2(300.0, 120.0));
+        let [left, right] = swipe_clips(rect, 0.25);
+        assert_eq!(
+            left,
+            Rect::from_min_max(pos2(100.0, 20.0), pos2(150.0, 120.0))
+        );
+        assert_eq!(
+            right,
+            Rect::from_min_max(pos2(150.0, 20.0), pos2(300.0, 120.0))
+        );
+
+        // At either end one side takes the whole view and the other nothing.
+        let [left, right] = swipe_clips(rect, 0.0);
+        assert_eq!((left.width(), right), (0.0, rect));
+        let [left, right] = swipe_clips(rect, 1.0);
+        assert_eq!((left, right.width()), (rect, 0.0));
+
+        // Out of range is clamped.
+        assert_eq!(swipe_clips(rect, -1.0), swipe_clips(rect, 0.0));
+        assert_eq!(swipe_clips(rect, 7.0), swipe_clips(rect, 1.0));
+    }
+
+    #[test]
+    fn the_divider_follows_the_pointer_inside_the_view() {
+        let rect = Rect::from_min_max(pos2(100.0, 20.0), pos2(300.0, 120.0));
+        assert_eq!(divider_at(rect, 150.0), 0.25);
+        assert_eq!(divider_at(rect, 300.0), 1.0);
+        assert_eq!(divider_at(rect, 20.0), 0.0);
+        assert_eq!(divider_at(rect, 1000.0), 1.0);
+        // Round trip: the divider lands where the pointer is.
+        let [left, _] = swipe_clips(rect, divider_at(rect, 237.0));
+        assert!((left.right() - 237.0).abs() < 1e-3);
+        // A view with no width keeps the divider in range.
+        let empty = Rect::from_min_max(pos2(5.0, 0.0), pos2(5.0, 10.0));
+        assert!((0.0..=1.0).contains(&divider_at(empty, 5.0)));
+    }
+
+    #[test]
+    fn overlay_opacity_scales_the_second_image() {
+        assert_eq!(overlay_tint(1.0), Color32::WHITE);
+        assert_eq!(overlay_tint(0.0), Color32::TRANSPARENT);
+        let half = overlay_tint(0.5);
+        assert!((120..=135).contains(&half.a()), "{half:?}");
+        // Premultiplied: every channel scales with alpha.
+        assert_eq!([half.r(), half.g(), half.b()], [half.a(); 3]);
+        assert_eq!(overlay_tint(2.0), overlay_tint(1.0));
+        assert_eq!(overlay_tint(-1.0), overlay_tint(0.0));
     }
 
     #[test]
