@@ -238,6 +238,40 @@ impl FileSystemView {
             }
         }
 
+        // With a whitelist, a folder is shown on every side it exists on when a visible file is
+        // below it on either side, so a folder that exists on both sides never reads as one-sided.
+        if !filter.whitelist.is_empty() {
+            let mut kept_folders: HashSet<String> = HashSet::new();
+            for (rel_path, (left, right)) in &entries_map {
+                let has_file = [left, right]
+                    .iter()
+                    .any(|side| side.is_some_and(|(_, node, _)| !node.is_dir()));
+                if !has_file {
+                    continue;
+                }
+                let mut path = rel_path.as_str();
+                // Stops at the first ancestor already kept: its own ancestors are kept too.
+                while let Some((parent, _)) = path.rsplit_once('/') {
+                    if !kept_folders.insert(parent.to_owned()) {
+                        break;
+                    }
+                    path = parent;
+                }
+            }
+            entries_map.retain(|rel_path, (left, right)| {
+                if rel_path.is_empty() || kept_folders.contains(rel_path) {
+                    return true;
+                }
+                // A path can be a folder on one side and a file on the other.
+                for side in [&mut *left, &mut *right] {
+                    if side.is_some_and(|(_, node, _)| node.is_dir()) {
+                        *side = None;
+                    }
+                }
+                left.is_some() || right.is_some()
+            });
+        }
+
         let num_files_and_folders_1 = file_system_1
             .and_then(|f| Some(f.file_system.total_files_and_folders()))
             .unwrap_or(0) as usize;
@@ -324,8 +358,8 @@ impl FileSystemView {
 }
 
 /// Per node id of the view's model, true when the filter hides the node: not kept by the filter,
-/// inside a hidden folder, or, with a whitelist set, a folder with nothing visible below it. The
-/// root is never hidden.
+/// or inside a hidden folder. The root is never hidden. Folders the whitelist leaves empty are
+/// pruned later, across both sides.
 fn filtered_out(view: &FileSystemView, filter: &PathFilter) -> Vec<bool> {
     let model = &view.file_system;
     let mut hidden = vec![false; model.total_files_and_folders()];
@@ -333,9 +367,7 @@ fn filtered_out(view: &FileSystemView, filter: &PathFilter) -> Vec<bool> {
         return hidden;
     }
     // Pre-order, so a parent is decided before its children.
-    let pre_order: Vec<(FsNodeId, &FsNode)> =
-        model.iter_tree().map(|(id, node, _)| (id, node)).collect();
-    for &(id, node) in &pre_order {
+    for (id, node, _) in model.iter_tree() {
         let Some(parent) = node.parent else {
             continue;
         };
@@ -344,23 +376,6 @@ fn filtered_out(view: &FileSystemView, filter: &PathFilter) -> Vec<bool> {
             let name = path.as_ref().file_name().unwrap_or_default();
             !filter.keeps(&name.to_string_lossy(), node.is_dir())
         };
-    }
-    if filter.whitelist.is_empty() {
-        return hidden;
-    }
-    // Reverse pre-order visits every descendant before its folder, so a folder's flag is final
-    // when it is reached.
-    let mut has_visible_child = vec![false; hidden.len()];
-    for &(id, node) in pre_order.iter().rev() {
-        let Some(parent) = node.parent else {
-            continue;
-        };
-        if node.is_dir() && !has_visible_child[id] {
-            hidden[id] = true;
-        }
-        if !hidden[id] {
-            has_visible_child[parent] = true;
-        }
     }
     hidden
 }
@@ -1844,7 +1859,7 @@ mod tests {
             );
             fs::create_dir_all(dir.path().join("empty/nested")).unwrap();
         }
-        // A folder kept on one side only.
+        // A whitelisted file on one side keeps its folder on both: the right one/ exists.
         write_files(left_dir.path(), &[("one/c.rs", "l")]);
         write_files(right_dir.path(), &[("one/c.md", "r")]);
         let left = load_view(left_dir.path());
@@ -1864,7 +1879,7 @@ mod tests {
                 ("", "Different"),
                 ("keep", "Same"),
                 ("keep/a.rs", "Same"),
-                ("one", "OnlyInFirst"),
+                ("one", "Different"),
                 ("one/c.rs", "OnlyInFirst"),
             ]
         );
