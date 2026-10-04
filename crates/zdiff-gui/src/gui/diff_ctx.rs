@@ -2069,7 +2069,8 @@ mod tests {
                     hunk: 1,
                     target: RevertTarget::Left,
                 };
-                let planned = plan_hunk_revert(&collapsed, revert).expect("revert planned");
+                let planned = plan_hunk_revert(&collapsed, revert, std::path::Path::new(""))
+                    .expect("revert planned");
 
                 // The second conflict and a find hit below the block were navigated to.
                 assert_eq!(collapsed.precomputed_diffs.len(), 2);
@@ -2108,7 +2109,10 @@ mod tests {
                 assert_eq!(goto.start, row_of_left_line(rows, 10));
                 assert_eq!(ctx.precomputed_file_rows.0[9], goto.start);
 
-                assert_eq!(plan_hunk_revert(&ctx, revert), Ok(planned));
+                assert_eq!(
+                    plan_hunk_revert(&ctx, revert, std::path::Path::new("")),
+                    Ok(planned)
+                );
             }
 
             /// `gap_pair` where a function opens on line 8, inside the block of lines 6..=15, and

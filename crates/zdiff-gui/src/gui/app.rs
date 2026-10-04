@@ -22,7 +22,7 @@ use egui_tiles::Tile;
 use crate::{
     diff_ctx::{DiffProcessor, FindCtx, UpdateDiffRowsInput},
     file::{FileProcessor, LoadedFile},
-    keybindings::{Keybindings, Shortcut, ui_keybindings},
+    keybindings::{Keybindings, QuickDiffPaths, Shortcut, ui_keybindings},
     p4::{P4Command, get_p4_config, ui_p4config, update_p4_config},
     revert::{
         self, HistoryStep, PendingP4Edit, RevertHistory, RevertRecord, RevertRefusal, RevertTarget,
@@ -882,7 +882,9 @@ impl<'a> ZApp {
                     .ctx_file_diff
                     .diff_ctx
                     .ok_or(RevertRefusal::NoSuchHunk)
-                    .and_then(|diff_ctx| revert::plan_hunk_revert(diff_ctx, revert_request));
+                    .and_then(|diff_ctx| {
+                        revert::plan_hunk_revert(diff_ctx, revert_request, &std::env::temp_dir())
+                    });
                 match planned {
                     Ok(planned) => {
                         let path = planned.path.clone();
@@ -1187,34 +1189,20 @@ impl<'a> ZApp {
                             kb.format()
                         );
 
-                        if let Some((source_root, source_path)) = &path.source {
-                            app_state_ctx
-                                .file_1
-                                .set_root(UniversalPath::from(source_root));
-
-                            app_state_ctx
-                                .file_1
-                                .set_path(UniversalPath::from(source_path));
-                        }
-
-                        // Don't set any target paths if root & path is ""
-                        if !(path.target.0.is_empty() && path.target.1.is_empty()) {
-                            let target_path = if path.target.1.is_empty() {
-                                // Use sources file path split from root
-                                &app_state_ctx.file_1.get_path().to_string()
-                            } else {
-                                &path.target.1
-                            };
-
-                            app_state_ctx
-                                .file_2
-                                .set_root(UniversalPath::from(&path.target.0));
-                            app_state_ctx
-                                .file_2
-                                .set_path(UniversalPath::from(target_path));
-                        }
-
-                        if path.source.is_some() {
+                        if let Err(refusal) = apply_quick_diff(
+                            path,
+                            &mut app_state_ctx.file_1,
+                            &mut app_state_ctx.file_2,
+                            &std::env::temp_dir(),
+                        ) {
+                            log::warn!(
+                                "User Quick Diff Shortcut [{}] disabled: {}:\n{:?}\n{:?}",
+                                i + 1,
+                                refusal,
+                                app_state_ctx.file_1.get_full_path(),
+                                app_state_ctx.file_2.get_full_path()
+                            );
+                        } else if path.source.is_some() {
                             log::info!(
                                 "User Quick Diff Shortcut set paths:\nSource: {:?}\nTarget: {:?}",
                                 app_state_ctx.file_1.get_full_path(),
@@ -1404,6 +1392,62 @@ impl eframe::App for ZApp {
     }
 }
 
+/// Why a Quick Diff left both sides as they were.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuickDiffRefusal {
+    BothTemp,
+}
+
+impl std::fmt::Display for QuickDiffRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            QuickDiffRefusal::BothTemp => {
+                "both sides are temporary files, so neither has a workspace path to diff against"
+            }
+        })
+    }
+}
+
+/// Points the sides at a Quick Diff slot's paths. A slot without a target path diffs the same
+/// root-relative path under its target root. That path comes from the left side, or from the
+/// right side when the left one is a temp copy, as when p4 launches an external diff. With both
+/// sides temp, nothing changes.
+fn apply_quick_diff(
+    slot: &QuickDiffPaths,
+    file_1: &mut FileProcessor,
+    file_2: &mut FileProcessor,
+    temp_root: &Path,
+) -> Result<(), QuickDiffRefusal> {
+    let is_temp = |file: &mut FileProcessor| file.get_full_path().is_temp(temp_root);
+    if is_temp(file_1) && is_temp(file_2) {
+        return Err(QuickDiffRefusal::BothTemp);
+    }
+    if let Some((source_root, source_path)) = &slot.source {
+        file_1.set_root(UniversalPath::from(source_root));
+        file_1.set_path(UniversalPath::from(source_path));
+    }
+
+    // Don't set any target paths if root & path is ""
+    if !(slot.target.0.is_empty() && slot.target.1.is_empty()) {
+        let target_path = if slot.target.1.is_empty() {
+            // The sides as they are now, so a slot source counts as the left side. Read before
+            // file_2 gets the target root.
+            let identity = if is_temp(file_1) {
+                &mut *file_2
+            } else {
+                &mut *file_1
+            };
+            &identity.get_path().to_string()
+        } else {
+            &slot.target.1
+        };
+
+        file_2.set_root(UniversalPath::from(&slot.target.0));
+        file_2.set_path(UniversalPath::from(target_path));
+    }
+    Ok(())
+}
+
 #[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
@@ -1503,5 +1547,120 @@ mod tests {
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.keybindings.undo_revert, None);
         assert_eq!(restored.keybindings.redo_revert, ctx.keybindings.find);
+    }
+
+    mod quick_diff {
+        use super::*;
+
+        const TEMP: &str = r"C:\Users\me\AppData\Local\Temp";
+        const TEMP_COPY: &str = r"C:\Users\me\AppData\Local\Temp\p4v\main.rs#3";
+        const WORKSPACE: &str = r"C:\ws";
+        const WORKSPACE_FILE: &str = r"C:\ws\src\main.rs";
+
+        /// A slot that diffs the open file's root-relative path under a depot root.
+        fn depot_slot() -> QuickDiffPaths {
+            QuickDiffPaths {
+                target: ("//depot/main".into(), String::new()),
+                source: None,
+            }
+        }
+
+        fn side(root: Option<&str>, path: &str) -> FileProcessor {
+            let mut file = FileProcessor::new();
+            if let Some(root) = root {
+                file.set_root(UniversalPath::from(root));
+            }
+            file.set_path(UniversalPath::from(path));
+            file
+        }
+
+        fn apply(
+            slot: &QuickDiffPaths,
+            file_1: &mut FileProcessor,
+            file_2: &mut FileProcessor,
+        ) -> Result<(), QuickDiffRefusal> {
+            apply_quick_diff(slot, file_1, file_2, Path::new(TEMP))
+        }
+
+        #[test]
+        fn neither_temp_takes_the_left_sides_path() {
+            let mut left = side(Some(WORKSPACE), WORKSPACE_FILE);
+            let mut right = side(None, r"C:\other\lib.rs");
+            assert_eq!(apply(&depot_slot(), &mut left, &mut right), Ok(()));
+            assert_eq!(
+                right.get_full_path(),
+                UniversalPath::new("//depot/main/src/main.rs")
+            );
+            assert_eq!(left.get_full_path(), UniversalPath::new(WORKSPACE_FILE));
+        }
+
+        #[test]
+        fn a_temp_left_side_takes_the_right_sides_path() {
+            let mut left = side(None, TEMP_COPY);
+            let mut right = side(Some(WORKSPACE), WORKSPACE_FILE);
+            assert_eq!(apply(&depot_slot(), &mut left, &mut right), Ok(()));
+            assert_eq!(
+                right.get_full_path(),
+                UniversalPath::new("//depot/main/src/main.rs")
+            );
+            assert_eq!(left.get_full_path(), UniversalPath::new(TEMP_COPY));
+        }
+
+        #[test]
+        fn a_temp_right_side_takes_the_left_sides_path() {
+            let mut left = side(Some(WORKSPACE), WORKSPACE_FILE);
+            let mut right = side(None, TEMP_COPY);
+            assert_eq!(apply(&depot_slot(), &mut left, &mut right), Ok(()));
+            assert_eq!(
+                right.get_full_path(),
+                UniversalPath::new("//depot/main/src/main.rs")
+            );
+            assert_eq!(left.get_full_path(), UniversalPath::new(WORKSPACE_FILE));
+        }
+
+        #[test]
+        fn both_temp_disables_every_slot_and_changes_nothing() {
+            let other_copy = r"C:\Users\me\AppData\Local\Temp\p4v\main.rs#4";
+            let slots = [
+                depot_slot(),
+                QuickDiffPaths {
+                    target: ("//depot/main".into(), "src/main.rs".into()),
+                    source: Some((WORKSPACE.into(), WORKSPACE_FILE.into())),
+                },
+            ];
+            for slot in slots {
+                let mut left = side(None, TEMP_COPY);
+                let mut right = side(None, other_copy);
+                assert_eq!(
+                    apply(&slot, &mut left, &mut right),
+                    Err(QuickDiffRefusal::BothTemp),
+                    "{slot:?}"
+                );
+                assert_eq!(left.get_full_path(), UniversalPath::new(TEMP_COPY));
+                assert_eq!(left.get_root(), None);
+                assert_eq!(right.get_full_path(), UniversalPath::new(other_copy));
+                assert_eq!(right.get_root(), None);
+            }
+        }
+
+        #[test]
+        fn a_slot_source_is_applied_before_the_path_is_taken() {
+            // The source replaces the temp left side, so it supplies the path.
+            let slot = QuickDiffPaths {
+                source: Some((WORKSPACE.into(), r"C:\ws\src\lib.rs".into())),
+                ..depot_slot()
+            };
+            let mut left = side(None, TEMP_COPY);
+            let mut right = side(None, r"C:\other\main.rs");
+            assert_eq!(apply(&slot, &mut left, &mut right), Ok(()));
+            assert_eq!(
+                left.get_full_path(),
+                UniversalPath::new(r"C:\ws\src\lib.rs")
+            );
+            assert_eq!(
+                right.get_full_path(),
+                UniversalPath::new("//depot/main/src/lib.rs")
+            );
+        }
     }
 }

@@ -648,6 +648,8 @@ impl FileDiffPane {
                                     }
 
                                     let widths = body.widths().to_vec();
+                                    // Once per frame, not per row: a temp side gets no revert buttons.
+                                    let temp_root = std::env::temp_dir();
                                     // Wrapped text fits its column, so nothing scrolls sideways.
                                     let [sl, sr] = if wrap {
                                         [0.0; 2]
@@ -797,7 +799,7 @@ impl FileDiffPane {
                                                                 let Some((diff_ctx, hunk)) = hunk else {
                                                                     return;
                                                                 };
-                                                                match revert::check_revert(diff_ctx, target) {
+                                                                match revert::check_revert(diff_ctx, target, &temp_root) {
                                                                     Ok(()) => {
                                                                         if ui.button(label).on_hover_text(hover).clicked() {
                                                                             *ctx.revert_request = Some(RevertRequest { hunk, target });

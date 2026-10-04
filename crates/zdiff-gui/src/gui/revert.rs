@@ -40,6 +40,7 @@ pub struct RevertRequest {
 pub enum RevertRefusal {
     MissingFile,
     NotLocalTarget,
+    TempTarget,
     PivotActive,
     NoSuchHunk,
 }
@@ -49,6 +50,7 @@ impl std::fmt::Display for RevertRefusal {
         f.write_str(match self {
             RevertRefusal::MissingFile => "both files must be loaded",
             RevertRefusal::NotLocalTarget => "the target is not a local file",
+            RevertRefusal::TempTarget => "the target is a temporary file",
             RevertRefusal::PivotActive => {
                 "pivot lines are set, so rows don't pair the files by the diff"
             }
@@ -142,7 +144,12 @@ pub fn hunk_starting_at(spans: &[DiffSpan], row: usize) -> Option<usize> {
         .ok()
 }
 
-pub fn check_revert(ctx: &MinimalDiffCtx, target: RevertTarget) -> Result<(), RevertRefusal> {
+/// A target inside `temp_root` is a throwaway copy (e.g. one p4 made for an external diff).
+pub fn check_revert(
+    ctx: &MinimalDiffCtx,
+    target: RevertTarget,
+    temp_root: &Path,
+) -> Result<(), RevertRefusal> {
     let (Some(left), Some(right)) = (&ctx.input.file_1, &ctx.input.file_2) else {
         return Err(RevertRefusal::MissingFile);
     };
@@ -152,6 +159,9 @@ pub fn check_revert(ctx: &MinimalDiffCtx, target: RevertTarget) -> Result<(), Re
     };
     if target_file.path.as_path().is_none() {
         return Err(RevertRefusal::NotLocalTarget);
+    }
+    if target_file.path.is_temp(temp_root) {
+        return Err(RevertRefusal::TempTarget);
     }
     // Same condition as the pivot alignment in the rows stage. Pivoted rows shift one side,
     // so a span pairs unrelated parts of the files.
@@ -173,8 +183,9 @@ pub struct PlannedRevert {
 pub fn plan_hunk_revert(
     ctx: &MinimalDiffCtx,
     request: RevertRequest,
+    temp_root: &Path,
 ) -> Result<PlannedRevert, RevertRefusal> {
-    check_revert(ctx, request.target)?;
+    check_revert(ctx, request.target, temp_root)?;
     let (Some(left), Some(right)) = (&ctx.input.file_1, &ctx.input.file_2) else {
         unreachable!("check_revert requires both files");
     };
@@ -243,10 +254,10 @@ pub fn write_guarded(
     loaded_hash: &str,
     temp_root: &Path,
 ) -> Result<Vec<u8>, WriteRefusal> {
-    // Canonical paths, so a short (8.3) or differently cased temp dir still matches. Issue 05's
-    // temp classifier replaces this check.
+    // Canonical paths, so a short (8.3) name of the temp dir still matches. The buttons only
+    // ask the lexical classifier; this is the check that can't be fooled by an alias.
     let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    if canonical(path).starts_with(canonical(temp_root)) {
+    if UniversalPath::from(canonical(path)).is_temp(&canonical(temp_root)) {
         return Err(WriteRefusal::TempTarget);
     }
     let not_found_is_stale = |e: io::Error| match e.kind() {
@@ -471,6 +482,11 @@ mod tests {
 
     const SETTLE_TIMEOUT: Duration = Duration::from_secs(30);
 
+    /// The fixtures are tempfiles in the OS temp dir; an empty root makes none of them temp.
+    fn no_temp_root() -> &'static Path {
+        Path::new("")
+    }
+
     fn cached(
         display: UniversalPath,
         physical: &Path,
@@ -555,8 +571,9 @@ mod tests {
 
         /// Plans the revert of `hunk` and checks it targets the right file. Nothing is written.
         fn plan(&self, hunk: usize, target: RevertTarget) -> String {
-            let planned = plan_hunk_revert(&self.diff(), RevertRequest { hunk, target })
-                .expect("revert refused");
+            let planned =
+                plan_hunk_revert(&self.diff(), RevertRequest { hunk, target }, no_temp_root())
+                    .expect("revert refused");
             assert_eq!(planned.path, self.path(target));
             planned.contents
         }
@@ -696,8 +713,12 @@ mod tests {
         let mut hunks = pair.diff().precomputed_diffs.len();
         assert!(hunks > 0);
         while hunks > 0 {
-            let planned =
-                plan_hunk_revert(&pair.diff(), RevertRequest { hunk: 0, target }).unwrap();
+            let planned = plan_hunk_revert(
+                &pair.diff(),
+                RevertRequest { hunk: 0, target },
+                no_temp_root(),
+            )
+            .unwrap();
             std::fs::write(planned.path, planned.contents).unwrap();
             let after = pair.diff().precomputed_diffs.len();
             assert!(
@@ -749,9 +770,12 @@ mod tests {
         let ctx = pair.diff();
         assert!(!ctx.precomputed_diffs.is_empty());
         for target in [Left, Right] {
-            assert_eq!(check_revert(&ctx, target), Err(RevertRefusal::PivotActive));
             assert_eq!(
-                plan_hunk_revert(&ctx, RevertRequest { hunk: 0, target }),
+                check_revert(&ctx, target, no_temp_root()),
+                Err(RevertRefusal::PivotActive)
+            );
+            assert_eq!(
+                plan_hunk_revert(&ctx, RevertRequest { hunk: 0, target }, no_temp_root()),
                 Err(RevertRefusal::PivotActive)
             );
         }
@@ -772,31 +796,96 @@ mod tests {
         );
         let ctx = diff_files(depot, local, DiffBuilderOptions::default());
 
-        assert_eq!(check_revert(&ctx, Left), Err(RevertRefusal::NotLocalTarget));
+        assert_eq!(
+            check_revert(&ctx, Left, no_temp_root()),
+            Err(RevertRefusal::NotLocalTarget)
+        );
         assert_eq!(
             plan_hunk_revert(
                 &ctx,
                 RevertRequest {
                     hunk: 0,
                     target: Left
-                }
+                },
+                no_temp_root()
             ),
             Err(RevertRefusal::NotLocalTarget)
         );
-        assert_eq!(check_revert(&ctx, Right), Ok(()));
+        assert_eq!(check_revert(&ctx, Right, no_temp_root()), Ok(()));
         assert_eq!(
             plan_hunk_revert(
                 &ctx,
                 RevertRequest {
                     hunk: 0,
                     target: Right
-                }
+                },
+                no_temp_root()
             ),
             Ok(PlannedRevert {
                 path: pair.right.clone(),
                 contents: "a\nb\n".to_string(),
                 loaded_hash: hash_file_mmap(&pair.right).unwrap(),
             })
+        );
+    }
+
+    #[test]
+    fn temp_target_is_refused_and_the_other_side_still_reverts() {
+        let temp_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let temp_copy = temp_root.path().join("p4v").join("file#3.txt");
+        std::fs::create_dir_all(temp_copy.parent().unwrap()).unwrap();
+        std::fs::write(&temp_copy, "a\nb\n").unwrap();
+        let local = workspace.path().join("file.txt");
+        std::fs::write(&local, "a\nB\n").unwrap();
+        let ctx = diff_files(
+            cached(
+                UniversalPath::from(temp_copy.clone()),
+                &temp_copy,
+                LEXER_MODE_DEFAULT,
+            ),
+            cached(
+                UniversalPath::from(local.clone()),
+                &local,
+                LEXER_MODE_DEFAULT,
+            ),
+            DiffBuilderOptions::default(),
+        );
+        let request = |target| RevertRequest { hunk: 0, target };
+
+        assert_eq!(
+            check_revert(&ctx, Left, temp_root.path()),
+            Err(RevertRefusal::TempTarget)
+        );
+        assert_eq!(
+            plan_hunk_revert(&ctx, request(Left), temp_root.path()),
+            Err(RevertRefusal::TempTarget)
+        );
+        assert_eq!(check_revert(&ctx, Right, temp_root.path()), Ok(()));
+        assert_eq!(
+            plan_hunk_revert(&ctx, request(Right), temp_root.path())
+                .unwrap()
+                .contents,
+            "a\nb\n"
+        );
+        // Swapped sides: the temp copy is the right file now.
+        let swapped = diff_files(
+            cached(
+                UniversalPath::from(local.clone()),
+                &local,
+                LEXER_MODE_DEFAULT,
+            ),
+            cached(
+                UniversalPath::from(temp_copy.clone()),
+                &temp_copy,
+                LEXER_MODE_DEFAULT,
+            ),
+            DiffBuilderOptions::default(),
+        );
+        assert_eq!(check_revert(&swapped, Left, temp_root.path()), Ok(()));
+        assert_eq!(
+            check_revert(&swapped, Right, temp_root.path()),
+            Err(RevertRefusal::TempTarget)
         );
     }
 
@@ -821,7 +910,7 @@ mod tests {
         }
         let one_sided = processor.get_minimal_diff_ctx().unwrap();
         assert_eq!(
-            check_revert(&one_sided, Right),
+            check_revert(&one_sided, Right, no_temp_root()),
             Err(RevertRefusal::MissingFile)
         );
 
@@ -832,7 +921,8 @@ mod tests {
                 RevertRequest {
                     hunk: 1,
                     target: Left
-                }
+                },
+                no_temp_root()
             ),
             Err(RevertRefusal::NoSuchHunk)
         );
@@ -923,6 +1013,26 @@ mod tests {
             target.write(new).unwrap();
             assert_eq!(target.read(), new);
             target.assert_no_leftovers();
+        }
+
+        #[test]
+        fn target_inside_the_temp_root_is_refused_and_the_file_is_untouched() {
+            let target = Target::new(b"loaded\n");
+            let dir = target.dir.path();
+            let roots = [
+                dir.to_path_buf(),
+                std::fs::canonicalize(dir).unwrap(),
+                PathBuf::from(dir.to_string_lossy().replace('\\', "/").to_uppercase()),
+            ];
+            for root in roots {
+                let result = write_guarded(&target.path, b"reverted\n", &target.loaded_hash, &root);
+                assert!(
+                    matches!(result, Err(WriteRefusal::TempTarget)),
+                    "{root:?}: {result:?}"
+                );
+                assert_eq!(target.read(), b"loaded\n");
+                target.assert_no_leftovers();
+            }
         }
 
         #[test]
