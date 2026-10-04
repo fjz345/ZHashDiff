@@ -32,6 +32,12 @@ impl TokenKind {
             TokenKind::Whitespace | TokenKind::Tab | TokenKind::Newline
         )
     }
+    pub fn is_comment(&self) -> bool {
+        matches!(
+            self,
+            TokenKind::Comment | TokenKind::CommentStart | TokenKind::CommentEnd
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -62,10 +68,21 @@ pub type LexerGreedy<'a, T> = Lexer<'a, LEXER_MODE_GREEDY, T>;
 pub type LexerTokenize<'a, T> = Lexer<'a, LEXER_MODE_TOKENIZE, T>;
 pub type LexerNewLine<'a, T> = Lexer<'a, LEXER_MODE_NEWLINE, T>;
 
+/// What the cursor is inside, carried across tokens and lines. String literals never span a
+/// line, so they are lexed in one go and need no state.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LexState {
+    Code,
+    /// Only entered in TOKENIZE mode; the other modes consume a line comment as one token.
+    LineComment,
+    BlockComment,
+}
+
 #[derive(Debug, Clone)]
 pub struct Lexer<'a, const LEXER_MODE: u8, T: RawTokenTrait> {
     source: &'a str,
     cursor: usize,
+    state: LexState,
     phantom_data: PhantomData<T>,
 }
 
@@ -74,7 +91,32 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'a, LEXER_MODE, T> {
         Self {
             source,
             cursor: 0,
+            state: LexState::Code,
             phantom_data: PhantomData,
+        }
+    }
+
+    fn rest(&self) -> &'a str {
+        &self.source[self.cursor..]
+    }
+
+    fn at_line_end(&self) -> bool {
+        matches!(self.peek(), None | Some('\r' | '\n'))
+    }
+
+    fn consume_bytes(&mut self, len: usize) {
+        self.cursor += len;
+        debug_assert!(self.source.is_char_boundary(self.cursor));
+    }
+
+    /// Consumes a literal at the cursor if one starts there.
+    fn consume_literal(&mut self) -> bool {
+        match literal_len(self.rest()) {
+            Some(len) => {
+                self.consume_bytes(len);
+                true
+            }
+            None => false,
         }
     }
 
@@ -167,69 +209,167 @@ const KEYWORDS: &[&str] = &[
     "yield",
 ];
 
+/// Byte length of the literal starting at `rest` (which starts with `"` or `'`), or None if no
+/// literal starts there.
+/// - `"` always starts one. Backslash escapes the next char, except a line break. A string with no
+///   closing quote ends before the line break.
+/// - `'` starts one only when it closes after exactly one char or one escape (`'x'`, `'\''`,
+///   `'\x7f'`, `'\u{1F600}'`). Otherwise it is not a literal, so Rust lifetimes (`'a`) and
+///   apostrophes in prose don't turn the rest of the line into a string.
+fn literal_len(rest: &str) -> Option<usize> {
+    let is_line_break = |c: char| c == '\r' || c == '\n';
+    let mut chars = rest.char_indices();
+    match chars.next()?.1 {
+        '"' => {
+            while let Some((i, c)) = chars.next() {
+                match c {
+                    _ if is_line_break(c) => return Some(i),
+                    '"' => return Some(i + 1),
+                    '\\' => {
+                        if chars.clone().next().is_some_and(|(_, n)| !is_line_break(n)) {
+                            chars.next();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some(rest.len())
+        }
+        '\'' => match chars.next()?.1 {
+            '\'' => None,
+            c if is_line_break(c) => None,
+            '\\' => {
+                if is_line_break(chars.next()?.1) {
+                    return None;
+                }
+                // The tail of a hex, octal or unicode escape, then the closing quote.
+                for (i, c) in chars {
+                    match c {
+                        '\'' => return Some(i + 1),
+                        _ if c.is_ascii_hexdigit() || c == '{' || c == '}' => {}
+                        _ => return None,
+                    }
+                }
+                None
+            }
+            _ => {
+                let (i, c) = chars.next()?;
+                (c == '\'').then_some(i + 1)
+            }
+        },
+        _ => None,
+    }
+}
+
 impl<'a, const LEXER_MODE: u8, T: RawTokenTrait + From<RawToken>> Iterator
     for Lexer<'a, LEXER_MODE, T>
 {
     type Item = RawToken;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let c = self.peek()?;
+        self.peek()?;
         let start = self.cursor;
-        if LEXER_MODE == LEXER_MODE_NEWLINE {
-            match c {
-                '\r' => {
-                    self.consume();
-                    if self.peek() == Some('\n') {
-                        self.consume();
-                    }
-                    return Some(RawToken {
-                        kind: TokenKind::Newline,
-                        span: start..self.cursor,
-                    });
-                }
-                '\n' => {
-                    self.consume();
-                    return Some(RawToken {
-                        kind: TokenKind::Newline,
-                        span: start..self.cursor,
-                    });
-                }
-                _ => {
-                    while self
-                        .peek()
-                        .map_or(false, |next| next != '\n' && next != '\r')
-                    {
-                        self.consume();
-                    }
-                }
+        let kind = if LEXER_MODE == LEXER_MODE_NEWLINE {
+            self.next_line_segment()
+        } else {
+            match self.state {
+                LexState::Code => self.next_code_token(),
+                LexState::LineComment | LexState::BlockComment => self.next_comment_token(),
             }
+        };
+        Some(RawToken {
+            kind,
+            span: start..self.cursor,
+        })
+    }
+}
 
-            return Some(RawToken {
-                kind: TokenKind::String,
-                span: start..self.cursor,
-            });
+impl<'a, const LEXER_MODE: u8, T: RawTokenTrait> Lexer<'a, LEXER_MODE, T> {
+    /// NEWLINE mode: a line is split only where a comment starts or ends. Code (string literals
+    /// included) is one String token, each comment part is one Comment token.
+    fn next_line_segment(&mut self) -> TokenKind {
+        if let Some(kind) = self.lex_newline() {
+            return kind;
         }
+        if self.state == LexState::Code {
+            if self.rest().starts_with("//") {
+                while !self.at_line_end() {
+                    self.consume();
+                }
+                return TokenKind::Comment;
+            }
+            if self.rest().starts_with("/*") {
+                self.consume_bytes(2);
+                self.state = LexState::BlockComment;
+            } else {
+                while !self.at_line_end()
+                    && !self.rest().starts_with("//")
+                    && !self.rest().starts_with("/*")
+                {
+                    if !self.consume_literal() {
+                        self.consume();
+                    }
+                }
+                return TokenKind::String;
+            }
+        }
+        debug_assert_eq!(self.state, LexState::BlockComment);
+        while !self.at_line_end() {
+            if self.rest().starts_with("*/") {
+                self.consume_bytes(2);
+                self.state = LexState::Code;
+                break;
+            }
+            self.consume();
+        }
+        TokenKind::Comment
+    }
 
-        let c = self.peek()?;
-        let start = self.cursor;
+    /// Inside a comment, whitespace keeps its kinds (ignore-whitespace and row building depend on
+    /// them) and everything else is Comment. Quotes, `//`, `/*` and `#` are plain text here.
+    fn next_comment_token(&mut self) -> TokenKind {
+        if let Some(kind) = self.lex_newline() {
+            if self.state == LexState::LineComment {
+                self.state = LexState::Code;
+            }
+            return kind;
+        }
+        if let Some(kind) = self.lex_blank() {
+            return kind;
+        }
+        if self.state == LexState::BlockComment && self.rest().starts_with("*/") {
+            self.consume_bytes(2);
+            self.state = LexState::Code;
+            return TokenKind::CommentEnd;
+        }
+        self.lex_word_or_symbol();
+        TokenKind::Comment
+    }
 
-        let kind = match c {
+    fn lex_newline(&mut self) -> Option<TokenKind> {
+        match self.peek()? {
             '\r' => {
                 self.consume();
                 if self.peek() == Some('\n') {
                     self.consume();
                 }
-                TokenKind::Newline
+                Some(TokenKind::Newline)
             }
             '\n' => {
                 self.consume();
-                TokenKind::Newline
+                Some(TokenKind::Newline)
             }
+            _ => None,
+        }
+    }
+
+    fn lex_blank(&mut self) -> Option<TokenKind> {
+        match self.peek()? {
             '\t' => {
                 self.consume();
-                TokenKind::Tab
+                Some(TokenKind::Tab)
             }
-            _ if c.is_whitespace() => {
+            c if c.is_whitespace() => {
                 self.consume();
                 if LEXER_MODE == LEXER_MODE_GREEDY {
                     while self.peek().map_or(false, |next| {
@@ -238,42 +378,63 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait + From<RawToken>> Iterator
                         self.consume();
                     }
                 }
-                TokenKind::Whitespace
+                Some(TokenKind::Whitespace)
             }
-            '/' if self.source[self.cursor..].starts_with("//") => {
-                self.consume(); // /
-                self.consume(); // /
+            _ => None,
+        }
+    }
+
+    fn next_code_token(&mut self) -> TokenKind {
+        if let Some(kind) = self.lex_newline().or_else(|| self.lex_blank()) {
+            return kind;
+        }
+        let c = self.peek().expect("next_code_token at end of source");
+        match c {
+            '/' if self.rest().starts_with("//") => {
+                self.consume_bytes(2);
                 if LEXER_MODE == LEXER_MODE_GREEDY {
-                    while let Some(next_c) = self.peek() {
-                        if next_c == '\r' || next_c == '\n' {
-                            break;
-                        }
+                    while !self.at_line_end() {
                         self.consume();
                     }
+                } else {
+                    self.state = LexState::LineComment;
                 }
                 TokenKind::Comment
             }
-            '/' if self.source[self.cursor..].starts_with("/*") => {
-                self.consume(); // /
-                self.consume(); // *
+            '/' if self.rest().starts_with("/*") => {
+                self.consume_bytes(2);
+                self.state = LexState::BlockComment;
                 TokenKind::CommentStart
             }
-            '*' if self.source[self.cursor..].starts_with("*/") => {
-                self.consume(); // *
-                self.consume(); // /
+            // A `*/` with no open comment: kept as CommentEnd, as before; it changes no state.
+            '*' if self.rest().starts_with("*/") => {
+                self.consume_bytes(2);
                 TokenKind::CommentEnd
             }
-            '"' => {
+            '"' | '\'' if self.consume_literal() => TokenKind::String,
+            '#' => {
                 self.consume();
-                while let Some(next_c) = self.peek() {
-                    if next_c == '"' {
-                        self.consume();
-                        break;
+                if LEXER_MODE == LEXER_MODE_GREEDY {
+                    // The directive ends where a comment starts; literals are skipped so a `//`
+                    // inside one (`#define URL "http://x"`) doesn't end it.
+                    while !self.at_line_end()
+                        && !self.rest().starts_with("//")
+                        && !self.rest().starts_with("/*")
+                    {
+                        if !self.consume_literal() {
+                            self.consume();
+                        }
                     }
-                    self.consume();
                 }
-                TokenKind::String
+                TokenKind::Preprocessor
             }
+            _ => self.lex_word_or_symbol(),
+        }
+    }
+
+    fn lex_word_or_symbol(&mut self) -> TokenKind {
+        let c = self.peek().expect("lex_word_or_symbol at end of source");
+        match c {
             _ if c.is_alphabetic()
                 || c == '_'
                 || (c > '\x7f' && !c.is_control() && !c.is_whitespace()) =>
@@ -307,18 +468,6 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait + From<RawToken>> Iterator
                 }
                 TokenKind::Number
             }
-            '#' => {
-                self.consume();
-                if LEXER_MODE == LEXER_MODE_GREEDY {
-                    while let Some(next_c) = self.peek() {
-                        if next_c == '\n' || next_c == '\r' {
-                            break;
-                        }
-                        self.consume();
-                    }
-                }
-                TokenKind::Preprocessor
-            }
             _ if "!@#$%^&*()-=+[]{}|;:'<>,.?/".contains(c) => {
                 let start_index = self.cursor;
 
@@ -347,12 +496,7 @@ impl<'a, const LEXER_MODE: u8, T: RawTokenTrait + From<RawToken>> Iterator
                 self.consume();
                 TokenKind::Unknown
             }
-        };
-
-        Some(RawToken {
-            kind,
-            span: start..self.cursor,
-        })
+        }
     }
 }
 
@@ -624,7 +768,7 @@ mod tests {
         // 11    | Whitespace   | " "
         // 12    | CommentStart | "/*"
         // 13    | Whitespace   | " "
-        // 14    | Identifier   | "block"
+        // 14    | Comment      | "block"
         // 15    | Whitespace   | " "
         // 16    | CommentEnd   | "*/"
         // 17    | Whitespace   | " "
@@ -645,7 +789,7 @@ mod tests {
             (TokenKind::Whitespace, " "),
             (TokenKind::CommentStart, "/*"),
             (TokenKind::Whitespace, " "),
-            (TokenKind::Identifier, "block"),
+            (TokenKind::Comment, "block"),
             (TokenKind::Whitespace, " "),
             (TokenKind::CommentEnd, "*/"),
             (TokenKind::Whitespace, " "),
@@ -1192,5 +1336,282 @@ mod tests {
             }
             panic!("{}", report);
         }
+    }
+
+    const ALL_MODES: [u8; 3] = [LEXER_MODE_GREEDY, LEXER_MODE_TOKENIZE, LEXER_MODE_NEWLINE];
+
+    fn lex_mode(mode: u8, src: &str) -> Vec<RawToken> {
+        let tokens = match mode {
+            LEXER_MODE_GREEDY => LexerGreedy::<RawToken>::new(src).parse(),
+            LEXER_MODE_TOKENIZE => LexerTokenize::<RawToken>::new(src).parse(),
+            LEXER_MODE_NEWLINE => LexerNewLine::<RawToken>::new(src).parse(),
+            _ => unreachable!(),
+        };
+        assert_tiles(mode, src, &tokens);
+        tokens
+    }
+
+    /// Reconstruction is exact, spans are contiguous and non-empty, and line breaks only ever
+    /// appear in Newline tokens (rows, line metadata and revert's hunk_bytes rely on all three).
+    fn assert_tiles(mode: u8, src: &str, tokens: &[RawToken]) {
+        let mut cursor = 0;
+        for t in tokens {
+            assert_eq!(
+                t.span.start, cursor,
+                "mode {mode}: gap or overlap at {t:?} in {src:?}"
+            );
+            assert!(
+                !t.span.is_empty(),
+                "mode {mode}: empty token {t:?} in {src:?}"
+            );
+            let text = &src[t.span.clone()];
+            if t.kind != TokenKind::Newline {
+                assert!(
+                    !text.contains(['\r', '\n']),
+                    "mode {mode}: line break inside {:?} token {text:?} in {src:?}",
+                    t.kind
+                );
+            }
+            cursor = t.span.end;
+        }
+        assert_eq!(
+            cursor,
+            src.len(),
+            "mode {mode}: tokens don't reach the end of {src:?}"
+        );
+    }
+
+    fn range_of(src: &str, part: &str) -> Range<usize> {
+        let start = src
+            .find(part)
+            .unwrap_or_else(|| panic!("{part:?} not in {src:?}"));
+        assert!(
+            src[start + 1..].find(part).is_none(),
+            "{part:?} is not unique in {src:?}"
+        );
+        start..start + part.len()
+    }
+
+    /// In every mode: each non-whitespace token inside one of `comments` has a comment kind and
+    /// each one outside doesn't; no token straddles a comment edge. Each of `strings` is covered
+    /// by a String token, which is exactly the literal except in NEWLINE mode (where code and
+    /// literals share one segment).
+    fn check_comments_and_strings(src: &str, comments: &[&str], strings: &[&str]) {
+        let comment_ranges: Vec<_> = comments.iter().map(|c| range_of(src, c)).collect();
+        let string_ranges: Vec<_> = strings.iter().map(|s| range_of(src, s)).collect();
+        for mode in ALL_MODES {
+            let tokens = lex_mode(mode, src);
+            let describe = |t: &RawToken| {
+                format!(
+                    "mode {mode}: {:?} {:?} in {src:?}",
+                    t.kind,
+                    &src[t.span.clone()]
+                )
+            };
+            for t in &tokens {
+                let inside = comment_ranges
+                    .iter()
+                    .any(|r| r.start <= t.span.start && t.span.end <= r.end);
+                let overlaps = comment_ranges
+                    .iter()
+                    .any(|r| t.span.start < r.end && r.start < t.span.end);
+                assert!(
+                    inside || !overlaps,
+                    "{} straddles a comment edge",
+                    describe(t)
+                );
+                if t.kind.is_whitespace() {
+                    continue;
+                }
+                assert_eq!(t.kind.is_comment(), inside, "{}", describe(t));
+            }
+            for r in &string_ranges {
+                let covered = tokens.iter().any(|t| {
+                    t.kind == TokenKind::String
+                        && if mode == LEXER_MODE_NEWLINE {
+                            t.span.start <= r.start && r.end <= t.span.end
+                        } else {
+                            t.span == *r
+                        }
+                });
+                assert!(
+                    covered,
+                    "mode {mode}: no String token for {:?} in {src:?}: {tokens:?}",
+                    &src[r.clone()]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn block_comment_spans_lines_in_every_mode() {
+        check_comments_and_strings("a /* if x\n   while */ b\n", &["/* if x\n   while */"], &[]);
+        check_comments_and_strings(
+            "a /* if x\r\n\t \"y\r\n*/ b\r\n",
+            &["/* if x\r\n\t \"y\r\n*/"],
+            &[],
+        );
+    }
+
+    #[test]
+    fn line_comment_runs_to_the_end_of_its_line_in_every_mode() {
+        check_comments_and_strings("x = 1; // return y\nz\n", &["// return y"], &[]);
+        check_comments_and_strings("x = 1; // return y\r\nz", &["// return y"], &[]);
+    }
+
+    #[test]
+    fn comment_markers_inside_strings_do_not_start_comments_in_every_mode() {
+        check_comments_and_strings(
+            "s = \"// not\" + \"/* no\";\nt = '/' ;\n",
+            &[],
+            &["\"// not\"", "\"/* no\"", "'/'"],
+        );
+        check_comments_and_strings("c = '\"'; // yes \"\nd\n", &["// yes \""], &["'\"'"]);
+    }
+
+    #[test]
+    fn escaped_quotes_do_not_end_literals_in_every_mode() {
+        check_comments_and_strings(
+            "a = \"x\\\"// y\\\\\"; b // c\n",
+            &["// c"],
+            &["\"x\\\"// y\\\\\""],
+        );
+        check_comments_and_strings(
+            "q = '\\''; // c\nr = '\\u{1F600}';\n",
+            &["// c"],
+            &["'\\''", "'\\u{1F600}'"],
+        );
+    }
+
+    #[test]
+    fn unterminated_string_ends_at_the_line_end_in_every_mode() {
+        check_comments_and_strings("a = \"abc // d\nb // c\n", &["// c"], &["\"abc // d"]);
+        check_comments_and_strings("a = \"abc // d\r\nb // c", &["// c"], &["\"abc // d"]);
+        // A trailing backslash must not swallow the line break, LF or CRLF.
+        check_comments_and_strings("a = \"abc\\\r\nb // c\n", &["// c"], &["\"abc\\"]);
+        check_comments_and_strings("a = \"abc\\\nb // c\n", &["// c"], &["\"abc\\"]);
+        check_comments_and_strings("a = \"abc", &[], &["\"abc"]);
+    }
+
+    #[test]
+    fn unterminated_block_comment_runs_to_eof_in_every_mode() {
+        check_comments_and_strings(
+            "a /* x\nif y\n\"z\n// w\n",
+            &["/* x\nif y\n\"z\n// w\n"],
+            &[],
+        );
+        check_comments_and_strings("a /*", &["/*"], &[]);
+    }
+
+    #[test]
+    fn keywords_inside_comments_are_not_keywords_in_every_mode() {
+        let src = "if a // if while\n/* return\nstruct */ else\n";
+        check_comments_and_strings(src, &["// if while", "/* return\nstruct */"], &[]);
+        for mode in ALL_MODES {
+            let tokens = lex_mode(mode, src);
+            assert!(
+                !tokens
+                    .iter()
+                    .any(|t| t.kind == TokenKind::Keyword && t.kind.is_comment()),
+                "mode {mode}"
+            );
+        }
+        let greedy = lex_mode(LEXER_MODE_GREEDY, src);
+        let keywords: Vec<_> = greedy
+            .iter()
+            .filter(|t| t.kind == TokenKind::Keyword)
+            .map(|t| &src[t.span.clone()])
+            .collect();
+        assert_eq!(keywords, ["if", "else"]);
+    }
+
+    #[test]
+    fn quotes_inside_comments_do_not_start_literals_in_every_mode() {
+        check_comments_and_strings(
+            "// don't \"x\ny /* it's \"*/ z\n",
+            &["// don't \"x", "/* it's \"*/"],
+            &[],
+        );
+    }
+
+    #[test]
+    fn a_quote_that_does_not_close_a_char_literal_stays_a_symbol() {
+        // Rust lifetimes and apostrophes in prose: no literal, so the trailing comment survives.
+        let src = "fn f<'a>(x: &'a str) -> &'static str { // c\ndon't = 'x';\n";
+        check_comments_and_strings(src, &["// c"], &["'x'"]);
+        for mode in [LEXER_MODE_GREEDY, LEXER_MODE_TOKENIZE] {
+            let tokens = lex_mode(mode, src);
+            let strings: Vec<_> = tokens
+                .iter()
+                .filter(|t| t.kind == TokenKind::String)
+                .map(|t| &src[t.span.clone()])
+                .collect();
+            assert_eq!(strings, ["'x'"], "mode {mode}");
+        }
+    }
+
+    #[test]
+    fn block_comments_do_not_nest() {
+        check_comments_and_strings("/* a /* b */ c;\n", &["/* a /* b */"], &[]);
+    }
+
+    #[test]
+    fn stray_comment_end_in_code_is_comment_end() {
+        // Pins the pre-existing kind of a `*/` with no open comment; it doesn't change state.
+        for mode in [LEXER_MODE_GREEDY, LEXER_MODE_TOKENIZE] {
+            let src = "a */ b";
+            let tokens = lex_mode(mode, src);
+            let kinds: Vec<_> = tokens
+                .iter()
+                .map(|t| (t.kind, &src[t.span.clone()]))
+                .collect();
+            assert_eq!(
+                kinds,
+                [
+                    (TokenKind::Identifier, "a"),
+                    (TokenKind::Whitespace, " "),
+                    (TokenKind::CommentEnd, "*/"),
+                    (TokenKind::Whitespace, " "),
+                    (TokenKind::Identifier, "b"),
+                ],
+                "mode {mode}"
+            );
+        }
+        let src = "a */ b";
+        let tokens = lex_mode(LEXER_MODE_NEWLINE, src);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].kind, TokenKind::String);
+    }
+
+    #[test]
+    fn comments_after_a_preprocessor_directive_are_comments() {
+        let src = "#define X \"a//b\" // c\n#if 0 /* x\ny */\nz\n";
+        check_comments_and_strings(src, &["// c", "/* x\ny */"], &[]);
+        let greedy = lex_mode(LEXER_MODE_GREEDY, src);
+        assert_eq!(greedy[0].kind, TokenKind::Preprocessor);
+        assert_eq!(&src[greedy[0].span.clone()], "#define X \"a//b\" ");
+    }
+
+    #[test]
+    fn newline_mode_splits_a_line_into_code_and_comment_segments() {
+        let src = "int x; /* a */ y; // t\n  b */\n";
+        // Not a comment-start at line 2: the stray `*/` is plain code text in NEWLINE mode.
+        let tokens = lex_mode(LEXER_MODE_NEWLINE, src);
+        let kinds: Vec<_> = tokens
+            .iter()
+            .map(|t| (t.kind, &src[t.span.clone()]))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (TokenKind::String, "int x; "),
+                (TokenKind::Comment, "/* a */"),
+                (TokenKind::String, " y; "),
+                (TokenKind::Comment, "// t"),
+                (TokenKind::Newline, "\n"),
+                (TokenKind::String, "  b */"),
+                (TokenKind::Newline, "\n"),
+            ]
+        );
     }
 }
