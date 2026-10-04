@@ -17,7 +17,7 @@ use egui_tiles::Tile;
 
 use crate::{
     diff_ctx::{DiffProcessor, FindCtx, UpdateDiffRowsInput},
-    file::FileProcessor,
+    file::{FileProcessor, LoadedFile},
     keybindings::{Keybindings, Shortcut, ui_keybindings},
     p4::{P4Command, get_p4_config, ui_p4config, update_p4_config},
     revert::{self, RevertRefusal, RevertTarget, WriteRefusal},
@@ -26,9 +26,9 @@ use crate::{
         panes::{Pane, TreeBehavior},
     },
     viewer::{
-        ViewerKind, conflict_count,
+        ExtensionMap, LoadedSide, ViewerKind, ViewerOverride, conflict_count,
         hex::{HexDiffProcessor, parse_hex_offset},
-        resolve_viewer_kind,
+        resolve_viewer, ui_extension_map,
     },
 };
 
@@ -45,6 +45,14 @@ pub struct AppStateCtx {
     /// Resolved each frame from the loaded files; `None` while neither side is loaded.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub viewer_kind: Option<ViewerKind>,
+    /// Not persisted: paths aren't either, so a restart always opens a new pair.
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub viewer_override: ViewerOverride,
+    /// The last logged reason the pair isn't in the viewer it asked for.
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub viewer_fallback: Option<String>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub extension_map: ExtensionMap,
 
     pub diff_lexer_mode: u8,
     pub diff_options: DiffBuilderOptions,
@@ -79,6 +87,9 @@ impl Default for AppStateCtx {
             diff_processor: Default::default(),
             hex_processor: Default::default(),
             viewer_kind: None,
+            viewer_override: Default::default(),
+            viewer_fallback: None,
+            extension_map: Default::default(),
             scroll_left: Default::default(),
             scroll_right: Default::default(),
             goto_open: Default::default(),
@@ -145,6 +156,8 @@ pub struct ZApp {
     open_shortcuts_window: bool,
     #[serde(skip)]
     open_universal_path_window: bool,
+    #[serde(skip)]
+    open_viewers_window: bool,
 }
 
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
@@ -193,6 +206,7 @@ impl<'a> ZApp {
             tree: Self::create_tree(),
             open_shortcuts_window: false,
             open_universal_path_window: false,
+            open_viewers_window: false,
         }
     }
 
@@ -252,6 +266,7 @@ impl<'a> ZApp {
         scroll_right: &mut f32,
         lexer_mode: &mut u8,
         keybindings: &mut Keybindings,
+        extension_map: &mut ExtensionMap,
         myers_diff_algorithm: &mut MyersDiffAlgorithm,
         code_language: &mut String,
         code_language_custom: &mut String,
@@ -395,6 +410,9 @@ impl<'a> ZApp {
                         {
                             self.open_shortcuts_window = true;
                         }
+                        if ui.button("File Viewers").clicked() {
+                            self.open_viewers_window = true;
+                        }
                     });
 
                     ui.menu_button("Debug", |ui| {
@@ -504,6 +522,17 @@ impl<'a> ZApp {
                 },
             );
         }
+        if self.open_viewers_window {
+            show_custom_popup(
+                ui.ctx(),
+                &mut self.open_viewers_window,
+                "Option - File Viewers",
+                true,
+                |ui| {
+                    ui_extension_map(ui, extension_map);
+                },
+            );
+        }
         if self.open_universal_path_window {
             show_custom_popup(
                 ui.ctx(),
@@ -541,6 +570,9 @@ impl<'a> ZApp {
                 diff_processor,
                 hex_processor,
                 viewer_kind,
+                viewer_override,
+                viewer_fallback,
+                extension_map,
                 code_language,
                 code_language_custom,
             } = app_ctx;
@@ -556,6 +588,7 @@ impl<'a> ZApp {
                 scroll_right,
                 lexer_mode,
                 keybindings,
+                extension_map,
                 myers_diff_algorithm,
                 code_language,
                 code_language_custom,
@@ -683,6 +716,8 @@ impl<'a> ZApp {
                     revert_request: &mut None,
                     block_toggle_request: &mut block_toggle_request,
                     hex_view: is_hex.then(|| hex_processor.view_ctx()),
+                    viewer_override: &mut viewer_override.kind,
+                    viewer_fallback: viewer_fallback.as_deref(),
                 },
             };
 
@@ -1078,10 +1113,30 @@ impl eframe::App for ZApp {
 
                 let loaded_1 = state.file_1.get_loaded_file();
                 let loaded_2 = state.file_2.get_loaded_file();
-                state.viewer_kind = resolve_viewer_kind(
-                    loaded_1.as_ref().map(|f| f.viewer_kind()),
-                    loaded_2.as_ref().map(|f| f.viewer_kind()),
+                let path_1 = state.file_1.get_full_path();
+                let path_2 = state.file_2.get_full_path();
+                state.viewer_override.observe_pair(&path_1, &path_2);
+                fn side(f: &LoadedFile) -> LoadedSide<'_> {
+                    LoadedSide {
+                        path: f.path(),
+                        sniffed: f.viewer_kind(),
+                    }
+                }
+                let resolution = resolve_viewer(
+                    state.viewer_override.kind,
+                    &state.extension_map,
+                    loaded_1.as_ref().map(side),
+                    loaded_2.as_ref().map(side),
                 );
+                // Resolved every frame, so only a changed reason is logged.
+                let fallback = resolution.as_ref().and_then(|r| r.fallback.clone());
+                if fallback != state.viewer_fallback {
+                    if let Some(reason) = &fallback {
+                        log::warn!("{}", reason);
+                    }
+                    state.viewer_fallback = fallback;
+                }
+                state.viewer_kind = resolution.map(|r| r.kind);
                 let is_hex = state.viewer_kind == Some(ViewerKind::Hex);
                 if is_hex {
                     // The cursor may hold the text diff's or the previous pair's stop.
@@ -1140,5 +1195,35 @@ impl eframe::App for ZApp {
         };
 
         self.state = Some(next_state);
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extension_map_edits_survive_a_restart() {
+        let mut ctx = AppStateCtx::default();
+        ctx.extension_map.insert(".ZBIN", ViewerKind::Hex);
+        ctx.viewer_override.kind = Some(ViewerKind::Text);
+
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.extension_map, ctx.extension_map);
+        assert_eq!(restored.extension_map.get("zbin"), Some(ViewerKind::Hex));
+        // Paths aren't saved, so a restart opens a new pair and the override is gone.
+        assert_eq!(restored.viewer_override.kind, None);
+    }
+
+    #[test]
+    fn a_save_without_an_extension_map_loads_the_defaults() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("extension_map")
+            .unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.extension_map, ExtensionMap::defaults());
     }
 }

@@ -8,7 +8,10 @@ use crate::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
         panes::ZAppPane,
     },
-    viewer::hex::{self, HexViewCtx},
+    viewer::{
+        ViewerKind,
+        hex::{self, HexViewCtx},
+    },
 };
 use eframe::egui::{
     self, Layout, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility,
@@ -63,6 +66,10 @@ pub struct FileDiffPaneCtx<'a> {
     pub block_toggle_request: &'a mut Option<(usize, BlockToggle)>,
     /// Set when the pair resolved to the Hex viewer; the table then shows hex rows.
     pub hex_view: Option<HexViewCtx<'a>>,
+    /// The toolbar's viewer switch for the current pair; `None` is Auto.
+    pub viewer_override: &'a mut Option<ViewerKind>,
+    /// Why the pair isn't in the viewer it asked for, if it isn't.
+    pub viewer_fallback: Option<&'a str>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -104,6 +111,12 @@ impl FileDiffPane {
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
 
         ui.horizontal(|ui| {
+            ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                viewer_override_combo(ui, ctx.viewer_override, ctx.viewer_fallback);
+            });
+            ui.separator();
+
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let button_size = egui::vec2(24.0, 24.0);
@@ -1032,6 +1045,31 @@ fn ignore_patterns_btn(ui: &mut egui::Ui, button_size: Vec2, patterns: &mut Igno
                 ui.colored_label(ui.visuals().error_fg_color, message);
             }
         });
+}
+
+/// Auto / Text / Hex for the current pair. A warning sign carries the fallback reason when the
+/// pair is shown in another viewer than it asked for.
+fn viewer_override_combo(
+    ui: &mut egui::Ui,
+    viewer_override: &mut Option<ViewerKind>,
+    fallback: Option<&str>,
+) {
+    let name = |kind: Option<ViewerKind>| kind.map_or("Auto", ViewerKind::name);
+    egui::ComboBox::from_id_salt("viewer_override")
+        .selected_text(name(*viewer_override))
+        .width(50.0)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(viewer_override, None, name(None));
+            for kind in ViewerKind::ALL {
+                ui.selectable_value(viewer_override, Some(kind), name(Some(kind)));
+            }
+        })
+        .response
+        .on_hover_text("Viewer for this pair; resets when another pair is opened");
+    if let Some(reason) = fallback {
+        ui.add(egui::Label::new("⚠").selectable(false))
+            .on_hover_text(reason);
+    }
 }
 
 /// Label and per-stage tooltip of a completed diff. Plain text so the segment can move into a
