@@ -1,6 +1,10 @@
+use std::ops::Range;
+
+use rayon::prelude::*;
+
 use crate::{
     diff_ir::{DiffIR, DiffOp, DiffResult, diff_ir_hide_ignored},
-    ignore::IgnoreOptions,
+    ignore::{IgnoreMask, IgnoreOptions},
     lexer::{RawTokenTrait, TokenKind},
 };
 
@@ -156,7 +160,7 @@ pub struct DiffBuilder<'a, 'b, T: RawTokenTrait> {
     theme: DiffTheme,
     rows: Vec<DiffRow>,
     /// Per token of (source, target), true when an ignore pattern matched it. Empty: none.
-    dimmed: (Vec<bool>, Vec<bool>),
+    dimmed: (&'a [bool], &'a [bool]),
     left: SideState,
     right: SideState,
 }
@@ -174,7 +178,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             options,
             theme: DiffTheme::default(),
             rows: Vec::with_capacity(capacity),
-            dimmed: Default::default(),
+            dimmed: (&[], &[]),
             left: SideState::with_capacity(64),
             right: SideState::with_capacity(64),
         }
@@ -218,8 +222,8 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         let color = self.get_color(token.as_ref().kind.is_keyword());
         let is_newline = token.as_ref().kind == TokenKind::Newline;
         // A pattern match depends on the line around the token, so each side has its own flag.
-        let left_color = self.dim(&self.dimmed.0, diff_result.token_source_idx, color);
-        let right_color = self.dim(&self.dimmed.1, diff_result.token_target_idx, color);
+        let left_color = self.dim(self.dimmed.0, diff_result.token_source_idx, color);
+        let right_color = self.dim(self.dimmed.1, diff_result.token_target_idx, color);
 
         self.left.push(diff_result.clone(), left_color, false);
         self.right.push(diff_result, right_color, false);
@@ -250,9 +254,9 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         let is_newline = token.as_ref().kind == TokenKind::Newline;
 
         let color = if is_deletion {
-            self.dim(&self.dimmed.0, diff_result.token_source_idx, self.theme.del)
+            self.dim(self.dimmed.0, diff_result.token_source_idx, self.theme.del)
         } else {
-            self.dim(&self.dimmed.1, diff_result.token_target_idx, self.theme.ins)
+            self.dim(self.dimmed.1, diff_result.token_target_idx, self.theme.ins)
         };
 
         let side = if is_deletion {
@@ -332,7 +336,12 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         self.rows.push(DiffRow { left, right });
     }
 
-    pub fn finish(mut self) -> Vec<DiffRow> {
+    pub fn finish(self) -> Vec<DiffRow> {
+        self.finish_counted().0
+    }
+
+    /// The rows, and how many lines of (source, target) they numbered.
+    fn finish_counted(mut self) -> (Vec<DiffRow>, i32, i32) {
         if !self.left.buf.is_empty() || !self.right.buf.is_empty() {
             let inc_l = self
                 .left
@@ -346,7 +355,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
                 .any(|(r, _, _)| r.operation != DiffOp::Delete);
             self.emit_row(true, true, inc_l, inc_r);
         }
-        self.rows
+        (self.rows, self.left.line_num - 1, self.right.line_num - 1)
     }
 
     fn apply_ghosts(&mut self, last_was_deletion: bool, result: DiffResult) {
@@ -377,18 +386,120 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
     );
     diff_ir = diff_ir_hide_ignored(diff_ir, &ignore);
 
-    let mut builder =
-        DiffBuilder::with_capacity(tokens_source, tokens_target, options, estimated_num_rows);
-    builder.dimmed = (ignore.matched_source, ignore.matched_target);
-    for diff_result in diff_ir.entries {
-        match &diff_result.operation {
-            DiffOp::Equal(_) => builder.handle_match(diff_result),
-            DiffOp::Delete => builder.handle_diff(diff_result, true),
-            DiffOp::Insert => builder.handle_diff(diff_result, false),
+    // Rows are built in independent chunks in parallel. The stage is dominated by allocating and
+    // first touching each row's token Vec, which scales to about 8 threads on the Windows heap
+    // and not much further; below MIN_CHUNK_ENTRIES per chunk the split costs more than it saves.
+    const MAX_CHUNKS: usize = 8;
+    const MIN_CHUNK_ENTRIES: usize = 16 * 1024;
+    let num_chunks = (diff_ir.entries.len() / MIN_CHUNK_ENTRIES).clamp(1, MAX_CHUNKS);
+    build_diff_rows_chunked(
+        &diff_ir.entries,
+        tokens_source,
+        tokens_target,
+        &ignore,
+        options,
+        estimated_num_rows,
+        num_chunks,
+    )
+}
+
+/// Rows of `entries` (ignored entries already hidden), built in at most `num_chunks` chunks.
+/// The rows don't depend on the chunk count.
+fn build_diff_rows_chunked<T: RawTokenTrait>(
+    entries: &[DiffResult],
+    tokens_source: Option<&[T]>,
+    tokens_target: Option<&[T]>,
+    ignore: &IgnoreMask,
+    options: &DiffBuilderOptions,
+    estimated_num_rows: usize,
+    num_chunks: usize,
+) -> Vec<DiffRow> {
+    let ranges = chunk_ranges(entries, tokens_source, num_chunks);
+    let build_chunk = |range: &Range<usize>| {
+        let capacity = estimated_num_rows * range.len() / entries.len().max(1) + 1;
+        let mut builder =
+            DiffBuilder::with_capacity(tokens_source, tokens_target, options, capacity);
+        builder.dimmed = (&ignore.matched_source, &ignore.matched_target);
+        for diff_result in &entries[range.clone()] {
+            match &diff_result.operation {
+                DiffOp::Equal(_) => builder.handle_match(diff_result.clone()),
+                DiffOp::Delete => builder.handle_diff(diff_result.clone(), true),
+                DiffOp::Insert => builder.handle_diff(diff_result.clone(), false),
+            }
         }
+        if range.end != entries.len() {
+            let (left, right) = (&builder.left, &builder.right);
+            assert!(
+                left.buf.is_empty() && right.buf.is_empty(),
+                "chunk {range:?} must end at a seam"
+            );
+            assert!(!left.active_diff && !right.active_diff);
+        }
+        builder.finish_counted()
+    };
+    if ranges.len() == 1 {
+        return build_chunk(&ranges[0]).0;
     }
 
-    builder.finish()
+    let chunks: Vec<_> = ranges.par_iter().map(build_chunk).collect();
+    let mut rows = Vec::with_capacity(chunks.iter().map(|(rows, ..)| rows.len()).sum());
+    let (mut left_offset, mut right_offset) = (0, 0);
+    for (chunk_rows, left_lines, right_lines) in chunks {
+        rows.extend(chunk_rows.into_iter().map(|mut row| {
+            offset_line_num(&mut row.left, left_offset);
+            offset_line_num(&mut row.right, right_offset);
+            row
+        }));
+        left_offset += left_lines;
+        right_offset += right_lines;
+    }
+    rows
+}
+
+/// A chunk's line numbers start at 1. Rows without a line (-1) keep it.
+fn offset_line_num(content: &mut LineContent, offset: i32) {
+    if let LineContent::Code { line_num, .. } = content {
+        if *line_num > 0 {
+            *line_num += offset;
+        }
+    }
+}
+
+/// Splits `entries` into at most `num_chunks` ranges of about equal length. Every range but the
+/// last ends with an Equal Newline (a seam): the builder flushes both sides there, so the next
+/// range starts from a fresh builder and only the line numbers carry over.
+fn chunk_ranges<T: RawTokenTrait>(
+    entries: &[DiffResult],
+    tokens_source: Option<&[T]>,
+    num_chunks: usize,
+) -> Vec<Range<usize>> {
+    let Some(tokens_source) = tokens_source else {
+        return vec![0..entries.len()];
+    };
+    let is_seam = |entry: &DiffResult| {
+        matches!(entry.operation, DiffOp::Equal(_)) && {
+            let idx = entry
+                .token_source_idx
+                .expect("Equal op must have source index");
+            tokens_source[idx as usize].as_ref().kind == TokenKind::Newline
+        }
+    };
+
+    let mut ranges = Vec::with_capacity(num_chunks);
+    let mut start = 0;
+    for i in 1..num_chunks {
+        let target = (entries.len() * i / num_chunks).max(start);
+        let Some(seam) = entries[target..].iter().position(is_seam) else {
+            break;
+        };
+        let end = target + seam + 1;
+        if end < entries.len() {
+            ranges.push(start..end);
+            start = end;
+        }
+    }
+    ranges.push(start..entries.len());
+    ranges
 }
 
 #[cfg(test)]
@@ -424,6 +535,137 @@ mod tests {
 
         harness.assert_row(0, 1, 1, "\t#define hello_there\n", "\t#define world_here\n");
         harness.assert_row(1, 2, 2, "\t// Comment\n", "\t// Comment\n");
+    }
+
+    mod chunks {
+        use std::sync::{Arc, atomic::AtomicBool};
+
+        use super::*;
+        use crate::{
+            ignore::IgnorePatterns,
+            lexer::{LexerDefault, RawToken},
+            myers::{MyersDiffAlgorithm, myers_diff_path},
+        };
+
+        // Hunks that add and remove lines, a deleted last line without a newline, and equal
+        // lines between them as seams.
+        const S1: &str = "fn f() {\n    let a = 1; // old\n    b();\n    c();\n}\nx\ny\nend";
+        const S2: &str = "fn f() {\n    let a = 2; // new\n\n    added();\n    b();\n}\nx\nz\ny\n";
+
+        fn lex(s: &str) -> Vec<RawToken> {
+            LexerDefault::<RawToken>::new(s).collect()
+        }
+
+        fn diff_ir(t1: &[RawToken], t2: &[RawToken], options: &DiffBuilderOptions) -> DiffIR {
+            let cmp = |a: &RawToken, b: &RawToken| {
+                a.kind == b.kind && S1[a.span.clone()] == S2[b.span.clone()]
+            };
+            let cancel = Arc::new(AtomicBool::new(false));
+            let mask = options.ignore.mask(t1, S1, t2, S2);
+            let path = myers_diff_path(
+                MyersDiffAlgorithm::Linear,
+                t1,
+                t2,
+                cmp,
+                &mask,
+                cancel.clone(),
+            )
+            .expect("not cancelled");
+            DiffIR::new(&path, true, cancel).expect("not cancelled")
+        }
+
+        #[test]
+        fn ranges_cover_the_ir_and_all_but_the_last_end_at_an_equal_newline() {
+            let (t1, t2) = (lex(S1), lex(S2));
+            let ir = diff_ir(&t1, &t2, &DiffBuilderOptions::default());
+            let mut max_ranges = 0;
+            for num_chunks in 1..=ir.entries.len() + 1 {
+                let ranges = chunk_ranges(&ir.entries, Some(&t1), num_chunks);
+                assert!(ranges.len() <= num_chunks, "{num_chunks}: {ranges:?}");
+                assert_eq!(ranges.first().unwrap().start, 0, "{num_chunks}");
+                assert_eq!(ranges.last().unwrap().end, ir.entries.len(), "{num_chunks}");
+                for pair in ranges.windows(2) {
+                    assert_eq!(pair[0].end, pair[1].start, "{num_chunks}: {ranges:?}");
+                    assert!(!pair[0].is_empty(), "{num_chunks}: {ranges:?}");
+                    let last = &ir.entries[pair[0].end - 1];
+                    assert!(matches!(last.operation, DiffOp::Equal(_)), "{num_chunks}");
+                    let token = &t1[last.token_source_idx.unwrap() as usize];
+                    assert_eq!(token.kind, TokenKind::Newline, "{num_chunks}");
+                }
+                max_ranges = max_ranges.max(ranges.len());
+            }
+            // With enough chunks every equal newline before the last entry ends a range.
+            let seams = ir.entries[..ir.entries.len() - 1]
+                .iter()
+                .filter(|e| {
+                    matches!(e.operation, DiffOp::Equal(_))
+                        && t1[e.token_source_idx.unwrap() as usize].kind == TokenKind::Newline
+                })
+                .count();
+            assert!(seams >= 4, "the fixture has equal lines between its hunks");
+            assert_eq!(max_ranges, seams + 1);
+            // Without source tokens there is no seam to find.
+            assert_eq!(
+                chunk_ranges::<RawToken>(&ir.entries, None, 4),
+                [0..ir.entries.len()]
+            );
+        }
+
+        #[test]
+        fn rows_are_identical_for_every_chunk_count() {
+            let (t1, t2) = (lex(S1), lex(S2));
+            let ignore_all = IgnoreOptions {
+                whitespace: true,
+                comments: true,
+                patterns: IgnorePatterns::new(r"\d"),
+            };
+            for (ignore, ghost_rows) in [
+                (IgnoreOptions::default(), false),
+                (IgnoreOptions::default(), true),
+                (ignore_all.clone(), false),
+                (ignore_all, true),
+            ] {
+                let options = DiffBuilderOptions {
+                    ignore,
+                    ghost_rows,
+                    ..Default::default()
+                };
+                let ir = diff_ir(&t1, &t2, &options);
+                // Small enough for build_diff_rows to build it as one chunk.
+                let rows = build_diff_rows(
+                    ir.clone(),
+                    Some(&t1[..]),
+                    Some(&t2[..]),
+                    S1,
+                    S2,
+                    &options,
+                    1,
+                );
+                let reference = format!("{rows:#?}");
+                let ignore = options.ignore.mask(&t1, S1, &t2, S2);
+                let ir = diff_ir_hide_ignored(ir, &ignore);
+                let build = |num_chunks| {
+                    let rows = build_diff_rows_chunked(
+                        &ir.entries,
+                        Some(&t1[..]),
+                        Some(&t2[..]),
+                        &ignore,
+                        &options,
+                        1,
+                        num_chunks,
+                    );
+                    format!("{rows:#?}")
+                };
+                assert_eq!(build(1), reference, "{options:?}");
+                for num_chunks in 2..=ir.entries.len() + 1 {
+                    assert_eq!(
+                        build(num_chunks),
+                        reference,
+                        "{options:?}, {num_chunks} chunks"
+                    );
+                }
+            }
+        }
     }
 
     mod line_then_token {
