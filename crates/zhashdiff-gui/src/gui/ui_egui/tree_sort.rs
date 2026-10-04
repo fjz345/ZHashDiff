@@ -11,11 +11,14 @@ pub enum SortKey {
     State,
 }
 
-/// Sibling order of the two-folder rows. Folders come before files in either direction.
+/// Row order of the two-folder diff: a tree with sorted siblings, folders before files in either
+/// direction, or flat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TreeSort {
     pub key: SortKey,
     pub descending: bool,
+    #[serde(default)]
+    pub flat: bool,
 }
 
 impl TreeSort {
@@ -24,6 +27,7 @@ impl TreeSort {
         Self {
             key,
             descending: key == self.key && !self.descending,
+            ..self
         }
     }
 
@@ -33,22 +37,26 @@ impl TreeSort {
         a: &VisibleRowTwoFolderDiff,
         b: &VisibleRowTwoFolderDiff,
     ) -> Ordering {
-        // Only the key is reversed: folders stay first and ties stay in order.
-        b.is_dir.cmp(&a.is_dir).then_with(|| {
-            let by_key = match self.key {
-                // Case-insensitive, like the file systems on the primary platform.
-                SortKey::Name => name(a)
-                    .chars()
-                    .flat_map(char::to_lowercase)
-                    .cmp(name(b).chars().flat_map(char::to_lowercase)),
-                SortKey::State => state_rank(&a.diff_state).cmp(&state_rank(&b.diff_state)),
-            };
-            if self.descending {
-                by_key.reverse()
-            } else {
-                by_key
-            }
-        })
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| self.compare_by_key(a, b))
+    }
+
+    /// Only the key is reversed, so ties stay `Equal`.
+    fn compare_by_key(self, a: &VisibleRowTwoFolderDiff, b: &VisibleRowTwoFolderDiff) -> Ordering {
+        let by_key = match self.key {
+            // Case-insensitive, like the file systems on the primary platform.
+            SortKey::Name => name(a)
+                .chars()
+                .flat_map(char::to_lowercase)
+                .cmp(name(b).chars().flat_map(char::to_lowercase)),
+            SortKey::State => state_rank(&a.diff_state).cmp(&state_rank(&b.diff_state)),
+        };
+        if self.descending {
+            by_key.reverse()
+        } else {
+            by_key
+        }
     }
 }
 
@@ -68,11 +76,21 @@ fn state_rank(state: &DiffState) -> u8 {
 }
 
 /// The rows as a depth-first walk with every folder's children in `sort` order, so children stay
-/// under their parent. Each row holds both sides, so the sides stay aligned.
+/// under their parent. Flat: one list by depth, then the key, with no folders first. Each row
+/// holds both sides, so the sides stay aligned.
 pub fn sort_two_folder_rows(
-    rows: Vec<VisibleRowTwoFolderDiff>,
+    mut rows: Vec<VisibleRowTwoFolderDiff>,
     sort: TreeSort,
 ) -> Vec<VisibleRowTwoFolderDiff> {
+    if sort.flat {
+        rows.sort_by(|a, b| {
+            a.depth
+                .cmp(&b.depth)
+                .then_with(|| sort.compare_by_key(a, b))
+        });
+        return rows;
+    }
+
     // Grouped by path, not by is_dir: a path that is a file on one side can be a folder with
     // children on the other.
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); rows.len()];
@@ -130,7 +148,8 @@ mod tests {
         VisibleRowTwoFolderDiff {
             rel_path: rel_path.to_owned(),
             is_dir,
-            depth: rel_path.split('/').count() as _,
+            // As built: the root is 0.
+            depth: rel_path.split('/').filter(|c| !c.is_empty()).count() as _,
             diff_state,
         }
     }
@@ -152,18 +171,22 @@ mod tests {
     const NAME_ASC: TreeSort = TreeSort {
         key: SortKey::Name,
         descending: false,
+        flat: false,
     };
     const NAME_DESC: TreeSort = TreeSort {
         key: SortKey::Name,
         descending: true,
+        flat: false,
     };
     const STATE_ASC: TreeSort = TreeSort {
         key: SortKey::State,
         descending: false,
+        flat: false,
     };
     const STATE_DESC: TreeSort = TreeSort {
         key: SortKey::State,
         descending: true,
+        flat: false,
     };
 
     #[test]
@@ -284,6 +307,86 @@ mod tests {
                 "a.txt"
             ]
         );
+    }
+
+    const FLAT: TreeSort = TreeSort {
+        key: SortKey::Name,
+        descending: false,
+        flat: true,
+    };
+
+    fn sorted_paths(rows: Vec<VisibleRowTwoFolderDiff>, sort: TreeSort) -> Vec<String> {
+        sort_two_folder_rows(rows, sort)
+            .into_iter()
+            .map(|r| r.rel_path)
+            .collect()
+    }
+
+    #[test]
+    fn flat_mode_orders_by_depth_then_name_ignoring_case_and_hierarchy() {
+        let rows = vec![
+            folder(""),
+            folder("a"),
+            file("a.txt"),
+            file("a/B.txt"),
+            folder("a/z"),
+            file("a/z/deep.txt"),
+            folder("c"),
+            file("c/a.txt"),
+        ];
+        // Folders don't come first: a.txt sits between a and c.
+        assert_eq!(
+            sorted_paths(rows, FLAT),
+            [
+                "",
+                "a",
+                "a.txt",
+                "c",
+                "c/a.txt",
+                "a/B.txt",
+                "a/z",
+                "a/z/deep.txt"
+            ]
+        );
+    }
+
+    #[test]
+    fn flat_mode_orders_each_depth_by_the_active_header_and_keeps_ties_in_order() {
+        let rows = || {
+            vec![
+                folder(""),
+                row("a", true, DiffState::Same(0, 0)),
+                row("a/x.txt", false, DiffState::Different(0, 0)),
+                row("b", true, DiffState::Different(0, 0)),
+                row("b/x.txt", false, DiffState::Same(0, 0)),
+                row("c.txt", false, DiffState::Same(0, 0)),
+            ]
+        };
+        let name_desc = FLAT.clicked(SortKey::Name);
+        assert_eq!(
+            sorted_paths(rows(), name_desc),
+            ["", "c.txt", "b", "a", "a/x.txt", "b/x.txt"]
+        );
+        let state_asc = FLAT.clicked(SortKey::State);
+        assert_eq!(
+            sorted_paths(rows(), state_asc),
+            ["", "b", "a", "c.txt", "a/x.txt", "b/x.txt"]
+        );
+    }
+
+    #[test]
+    fn a_header_click_keeps_flat_mode() {
+        assert!(FLAT.clicked(SortKey::Name).flat);
+        assert!(FLAT.clicked(SortKey::State).flat);
+        assert!(!TreeSort::default().flat);
+    }
+
+    #[test]
+    fn flat_mode_survives_a_save_and_a_sort_saved_before_it_existed_loads_as_a_tree() {
+        let saved = serde_json::to_string(&FLAT).unwrap();
+        assert_eq!(serde_json::from_str::<TreeSort>(&saved).unwrap(), FLAT);
+        let old: TreeSort = serde_json::from_str(r#"{"key":"State","descending":true}"#).unwrap();
+        assert_eq!(old, STATE_DESC);
     }
 
     #[test]

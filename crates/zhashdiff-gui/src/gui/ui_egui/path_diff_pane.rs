@@ -102,7 +102,12 @@ impl PathDiffPane {
                 "Collapse All"
             };
 
-            if ui.button(button_text).clicked() {
+            // Folding doesn't show in flat mode.
+            let foldable = !ctx.tree_sort.flat;
+            if ui
+                .add_enabled(foldable, egui::Button::new(button_text))
+                .clicked()
+            {
                 for v in views.into_iter().flatten() {
                     if let Some(children) = v.file_system.get_root().children() {
                         v.recursive_collapse_slice(&children.clone(), !is_anything_collapsed);
@@ -110,7 +115,10 @@ impl PathDiffPane {
                 }
             }
 
-            if ui.button("Expand Diffs Only").clicked() {
+            if ui
+                .add_enabled(foldable, egui::Button::new("Expand Diffs Only"))
+                .clicked()
+            {
                 let views = [
                     ctx.path_diff_view.file_system_1_view.as_mut(),
                     ctx.path_diff_view.file_system_2_view.as_mut(),
@@ -135,7 +143,13 @@ impl PathDiffPane {
             }
         });
 
-        ui.horizontal(|ui| draw_filter_bar(ui, ctx.path_filter));
+        ui.horizontal(|ui| {
+            draw_filter_bar(ui, ctx.path_filter);
+            ui.separator();
+            // Like the filter, the app reorders the rows on the next update.
+            ui.checkbox(&mut ctx.tree_sort.flat, "Flat")
+                .on_hover_text("List all entries by depth, then by the sorted column");
+        });
 
         ui.separator();
 

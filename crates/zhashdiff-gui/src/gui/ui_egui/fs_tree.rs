@@ -420,11 +420,12 @@ pub fn tree_hidden(view: &FileSystemView, filter: &PathFilter) -> Vec<bool> {
 
 /// The two-folder rows as the cursor sees them. A row is hidden when it isn't drawn: the
 /// root row, or an entry inside a folder collapsed on a side the entry exists on. A folder is
-/// collapsed when it is collapsed on a side it exists on.
+/// collapsed when it is collapsed on a side it exists on. In flat mode only the root row is hidden.
 pub fn two_folder_cursor_rows<'a>(
     file_system_1_view: Option<&FileSystemView>,
     file_system_2_view: Option<&FileSystemView>,
     rows: &'a [VisibleRowTwoFolderDiff],
+    flat: bool,
 ) -> Vec<CursorRow<'a>> {
     let on_either_side = |row: &VisibleRowTwoFolderDiff,
                           test: fn(&FileSystemView, FsNodeId) -> bool| {
@@ -435,13 +436,14 @@ pub fn two_folder_cursor_rows<'a>(
         test_side(file_system_1_view, row.diff_state.first())
             || test_side(file_system_2_view, row.diff_state.second())
     };
+    // Flat mode has no hierarchy to fold, so the views' collapse state doesn't apply.
     rows.iter()
         .map(|row| CursorRow {
             rel_path: &row.rel_path,
             hidden: row.rel_path.is_empty()
-                || on_either_side(row, FileSystemView::is_parent_chain_collapsed),
+                || (!flat && on_either_side(row, FileSystemView::is_parent_chain_collapsed)),
             is_dir: row.is_dir,
-            collapsed: row.is_dir && on_either_side(row, FileSystemView::is_collapsed),
+            collapsed: !flat && row.is_dir && on_either_side(row, FileSystemView::is_collapsed),
             differs: !matches!(row.diff_state, DiffState::Same(..)),
         })
         .collect()
@@ -589,6 +591,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
         file_system_1_view.as_ref(),
         file_system_2_view.as_ref(),
         visible_rows,
+        sort.flat,
     ));
 
     // Scroll only when the keys moved the cursor, so manual scrolling isn't fought.
@@ -600,6 +603,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 file_system_1_view.as_ref(),
                 file_system_2_view.as_ref(),
                 visible_rows,
+                sort.flat,
             );
             let (moved, request) = match key {
                 egui::Key::ArrowDown => (cursor.down(&cursor_rows), None),
@@ -611,6 +615,8 @@ pub fn draw_ui_two_folder_tree_with_diff(
             };
             scroll_to_cursor |= moved != *cursor;
             *cursor = moved;
+            // A fold in flat mode wouldn't show, only change the tree view behind it.
+            let request = request.filter(|r| !sort.flat || matches!(r, CursorRequest::Open(_)));
             if let Some(request) = request {
                 apply_cursor_request(
                     file_system_1_view.as_mut(),
@@ -626,6 +632,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 file_system_1_view.as_ref(),
                 file_system_2_view.as_ref(),
                 visible_rows,
+                sort.flat,
             );
             let target = match jump {
                 DiffJump::Next => cursor.next_diff(&cursor_rows),
@@ -654,6 +661,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
         file_system_1_view.as_ref(),
         file_system_2_view.as_ref(),
         visible_rows,
+        sort.flat,
     );
 
     // Only drawn rows go to the table: it places row i at i * row height, both when
@@ -670,6 +678,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     };
 
     let row_count = drawn_rows.len();
+    let flat = sort.flat;
     let available_height = ui.available_height();
     let available_width = ui.available_width();
     let mut col0_rect = egui::Rect::NOTHING;
@@ -810,6 +819,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             entry,
                             row_height,
                             diff_tool_config,
+                            flat,
                         );
                         if clicked {
                             *cursor = TreeCursor::at(&entry.rel_path);
@@ -1062,6 +1072,8 @@ fn on_row_item_clicked(
     return true;
 }
 
+/// `flat_rel_path`: in flat mode, the row's relative path, drawn instead of the indented name and
+/// without the expander, since rows of different folders sit next to each other.
 fn render_diff_side(
     ui: &mut egui::Ui,
     view: Option<&FileSystemView>,
@@ -1070,11 +1082,32 @@ fn render_diff_side(
     is_dir: bool,
     is_collapsed: bool,
     row_height: f32,
+    flat_rel_path: Option<&str>,
     mut on_select: impl FnMut(),
     mut on_open: impl FnMut(),
     mut on_toggle: impl FnMut(),
 ) {
     ui.horizontal(|ui| {
+        if let Some(rel_path) = flat_rel_path {
+            if let (Some(v), Some(id)) = (view, node_id) {
+                if v.file_system.get_node(id).is_some() {
+                    let text = if is_dir {
+                        format!("📁 {rel_path}")
+                    } else {
+                        rel_path.to_owned()
+                    };
+                    let label_resp = ui.label(text).interact(egui::Sense::click());
+                    if label_resp.clicked() {
+                        on_select();
+                    }
+                    if label_resp.double_clicked() && !is_dir {
+                        on_open();
+                    }
+                }
+            }
+            return;
+        }
+
         ui.add_space((depth as f32) * 16.0);
 
         if let (Some(v), Some(id)) = (view, node_id) {
@@ -1124,7 +1157,9 @@ fn render_row_folder_tree_diff_column(
     entry: &VisibleRowTwoFolderDiff,
     row_height: f32,
     diff_tool_config: &DiffToolConfig,
+    flat: bool,
 ) -> bool {
+    let flat_rel_path = flat.then_some(entry.rel_path.as_str());
     let first_node_id = entry.diff_state.first();
     let second_node_id = entry.diff_state.second();
     let mut should_toggle_row = false;
@@ -1147,6 +1182,7 @@ fn render_row_folder_tree_diff_column(
             entry.is_dir,
             is_collapsed_1,
             row_height,
+            flat_rel_path,
             || should_select_row = true,
             || {
                 on_row_item_clicked(
@@ -1175,6 +1211,7 @@ fn render_row_folder_tree_diff_column(
             entry.is_dir,
             is_collapsed_2,
             row_height,
+            flat_rel_path,
             || should_select_row = true,
             || {
                 on_row_item_clicked(
@@ -2183,6 +2220,55 @@ mod tests {
     }
 
     #[test]
+    fn flat_rows_are_ordered_by_depth_then_name_aligned_and_filtered() {
+        let (left_dir, right_dir) = two_folder_trees();
+        write_files(left_dir.path(), &[("sub/deep/a.txt", "l")]);
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let rows = build_filtered(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+            &blacklist("b.txt, c.txt"),
+        );
+        let flat = TreeSort {
+            flat: true,
+            ..TreeSort::default()
+        };
+
+        let rows = sort_two_folder_rows(rows, flat);
+
+        assert_eq!(
+            row_paths(&rows),
+            [
+                "",
+                "a.txt",
+                "left_only.txt",
+                "right_only.txt",
+                "sub",
+                "sub/deep",
+                "sub/deep/a.txt",
+                "sub/deep/d.txt"
+            ]
+        );
+        for row in &rows {
+            if let Some(id) = row.diff_state.first() {
+                assert_eq!(
+                    get_rel(&left.file_system, left_dir.path(), id),
+                    row.rel_path
+                );
+            }
+            if let Some(id) = row.diff_state.second() {
+                assert_eq!(
+                    get_rel(&right.file_system, right_dir.path(), id),
+                    row.rel_path
+                );
+            }
+        }
+    }
+
+    #[test]
     fn two_folder_rows_carry_their_relative_path_with_slash_separators() {
         let (left_dir, right_dir) = two_folder_trees();
         let left = load_view(left_dir.path());
@@ -2278,7 +2364,7 @@ mod tests {
         left.toggle_collapse(sub.diff_state.first().unwrap());
         right.toggle_collapse(sub.diff_state.second().unwrap());
 
-        let hidden: Vec<&str> = two_folder_cursor_rows(Some(&left), Some(&right), &rows)
+        let hidden: Vec<&str> = two_folder_cursor_rows(Some(&left), Some(&right), &rows, false)
             .iter()
             .filter(|r| r.hidden)
             .map(|r| r.rel_path)
@@ -2294,6 +2380,32 @@ mod tests {
                 "sub/left_only_in_sub.txt",
             ]
         );
+    }
+
+    #[test]
+    fn in_flat_mode_only_the_root_row_is_hidden_and_no_folder_is_collapsed() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let mut left = load_view(left_dir.path());
+        let mut right = load_view(right_dir.path());
+        let rows = build_counting(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+        );
+        let sub = rows.iter().find(|r| r.rel_path == "sub").unwrap();
+        left.toggle_collapse(sub.diff_state.first().unwrap());
+        right.toggle_collapse(sub.diff_state.second().unwrap());
+
+        let cursor_rows = two_folder_cursor_rows(Some(&left), Some(&right), &rows, true);
+
+        let hidden: Vec<&str> = cursor_rows
+            .iter()
+            .filter(|r| r.hidden)
+            .map(|r| r.rel_path)
+            .collect();
+        assert_eq!(hidden, [""]);
+        assert!(cursor_rows.iter().all(|r| !r.collapsed));
     }
 
     #[test]
@@ -2313,7 +2425,7 @@ mod tests {
             sub.diff_state.second().unwrap(),
         );
         let cursor_sees_collapsed = |left: &FileSystemView, right: &FileSystemView| {
-            two_folder_cursor_rows(Some(left), Some(right), &rows)
+            two_folder_cursor_rows(Some(left), Some(right), &rows, false)
                 .iter()
                 .find(|r| r.rel_path == "sub")
                 .unwrap()
@@ -2349,7 +2461,7 @@ mod tests {
             &Cell::new(0),
         );
 
-        let differing: Vec<&str> = two_folder_cursor_rows(Some(&left), Some(&right), &rows)
+        let differing: Vec<&str> = two_folder_cursor_rows(Some(&left), Some(&right), &rows, false)
             .iter()
             .filter(|r| r.differs)
             .map(|r| r.rel_path)

@@ -646,6 +646,7 @@ mod tests {
         state.tree_sort = TreeSort::default()
             .clicked(SortKey::State)
             .clicked(SortKey::State);
+        state.tree_sort.flat = true;
 
         let json = serde_json::to_string(&state).unwrap();
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
@@ -654,7 +655,8 @@ mod tests {
             restored.tree_sort,
             TreeSort {
                 key: SortKey::State,
-                descending: true
+                descending: true,
+                flat: true,
             }
         );
     }
@@ -670,7 +672,8 @@ mod tests {
             restored.tree_sort,
             TreeSort {
                 key: SortKey::Name,
-                descending: false
+                descending: false,
+                flat: false,
             }
         );
     }
