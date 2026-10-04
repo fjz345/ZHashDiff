@@ -19,6 +19,8 @@ use zcommon::ui_egui::common::{
     CheckboxSelectState, draw_persistent_hint_text_edit, hash_to_color, ui_custom_checkbox,
 };
 
+use crate::ui_egui::tree_cursor::{CursorRow, TreeCursor};
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemView {
     pub file_system: Arc<FileSystemModel>,
@@ -127,9 +129,8 @@ impl FileSystemView {
             let is_parent_collapsed = self.collapsed.get(&parent_id).copied().unwrap_or(false);
             if is_parent_collapsed {
                 return true;
-            } else if let Some(parent_parent_id) = self.file_system.get_parent_id(parent_id) {
-                return self.is_parent_chain_collapsed(parent_parent_id);
             }
+            return self.is_parent_chain_collapsed(parent_id);
         }
 
         false
@@ -311,6 +312,27 @@ impl FileSystemView {
     }
 }
 
+/// The two-folder rows as the cursor sees them. A row is hidden when it isn't drawn: the
+/// root row, or an entry inside a folder collapsed on a side the entry exists on.
+pub fn two_folder_cursor_rows<'a>(
+    file_system_1_view: Option<&FileSystemView>,
+    file_system_2_view: Option<&FileSystemView>,
+    rows: &'a [VisibleRowTwoFolderDiff],
+) -> Vec<CursorRow<'a>> {
+    let collapsed_in = |view: Option<&FileSystemView>, id: Option<FsNodeId>| match (view, id) {
+        (Some(view), Some(id)) => view.is_parent_chain_collapsed(id),
+        _ => false,
+    };
+    rows.iter()
+        .map(|row| CursorRow {
+            rel_path: &row.rel_path,
+            hidden: row.rel_path.is_empty()
+                || collapsed_in(file_system_1_view, row.diff_state.first())
+                || collapsed_in(file_system_2_view, row.diff_state.second()),
+        })
+        .collect()
+}
+
 pub const PENDING_DELETION_COLOR: egui::Color32 = egui::Color32::LIGHT_RED;
 
 pub fn draw_ui_folder_tree_with_checkbox(
@@ -415,6 +437,7 @@ pub fn draw_ui_two_folder_tree_with_diff(
     open_dir_window_1: &mut bool,
     open_dir_window_2: &mut bool,
     diff_tool_config: &DiffToolConfig,
+    cursor: &mut TreeCursor,
 ) -> egui::response::Response {
     if file_system_1_view.is_none() && file_system_2_view.is_none() {
         return ui
@@ -442,8 +465,34 @@ pub fn draw_ui_two_folder_tree_with_diff(
     }
 
     let visible_rows = visible_rows.as_ref().unwrap();
+    let cursor_rows = two_folder_cursor_rows(
+        file_system_1_view.as_ref(),
+        file_system_2_view.as_ref(),
+        visible_rows,
+    );
 
-    let row_count = visible_rows.len();
+    // Scroll only when the keys moved the cursor, so manual scrolling isn't fought.
+    let mut scroll_to_cursor = false;
+    if !ui.ctx().wants_keyboard_input() {
+        let moved = ui.input(|i| cursor_after_keys(i, cursor, &cursor_rows));
+        scroll_to_cursor = moved != *cursor;
+        *cursor = moved;
+    }
+
+    // Only drawn rows go to the table: it places row i at i * row height, both when
+    // virtualizing and when scrolling to a row.
+    let drawn_rows: Vec<usize> = (0..cursor_rows.len())
+        .filter(|&i| !cursor_rows[i].hidden)
+        .collect();
+    let scroll_to_row = if scroll_to_cursor {
+        drawn_rows
+            .iter()
+            .position(|&i| cursor.is_at(cursor_rows[i].rel_path))
+    } else {
+        None
+    };
+
+    let row_count = drawn_rows.len();
     let available_height = ui.available_height();
     let available_width = ui.available_width();
     let mut col0_rect = egui::Rect::NOTHING;
@@ -461,12 +510,16 @@ pub fn draw_ui_two_folder_tree_with_diff(
             let row_height_header = ui.text_style_height(&egui::TextStyle::Heading);
             let available_size = ui.available_size();
 
-            TableBuilder::new(ui)
+            let mut table = TableBuilder::new(ui)
                 .sense(egui::Sense::all())
                 .id_salt("two_folder_diff_table")
                 .striped(true)
                 .resizable(false)
-                .auto_shrink([false, true])
+                .auto_shrink([false, true]);
+            if let Some(row) = scroll_to_row {
+                table = table.scroll_to_row(row, None);
+            }
+            table
                 .column(
                     Column::initial(available_size.x * 0.5)
                         .at_least(100.0)
@@ -568,8 +621,9 @@ pub fn draw_ui_two_folder_tree_with_diff(
                 })
                 .body(|body| {
                     body.rows(row_height, row_count, |mut row| {
-                        let entry = &visible_rows[row.index()];
-                        render_row_folder_tree_diff_column(
+                        let entry = &visible_rows[drawn_rows[row.index()]];
+                        row.set_selected(cursor.is_at(&entry.rel_path));
+                        let clicked = render_row_folder_tree_diff_column(
                             file_system_1_view.as_mut(),
                             file_system_2_view.as_mut(),
                             &mut row,
@@ -577,6 +631,9 @@ pub fn draw_ui_two_folder_tree_with_diff(
                             row_height,
                             diff_tool_config,
                         );
+                        if clicked {
+                            *cursor = TreeCursor::at(&entry.rel_path);
+                        }
                     });
                 });
         });
@@ -812,7 +869,8 @@ fn render_diff_side(
     is_dir: bool,
     is_collapsed: bool,
     row_height: f32,
-    mut on_click: impl FnMut(),
+    mut on_select: impl FnMut(),
+    mut on_open: impl FnMut(),
     mut on_toggle: impl FnMut(),
 ) {
     ui.horizontal(|ui| {
@@ -836,15 +894,19 @@ fn render_diff_side(
                         .interact(egui::Sense::click());
 
                     if label_resp.clicked() {
+                        on_select();
+                    }
+                    if label_resp.double_clicked() {
                         on_toggle();
                     }
                 } else {
-                    if ui
-                        .label(node.display_name())
-                        .interact(egui::Sense::click())
-                        .clicked()
-                    {
-                        on_click();
+                    let label_resp = ui.label(node.display_name()).interact(egui::Sense::click());
+
+                    if label_resp.clicked() {
+                        on_select();
+                    }
+                    if label_resp.double_clicked() {
+                        on_open();
                     }
                 }
             }
@@ -852,6 +914,8 @@ fn render_diff_side(
     });
 }
 
+/// Draws a row that `two_folder_cursor_rows` doesn't hide. Returns whether it was clicked,
+/// which moves the cursor to it.
 fn render_row_folder_tree_diff_column(
     mut file_system_1_view: Option<&mut FileSystemView>,
     mut file_system_2_view: Option<&mut FileSystemView>,
@@ -859,114 +923,69 @@ fn render_row_folder_tree_diff_column(
     entry: &VisibleRowTwoFolderDiff,
     row_height: f32,
     diff_tool_config: &DiffToolConfig,
-) {
+) -> bool {
     let first_node_id = entry.diff_state.first();
     let second_node_id = entry.diff_state.second();
     let mut should_toggle_row = false;
+    let mut should_select_row = false;
 
-    let is_root = match (
-        &file_system_1_view,
-        &file_system_2_view,
-        &first_node_id,
-        &second_node_id,
-    ) {
-        (Some(v1), _, Some(first_id), _) => *first_id == v1.file_system.get_root_node_id(),
-        (_, Some(v2), _, Some(second_id)) => *second_id == v2.file_system.get_root_node_id(),
+    let is_collapsed = |view: Option<&FileSystemView>, id: Option<FsNodeId>| match (view, id) {
+        (Some(view), Some(id)) => view.is_collapsed(id),
         _ => false,
     };
-    // Skip the root
-    if is_root {
-        return;
-    }
+    let is_collapsed_1 = is_collapsed(file_system_1_view.as_deref(), first_node_id);
+    let is_collapsed_2 = is_collapsed(file_system_2_view.as_deref(), second_node_id);
 
-    let get_collapsed_state = |v: &FileSystemView, id: &FsNodeId| {
-        let is_root = v.file_system.get_root_node_id() == *id;
-        let collapsed = if is_root { false } else { v.is_collapsed(*id) };
-        let parent_collapsed = if is_root {
-            false
-        } else {
-            v.is_parent_chain_collapsed(*id)
-        };
-        (collapsed, parent_collapsed)
-    };
-
-    // Destructure into specific options for each view's state
-    let (state1, state2) = match (
-        &file_system_1_view,
-        &file_system_2_view,
-        &first_node_id,
-        &second_node_id,
-    ) {
-        (Some(v1), Some(v2), Some(id1), Some(id2)) => (
-            Some(get_collapsed_state(v1, id1)),
-            Some(get_collapsed_state(v2, id2)),
-        ),
-        (Some(v), _, Some(id1), _) => (Some(get_collapsed_state(v, id1)), None),
-        (_, Some(v), _, Some(id2)) => (None, Some(get_collapsed_state(v, id2))),
-        _ => panic!("unreachable"),
-    };
-
-    let is_collapsed_1 = state1.and_then(|f| Some(f.0)).unwrap_or(false);
-    let is_parent_collapsed_1 = state1.and_then(|f| Some(f.1)).unwrap_or(false);
-    let is_collapsed_2 = state2.and_then(|f| Some(f.0)).unwrap_or(false);
-    let is_parent_collapsed_2 = state2.and_then(|f| Some(f.1)).unwrap_or(false);
-    // If both parets are collapsed or invalid, hide the whole row (skip index)
     // --- Left Column (Folder 1) ---
-    {
-        if !is_parent_collapsed_1 {
-            row.col(|ui| {
-                render_diff_side(
-                    ui,
+    row.col(|ui| {
+        render_diff_side(
+            ui,
+            file_system_1_view.as_deref(),
+            first_node_id,
+            entry.depth,
+            entry.is_dir,
+            is_collapsed_1,
+            row_height,
+            || should_select_row = true,
+            || {
+                on_row_item_clicked(
                     file_system_1_view.as_deref(),
-                    first_node_id,
-                    entry.depth,
-                    entry.is_dir,
-                    is_collapsed_1,
-                    row_height,
-                    || {
-                        on_row_item_clicked(
-                            file_system_1_view.as_deref(),
-                            file_system_2_view.as_deref(),
-                            entry,
-                            diff_tool_config,
-                        );
-                    },
-                    || should_toggle_row = true,
-                );
-            });
-        }
-        // --- Middle Column (Diff Status) ---
-        if !is_parent_collapsed_1 && !is_parent_collapsed_2 {
-            row.col(|ui| {
-                ui.horizontal(|ui| {
-                    ui_custom_diff_state(ui, &entry.diff_state);
-                });
-            });
-        }
-        // --- Right Column (Folder 2) ---
-        if !is_parent_collapsed_2 {
-            row.col(|ui| {
-                render_diff_side(
-                    ui,
                     file_system_2_view.as_deref(),
-                    second_node_id,
-                    entry.depth,
-                    entry.is_dir,
-                    is_collapsed_2,
-                    row_height,
-                    || {
-                        on_row_item_clicked(
-                            file_system_1_view.as_deref(),
-                            file_system_2_view.as_deref(),
-                            entry,
-                            diff_tool_config,
-                        );
-                    },
-                    || should_toggle_row = true,
+                    entry,
+                    diff_tool_config,
                 );
-            });
-        }
-    }
+            },
+            || should_toggle_row = true,
+        );
+    });
+    // --- Middle Column (Diff Status) ---
+    row.col(|ui| {
+        ui.horizontal(|ui| {
+            ui_custom_diff_state(ui, &entry.diff_state);
+        });
+    });
+    // --- Right Column (Folder 2) ---
+    row.col(|ui| {
+        render_diff_side(
+            ui,
+            file_system_2_view.as_deref(),
+            second_node_id,
+            entry.depth,
+            entry.is_dir,
+            is_collapsed_2,
+            row_height,
+            || should_select_row = true,
+            || {
+                on_row_item_clicked(
+                    file_system_1_view.as_deref(),
+                    file_system_2_view.as_deref(),
+                    entry,
+                    diff_tool_config,
+                );
+            },
+            || should_toggle_row = true,
+        );
+    });
 
     if should_toggle_row {
         if let Some(first) = &entry.diff_state.first() {
@@ -980,6 +999,27 @@ fn render_row_folder_tree_diff_column(
             }
         }
     }
+
+    // Labels take their own clicks; this catches clicks elsewhere on the row.
+    should_select_row || row.response().clicked()
+}
+
+/// Up and Down without modifiers move the cursor. Modified arrows are left to other bindings.
+fn cursor_after_keys(
+    input: &egui::InputState,
+    cursor: &TreeCursor,
+    rows: &[CursorRow],
+) -> TreeCursor {
+    let mut cursor = cursor.clone();
+    if input.modifiers.is_none() {
+        for _ in 0..input.num_presses(egui::Key::ArrowDown) {
+            cursor = cursor.down(rows);
+        }
+        for _ in 0..input.num_presses(egui::Key::ArrowUp) {
+            cursor = cursor.up(rows);
+        }
+    }
+    cursor
 }
 
 fn render_row_folder_tree_with_checkbox(
@@ -1160,6 +1200,7 @@ fn get_folder_selection_state(
 mod tests {
     use crate::ui_egui::fs_tree::{
         DiffState, FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff,
+        two_folder_cursor_rows,
     };
 
     use std::cell::Cell;
@@ -1466,6 +1507,42 @@ mod tests {
         let rows = build_counting(&left, &right, &mut cache, &comparisons);
         assert_eq!(comparisons.get(), 12);
         assert_eq!(kind_at(&rows, "b.txt"), "Different");
+    }
+
+    #[test]
+    fn rows_inside_a_collapsed_folder_and_the_root_row_are_hidden_from_the_cursor() {
+        let (left_dir, right_dir) = two_folder_trees();
+        write_files(left_dir.path(), &[("sub/left_only_in_sub.txt", "l")]);
+        let mut left = load_view(left_dir.path());
+        let mut right = load_view(right_dir.path());
+        let rows = build_counting(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+        );
+
+        // As a click on the row does: both sides.
+        let sub = rows.iter().find(|r| r.rel_path == "sub").unwrap();
+        left.toggle_collapse(sub.diff_state.first().unwrap());
+        right.toggle_collapse(sub.diff_state.second().unwrap());
+
+        let hidden: Vec<&str> = two_folder_cursor_rows(Some(&left), Some(&right), &rows)
+            .iter()
+            .filter(|r| r.hidden)
+            .map(|r| r.rel_path)
+            .collect();
+        // sub/deep is expanded, but its parent isn't.
+        assert_eq!(
+            hidden,
+            [
+                "",
+                "sub/c.txt",
+                "sub/deep",
+                "sub/deep/d.txt",
+                "sub/left_only_in_sub.txt",
+            ]
+        );
     }
 
     #[test]
