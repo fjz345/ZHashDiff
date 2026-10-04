@@ -289,6 +289,44 @@ fn depot_path_without_revision(file: &UniversalPath) -> Result<&str, String> {
     }
 }
 
+/// The local path in `p4 -ztag where` output, or `None` when the file isn't mapped. Tagged output
+/// because the plain one separates its three paths with spaces, which paths can contain. With
+/// several records (overlay and exclusion lines of the client view) the last one decides, as the
+/// later view line wins; an excluded one carries an `unmap` field.
+pub fn parse_where_local_path(ztag: &str) -> Option<PathBuf> {
+    let mut last = None;
+    let mut path = None;
+    let mut unmap = false;
+    // A blank line after the last record is optional.
+    for line in ztag.lines().chain([""]) {
+        if line.trim().is_empty() {
+            if path.is_some() || unmap {
+                last = Some((path.take(), unmap));
+            }
+            unmap = false;
+        } else if let Some(value) = line.strip_prefix("... path ") {
+            path = Some(PathBuf::from(value));
+        } else if line.trim_end() == "... unmap" || line.starts_with("... unmap ") {
+            unmap = true;
+        }
+    }
+    match last {
+        Some((path, false)) => path,
+        _ => None,
+    }
+}
+
+/// The workspace file a depot file maps to, per `p4 where`. Whether it exists isn't checked.
+pub fn local_path_of_depot_file(
+    depot_file: &UniversalPath,
+    p4: &impl P4Runner,
+) -> Result<PathBuf, String> {
+    let depot_path = depot_path_without_revision(depot_file)?;
+    let out = p4.run(&["-ztag", "where", depot_path])?;
+    parse_where_local_path(&out)
+        .ok_or_else(|| format!("{depot_path} is not mapped to the workspace"))
+}
+
 /// What a failed command reports: stderr, else stdout, else the exit status.
 fn failure_text(stderr: &[u8], stdout: &[u8], status: impl std::fmt::Display) -> String {
     [stderr, stdout]
@@ -709,6 +747,95 @@ mod tests {
             failure_text(b"", b"", "exit code: 1"),
             "p4 failed (exit code: 1)"
         );
+    }
+
+    const WHERE_SPACES: &str = "... depotFile //depot/main/my dir/a b.txt\n\
+                                ... clientFile //ws/main/my dir/a b.txt\n\
+                                ... path C:\\ws\\main\\my dir\\a b.txt\n\
+                                \n";
+
+    #[test]
+    fn where_output_gives_the_local_path_with_spaces() {
+        assert_eq!(
+            parse_where_local_path(WHERE_SPACES),
+            Some(PathBuf::from(r"C:\ws\main\my dir\a b.txt"))
+        );
+        let crlf = WHERE_SPACES.replace('\n', "\r\n");
+        assert_eq!(
+            parse_where_local_path(&crlf),
+            Some(PathBuf::from(r"C:\ws\main\my dir\a b.txt"))
+        );
+    }
+
+    #[test]
+    fn where_output_without_a_mapping_gives_none() {
+        assert_eq!(parse_where_local_path(""), None);
+        assert_eq!(parse_where_local_path("\r\n"), None);
+        let excluded = "... depotFile //depot/main/a.txt\n\
+                        ... clientFile //ws/main/a.txt\n\
+                        ... path C:\\ws\\main\\a.txt\n\
+                        ... unmap \n";
+        assert_eq!(parse_where_local_path(excluded), None);
+    }
+
+    #[test]
+    fn where_output_with_several_records_takes_the_last() {
+        let mapped = "... depotFile //depot/main/a.txt\n\
+                      ... clientFile //ws/main/a.txt\n\
+                      ... path C:\\ws\\main\\a.txt\n";
+        let overlay = "... depotFile //depot/main/a.txt\n\
+                       ... clientFile //ws/overlay/a.txt\n\
+                       ... path C:\\ws\\overlay\\a.txt\n";
+        let excluded = "... depotFile //depot/main/a.txt\n\
+                        ... clientFile //ws/main/a.txt\n\
+                        ... path C:\\ws\\main\\a.txt\n\
+                        ... unmap\n";
+        assert_eq!(
+            parse_where_local_path(&format!("{mapped}\n{overlay}\n")),
+            Some(PathBuf::from(r"C:\ws\overlay\a.txt"))
+        );
+        assert_eq!(
+            parse_where_local_path(&format!("{mapped}\n{excluded}\n")),
+            None
+        );
+        assert_eq!(
+            parse_where_local_path(&format!("{excluded}\n{mapped}\n")),
+            Some(PathBuf::from(r"C:\ws\main\a.txt"))
+        );
+    }
+
+    #[test]
+    fn local_path_of_a_depot_file_asks_p4_where_without_the_revision() {
+        let p4 = FakeP4::new(|_: &[&str]| Ok(WHERE_SPACES.to_string()));
+        let depot = UniversalPath::Depot("//depot/main/my dir/a b.txt".into(), Some(3));
+        assert_eq!(
+            local_path_of_depot_file(&depot, &p4),
+            Ok(PathBuf::from(r"C:\ws\main\my dir\a b.txt"))
+        );
+        assert_eq!(
+            p4.calls(),
+            vec![args(&["-ztag", "where", "//depot/main/my dir/a b.txt"])]
+        );
+    }
+
+    #[test]
+    fn local_path_of_an_unmapped_depot_file_is_an_error() {
+        let depot = UniversalPath::Depot("//depot/main/a.txt".into(), None);
+        // p4 exits 0 on "not in client view": empty stdout.
+        let p4 = FakeP4::new(|_: &[&str]| Ok(String::new()));
+        let err = local_path_of_depot_file(&depot, &p4).unwrap_err();
+        assert!(err.contains("//depot/main/a.txt"), "{err}");
+
+        let p4 = FakeP4::new(|_: &[&str]| Err("no such file(s)".to_string()));
+        let err = local_path_of_depot_file(&depot, &p4).unwrap_err();
+        assert!(err.contains("no such file(s)"), "{err}");
+    }
+
+    #[test]
+    fn local_path_of_a_local_file_is_an_error_without_running_p4() {
+        let p4 = FakeP4::new(|_: &[&str]| panic!("p4 must not run"));
+        let local = UniversalPath::Local(PathBuf::from(r"C:\ws\a.txt"));
+        assert!(local_path_of_depot_file(&local, &p4).is_err());
     }
 
     #[test]

@@ -125,18 +125,12 @@ impl UniversalPath {
         }
     }
 
-    pub fn as_local_path(&self) -> String {
-        match self {
-            Self::Local(p) => p.to_string_lossy().replace('\\', "/"),
-            Self::Depot(..) => todo!(), // TODO: get local path for depot
-        }
-    }
-
+    /// A depot path's local file is only known to p4 (`p4 where`), so none is derived here.
     pub fn to_p4_string(&self) -> String {
         match self {
             Self::Depot(s, Some(rev)) => format!("{}#{}", s, rev),
             Self::Depot(s, None) => s.clone(),
-            Self::Local(p) => self.as_local_path(),
+            Self::Local(p) => p.to_string_lossy().replace('\\', "/"),
         }
     }
 

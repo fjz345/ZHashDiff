@@ -70,6 +70,9 @@ pub struct Keybindings {
     pub redo_revert: Option<Shortcut>,
     #[cfg_attr(feature = "serde", serde(default = "default_redo_revert_alt"))]
     pub redo_revert_alt: Option<Shortcut>,
+    /// Target becomes the local file of the source depot file.
+    #[cfg_attr(feature = "serde", serde(default = "default_diff_local_file"))]
+    pub diff_local_file: Option<Shortcut>,
 }
 
 const DEFAULT_COMMAND_ENABLE: bool = if cfg!(target_os = "macos")
@@ -255,8 +258,20 @@ impl Default for Keybindings {
             undo_revert: default_undo_revert(),
             redo_revert: default_redo_revert(),
             redo_revert_alt: default_redo_revert_alt(),
+            diff_local_file: default_diff_local_file(),
         }
     }
+}
+
+fn default_diff_local_file() -> Option<Shortcut> {
+    Some(Shortcut {
+        key: Key::L,
+        modifiers: Modifiers {
+            ctrl: DEFAULT_CONTROL_ENABLE,
+            command: DEFAULT_COMMAND_ENABLE,
+            ..Default::default()
+        },
+    })
 }
 
 fn default_undo_revert() -> Option<Shortcut> {
@@ -465,6 +480,11 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings, p4_profi
                 ui_shortcut_row(ui, "Undo Revert", &mut keybindings.undo_revert);
                 ui_shortcut_row(ui, "Redo Revert", &mut keybindings.redo_revert);
                 ui_shortcut_row(ui, "Redo Revert (Alt)", &mut keybindings.redo_revert_alt);
+                ui_shortcut_row(
+                    ui,
+                    "Diff Source Against Local File",
+                    &mut keybindings.diff_local_file,
+                );
             });
     });
 }

@@ -23,7 +23,10 @@ use crate::{
     diff_ctx::{DiffProcessor, FindCtx, UpdateDiffRowsInput},
     file::{FileProcessor, LoadedFile},
     keybindings::{Keybindings, QuickDiffPaths, Shortcut, ui_keybindings},
-    p4::{P4Command, P4Profiles, set_p4_slot_profile, ui_p4_profiles, update_p4_profiles},
+    p4::{
+        P4Command, P4Profiles, P4Runner, local_path_of_depot_file, set_p4_slot_profile,
+        ui_p4_profiles, update_p4_profiles,
+    },
     revert::{
         self, HistoryStep, PendingP4Edit, RevertHistory, RevertRecord, RevertRefusal, RevertTarget,
         RevertWrite, WriteRefusal,
@@ -1040,6 +1043,7 @@ impl<'a> ZApp {
         // Read outside ctx.input: Context methods inside its closure can deadlock.
         let text_focused = ctx.wants_keyboard_input();
         let mut history_step = None;
+        let mut diff_local_file = false;
         {
             let _input_ctx = ctx.input(|r| {
                 // Esc
@@ -1184,6 +1188,9 @@ impl<'a> ZApp {
                         history_step = Some(HistoryStep::Redo)
                     });
                 }
+                handle_kb(&app_state_ctx.keybindings.diff_local_file, &mut |_kb| {
+                    diff_local_file = true
+                });
 
                 for (i, (kb, path)) in app_state_ctx
                     .keybindings
@@ -1234,6 +1241,18 @@ impl<'a> ZApp {
         // After the input closure: this writes to disk.
         if let Some(step) = history_step {
             Self::step_revert_history(app_state_ctx, step);
+        }
+        // After the input closure too: p4 can take a while.
+        if diff_local_file {
+            let p4 = P4Command::new(false).for_file(app_state_ctx.file_1.get_full_path());
+            match diff_against_local_file(&mut app_state_ctx.file_1, &mut app_state_ctx.file_2, &p4)
+            {
+                Ok(local) => log::info!("Diffing against the local file {}", local.display()),
+                Err(refusal @ LocalFileRefusal::LocalSource(_)) => {
+                    log::info!("Can not diff against the local file: {refusal}")
+                }
+                Err(refusal) => log::error!("Can not diff against the local file: {refusal}"),
+            }
         }
 
         if user_quit {
@@ -1461,6 +1480,52 @@ fn apply_quick_diff(
     Ok(())
 }
 
+/// Why the local-file shortcut left the target as it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocalFileRefusal {
+    LocalSource(PathBuf),
+    /// p4 failed, or the depot file isn't mapped.
+    Where(String),
+    Missing(PathBuf),
+}
+
+impl std::fmt::Display for LocalFileRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LocalFileRefusal::LocalSource(path) => write!(
+                f,
+                "the source {} is a local file, not a depot path",
+                path.display()
+            ),
+            LocalFileRefusal::Where(e) => write!(f, "p4 where: {e}"),
+            LocalFileRefusal::Missing(path) => {
+                write!(f, "the local file {} doesn't exist", path.display())
+            }
+        }
+    }
+}
+
+/// Points the target at the workspace file that the source depot file maps to, and returns it.
+/// The source stays. On a refusal nothing changes.
+fn diff_against_local_file(
+    file_1: &mut FileProcessor,
+    file_2: &mut FileProcessor,
+    p4: &impl P4Runner,
+) -> Result<PathBuf, LocalFileRefusal> {
+    let source = file_1.get_full_path();
+    if let UniversalPath::Local(path) = source {
+        return Err(LocalFileRefusal::LocalSource(path));
+    }
+    let local = local_path_of_depot_file(&source, p4).map_err(LocalFileRefusal::Where)?;
+    if !local.is_file() {
+        return Err(LocalFileRefusal::Missing(local));
+    }
+    // The target's root belonged to its previous file; a depot root would be prefixed to this one.
+    file_2.set_root("".into());
+    file_2.set_path(UniversalPath::Local(local.clone()));
+    Ok(local)
+}
+
 #[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
@@ -1560,6 +1625,34 @@ mod tests {
         let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.keybindings.undo_revert, None);
         assert_eq!(restored.keybindings.redo_revert, ctx.keybindings.find);
+    }
+
+    #[test]
+    fn a_save_without_the_local_file_key_loads_the_default() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let keybindings = json["keybindings"].as_object_mut().unwrap();
+        keybindings.remove("diff_local_file").unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        let defaults = Keybindings::default();
+        assert!(defaults.diff_local_file.is_some());
+        assert_eq!(
+            restored.keybindings.diff_local_file,
+            defaults.diff_local_file
+        );
+    }
+
+    #[test]
+    fn the_local_file_key_survives_a_restart() {
+        let mut ctx = AppStateCtx::default();
+        ctx.keybindings.diff_local_file = ctx.keybindings.find;
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.keybindings.diff_local_file, ctx.keybindings.find);
+
+        ctx.keybindings.diff_local_file = None;
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.keybindings.diff_local_file, None);
     }
 
     #[test]
@@ -1719,6 +1812,119 @@ mod tests {
                 assert_eq!(left.get_root(), None);
                 assert_eq!(right.get_full_path(), UniversalPath::new(other_copy));
                 assert_eq!(right.get_root(), None);
+            }
+        }
+
+        mod local_file {
+            use super::*;
+            use crate::p4::FakeP4;
+
+            const DEPOT_FILE: &str = "//depot/main/src/main.rs#3";
+            const TARGET: &str = r"C:\other\lib.rs";
+
+            fn where_output(local: &Path) -> String {
+                format!(
+                    "... depotFile //depot/main/src/main.rs\n\
+                     ... clientFile //ws/main/src/main.rs\n\
+                     ... path {}\n\n",
+                    local.display()
+                )
+            }
+
+            fn assert_unchanged(left: &mut FileProcessor, right: &mut FileProcessor) {
+                assert_eq!(left.get_full_path(), UniversalPath::new(DEPOT_FILE));
+                assert_eq!(right.get_full_path(), UniversalPath::new(TARGET));
+            }
+
+            #[test]
+            fn a_mapped_existing_file_becomes_the_target() {
+                let dir = tempfile::tempdir().unwrap();
+                let local = dir.path().join("my dir").join("main.rs");
+                std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+                std::fs::write(&local, "fn main() {}").unwrap();
+                let p4 = FakeP4::new(|_: &[&str]| Ok(where_output(&local)));
+
+                let mut left = side(None, DEPOT_FILE);
+                let mut right = side(None, TARGET);
+                assert_eq!(
+                    diff_against_local_file(&mut left, &mut right, &p4),
+                    Ok(local.clone())
+                );
+                assert_eq!(left.get_full_path(), UniversalPath::new(DEPOT_FILE));
+                assert_eq!(right.get_full_path(), UniversalPath::Local(local.clone()));
+                assert_eq!(
+                    p4.calls(),
+                    vec![vec!["-ztag", "where", "//depot/main/src/main.rs"]]
+                );
+            }
+
+            #[test]
+            fn a_depot_root_on_the_target_is_dropped() {
+                // A depot root (from a Quick Diff) would be prefixed to the local path.
+                let dir = tempfile::tempdir().unwrap();
+                let local = dir.path().join("main.rs");
+                std::fs::write(&local, "fn main() {}").unwrap();
+                let p4 = FakeP4::new(|_: &[&str]| Ok(where_output(&local)));
+
+                let mut left = side(None, DEPOT_FILE);
+                let mut right = side(Some("//depot/rel"), "//depot/rel/src/main.rs");
+                assert!(diff_against_local_file(&mut left, &mut right, &p4).is_ok());
+                assert_eq!(right.get_full_path(), UniversalPath::Local(local));
+            }
+
+            #[test]
+            fn an_unmapped_file_changes_nothing() {
+                // p4 exits 0 on "not in client view", with nothing on stdout.
+                let p4 = FakeP4::new(|_: &[&str]| Ok(String::new()));
+                let mut left = side(None, DEPOT_FILE);
+                let mut right = side(None, TARGET);
+                assert!(matches!(
+                    diff_against_local_file(&mut left, &mut right, &p4),
+                    Err(LocalFileRefusal::Where(_))
+                ));
+                assert_unchanged(&mut left, &mut right);
+
+                let p4 = FakeP4::new(|_: &[&str]| Err("connect failed".to_string()));
+                assert_eq!(
+                    diff_against_local_file(&mut left, &mut right, &p4),
+                    Err(LocalFileRefusal::Where("connect failed".into()))
+                );
+                assert_unchanged(&mut left, &mut right);
+            }
+
+            #[test]
+            fn a_mapped_file_missing_on_disk_changes_nothing() {
+                let dir = tempfile::tempdir().unwrap();
+                let local = dir.path().join("main.rs");
+                let p4 = FakeP4::new(|_: &[&str]| Ok(where_output(&local)));
+                let mut left = side(None, DEPOT_FILE);
+                let mut right = side(None, TARGET);
+                assert_eq!(
+                    diff_against_local_file(&mut left, &mut right, &p4),
+                    Err(LocalFileRefusal::Missing(local.clone()))
+                );
+                assert_unchanged(&mut left, &mut right);
+
+                // A directory isn't a file to diff.
+                std::fs::create_dir(&local).unwrap();
+                assert_eq!(
+                    diff_against_local_file(&mut left, &mut right, &p4),
+                    Err(LocalFileRefusal::Missing(local))
+                );
+                assert_unchanged(&mut left, &mut right);
+            }
+
+            #[test]
+            fn a_local_source_changes_nothing_and_runs_no_p4() {
+                let p4 = FakeP4::new(|_: &[&str]| panic!("p4 must not run"));
+                let mut left = side(Some(WORKSPACE), WORKSPACE_FILE);
+                let mut right = side(None, TARGET);
+                assert_eq!(
+                    diff_against_local_file(&mut left, &mut right, &p4),
+                    Err(LocalFileRefusal::LocalSource(WORKSPACE_FILE.into()))
+                );
+                assert_eq!(left.get_full_path(), UniversalPath::new(WORKSPACE_FILE));
+                assert_eq!(right.get_full_path(), UniversalPath::new(TARGET));
             }
         }
 
