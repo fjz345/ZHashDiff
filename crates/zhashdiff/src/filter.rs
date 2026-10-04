@@ -6,7 +6,6 @@
 pub struct PathFilter {
     #[cfg_attr(feature = "serde", serde(default))]
     pub blacklist: PatternList,
-    /// Not applied yet.
     #[cfg_attr(feature = "serde", serde(default))]
     pub whitelist: PatternList,
 }
@@ -14,11 +13,20 @@ pub struct PathFilter {
 impl PathFilter {
     /// True when the filter can hide anything.
     pub fn is_active(&self) -> bool {
-        !self.blacklist.is_empty()
+        !self.blacklist.is_empty() || !self.whitelist.is_empty()
     }
 
     pub fn is_blacklisted(&self, name: &str, is_dir: bool) -> bool {
         self.blacklist.matches(name, is_dir)
+    }
+
+    /// True when the entry survives on its own: not blacklisted, and for a file, whitelisted or
+    /// no whitelist set. The whitelist applies to files only, so a folders-only pattern in it
+    /// keeps nothing. A kept folder is still hidden when a whitelist is set and nothing below it
+    /// survives; that is up to the caller too.
+    pub fn keeps(&self, name: &str, is_dir: bool) -> bool {
+        !self.is_blacklisted(name, is_dir)
+            && (is_dir || self.whitelist.is_empty() || self.whitelist.matches(name, false))
     }
 }
 
@@ -210,6 +218,44 @@ mod tests {
             assert!(!filter.is_blacklisted(name, is_dir), "{name}");
         }
         assert!(blacklist("*.obj").is_active());
+    }
+
+    fn whitelist(white: &str, black: &str) -> PathFilter {
+        PathFilter {
+            blacklist: PatternList::new(black),
+            whitelist: PatternList::new(white),
+        }
+    }
+
+    #[test]
+    fn a_whitelisted_file_is_kept_and_a_non_matching_file_is_not() {
+        let filter = whitelist("*.rs, *.toml, bin/", "");
+        assert!(filter.is_active());
+        assert!(filter.keeps("main.rs", false));
+        assert!(filter.keeps("Cargo.TOML", false));
+        assert!(!filter.keeps("readme.md", false));
+        // Files only: a folders-only pattern keeps no file, and folders are kept on their own.
+        assert!(!filter.keeps("bin", false));
+        assert!(filter.keeps("src", true));
+        assert!(filter.keeps("docs", true));
+    }
+
+    #[test]
+    fn the_blacklist_beats_the_whitelist() {
+        let filter = whitelist("*.rs", "gen_*");
+        assert!(!filter.keeps("gen_a.rs", false));
+        assert!(!filter.keeps("gen_dir", true));
+        assert!(filter.keeps("a.rs", false));
+    }
+
+    #[test]
+    fn an_empty_whitelist_keeps_everything_not_blacklisted() {
+        let filter = whitelist(" , \n", "*.obj");
+        assert!(filter.keeps("readme.md", false));
+        assert!(filter.keeps("src", true));
+        assert!(!filter.keeps("a.obj", false));
+        assert!(!whitelist(" , \n", "").is_active());
+        assert!(PathFilter::default().keeps("anything", false));
     }
 
     #[test]

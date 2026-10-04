@@ -176,14 +176,9 @@ impl PathDiffPane {
 /// table drawn below still has this frame's rows.
 fn draw_filter_bar(ui: &mut egui::Ui, filter: &mut PathFilter) {
     ui.label("Blacklist:");
-    let mut text = filter.blacklist.text().to_owned();
-    let edit = egui::TextEdit::singleline(&mut text)
-        .hint_text("*.obj, target/, .git")
-        .desired_width(300.0);
-    if ui.add(edit).changed() {
-        filter.blacklist = PatternList::new(text);
-        ui.ctx().request_repaint();
-    }
+    draw_pattern_field(ui, &mut filter.blacklist, "*.obj, target/, .git");
+    ui.label("Whitelist:");
+    draw_pattern_field(ui, &mut filter.whitelist, "*.rs, *.toml");
     let has_text = *filter != PathFilter::default();
     if ui
         .add_enabled(has_text, egui::Button::new("Clear"))
@@ -194,6 +189,17 @@ fn draw_filter_bar(ui: &mut egui::Ui, filter: &mut PathFilter) {
     }
     if filter.is_active() {
         ui.label(RichText::new("Filter active").color(ui.visuals().warn_fg_color));
+    }
+}
+
+fn draw_pattern_field(ui: &mut egui::Ui, list: &mut PatternList, hint: &str) {
+    let mut text = list.text().to_owned();
+    let edit = egui::TextEdit::singleline(&mut text)
+        .hint_text(hint)
+        .desired_width(300.0);
+    if ui.add(edit).changed() {
+        *list = PatternList::new(text);
+        ui.ctx().request_repaint();
     }
 }
 

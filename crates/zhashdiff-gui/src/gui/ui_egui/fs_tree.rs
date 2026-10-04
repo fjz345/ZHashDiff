@@ -323,8 +323,9 @@ impl FileSystemView {
     }
 }
 
-/// Per node id of the view's model, true when the filter hides the node: blacklisted, or inside
-/// a blacklisted folder. The root is never hidden.
+/// Per node id of the view's model, true when the filter hides the node: not kept by the filter,
+/// inside a hidden folder, or, with a whitelist set, a folder with nothing visible below it. The
+/// root is never hidden.
 fn filtered_out(view: &FileSystemView, filter: &PathFilter) -> Vec<bool> {
     let model = &view.file_system;
     let mut hidden = vec![false; model.total_files_and_folders()];
@@ -332,15 +333,34 @@ fn filtered_out(view: &FileSystemView, filter: &PathFilter) -> Vec<bool> {
         return hidden;
     }
     // Pre-order, so a parent is decided before its children.
-    for (id, node, _) in model.iter_tree() {
+    let pre_order: Vec<(FsNodeId, &FsNode)> =
+        model.iter_tree().map(|(id, node, _)| (id, node)).collect();
+    for &(id, node) in &pre_order {
         let Some(parent) = node.parent else {
             continue;
         };
         hidden[id] = hidden[parent] || {
             let path = node.as_path();
             let name = path.as_ref().file_name().unwrap_or_default();
-            filter.is_blacklisted(&name.to_string_lossy(), node.is_dir())
+            !filter.keeps(&name.to_string_lossy(), node.is_dir())
         };
+    }
+    if filter.whitelist.is_empty() {
+        return hidden;
+    }
+    // Reverse pre-order visits every descendant before its folder, so a folder's flag is final
+    // when it is reached.
+    let mut has_visible_child = vec![false; hidden.len()];
+    for &(id, node) in pre_order.iter().rev() {
+        let Some(parent) = node.parent else {
+            continue;
+        };
+        if node.is_dir() && !has_visible_child[id] {
+            hidden[id] = true;
+        }
+        if !hidden[id] {
+            has_visible_child[parent] = true;
+        }
     }
     hidden
 }
@@ -1770,6 +1790,118 @@ mod tests {
         let cleared = build_counting(&left, &right, &mut cache, &comparisons);
         assert_eq!(comparisons.get(), 4);
         assert_eq!(cleared, unfiltered);
+    }
+
+    fn whitelist(white: &str, black: &str) -> PathFilter {
+        PathFilter {
+            blacklist: PatternList::new(black),
+            whitelist: PatternList::new(white),
+        }
+    }
+
+    #[test]
+    fn ancestors_of_a_whitelisted_file_are_visible_on_both_sides() {
+        let (left_dir, right_dir) = two_folder_trees();
+        for dir in [&left_dir, &right_dir] {
+            write_files(dir.path(), &[("src/deep/main.rs", "same")]);
+        }
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+
+        let rows = build_filtered(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+            &whitelist("*.rs", ""),
+        );
+
+        // Same means the entry is on both sides.
+        assert_eq!(
+            rows_with_kinds(&rows),
+            [
+                ("", "Same"),
+                ("src", "Same"),
+                ("src/deep", "Same"),
+                ("src/deep/main.rs", "Same"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_folder_with_no_whitelisted_descendant_is_hidden() {
+        let (left_dir, right_dir) = two_folder_trees();
+        for dir in [&left_dir, &right_dir] {
+            write_files(
+                dir.path(),
+                &[
+                    ("keep/a.rs", "same"),
+                    // Named like a match, but the whitelist applies to files only.
+                    ("x.rs/readme.md", "same"),
+                    // Blacklist beats whitelist, and the folder has nothing else.
+                    ("gen/b.rs", "same"),
+                ],
+            );
+            fs::create_dir_all(dir.path().join("empty/nested")).unwrap();
+        }
+        // A folder kept on one side only.
+        write_files(left_dir.path(), &[("one/c.rs", "l")]);
+        write_files(right_dir.path(), &[("one/c.md", "r")]);
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+
+        let rows = build_filtered(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+            &whitelist("*.rs", "gen/"),
+        );
+
+        assert_eq!(
+            rows_with_kinds(&rows),
+            [
+                ("", "Different"),
+                ("keep", "Same"),
+                ("keep/a.rs", "Same"),
+                ("one", "OnlyInFirst"),
+                ("one/c.rs", "OnlyInFirst"),
+            ]
+        );
+    }
+
+    #[test]
+    fn with_a_whitelist_folder_states_reflect_only_the_visible_files() {
+        let (left_dir, right_dir) = two_folder_trees();
+        for dir in [&left_dir, &right_dir] {
+            write_files(
+                dir.path(),
+                &[("src/main.rs", "same"), ("lib/deep/x.rs", "")],
+            );
+        }
+        write_files(left_dir.path(), &[("src/notes.md", "left")]);
+        write_files(right_dir.path(), &[("src/notes.md", "right")]);
+        write_files(left_dir.path(), &[("lib/deep/y.rs", "left")]);
+        write_files(right_dir.path(), &[("lib/deep/y.rs", "right")]);
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let mut cache = FileCompareCache::default();
+        let comparisons = Cell::new(0);
+
+        let rows = build_counting(&left, &right, &mut cache, &comparisons);
+        assert_eq!(kind_at(&rows, "src"), "Different");
+
+        let rows = build_filtered(
+            &left,
+            &right,
+            &mut cache,
+            &comparisons,
+            &whitelist("*.rs", ""),
+        );
+        assert_eq!(kind_at(&rows, "src"), "Same", "notes.md is hidden");
+        assert_eq!(kind_at(&rows, "lib"), "Different");
+        assert_eq!(kind_at(&rows, "lib/deep"), "Different");
+        assert_eq!(kind_at(&rows, ""), "Different", "y.rs still differs");
     }
 
     fn kind_at(rows: &[VisibleRowTwoFolderDiff], rel_path: &str) -> &'static str {
