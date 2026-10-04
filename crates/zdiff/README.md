@@ -49,7 +49,7 @@ Research only (diff-engine issue 09); it describes the engine as of row chunking
 ### Units
 Three units, easy to mix up. Only the last is user-visible.
 * `LineHunk`: engine-internal. It only decides where token Myers runs.
-* Seam: an Equal entry whose source token is a Newline. `DiffBuilder::handle_match` flushes both sides there, so only the line counters cross it. Every hunk after an equal line starts right after a seam, and seams also occur inside hunks. Rows are independent per seam, not per hunk.
+* Seam: an Equal entry whose source token is a Newline. `DiffBuilder::handle_match` flushes both sides there, so only the line counters cross it. Every hunk after an equal line starts right after a seam (when that line's break pairs as Equal), and seams also occur inside hunks. Rows are independent per seam, not per hunk.
 * `DiffSpan`: a run of rows with a visible edit, computed over the final rows (conflict navigation, revert). Not 1:1 with hunks: a hunk with only hidden (ignored) edits forms no span.
 
 ### 1. Partial invalidation when one side changes locally: no
