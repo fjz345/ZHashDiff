@@ -200,6 +200,11 @@ impl P4Command {
     }
 
     pub fn output(&self, args: &[&str]) -> Result<String, String> {
+        String::from_utf8(self.output_bytes(args)?).map_err(|e| e.to_string())
+    }
+
+    /// Like `output`, but stdout as raw bytes, for file content that may not be text.
+    pub fn output_bytes(&self, args: &[&str]) -> Result<Vec<u8>, String> {
         let output = self
             .prepare_cmd()
             .args(args)
@@ -212,7 +217,7 @@ impl P4Command {
             if !warnings.trim().is_empty() {
                 log::warn!("p4 {}: {}", args.join(" "), warnings.trim());
             }
-            String::from_utf8(output.stdout).map_err(|e| e.to_string())
+            Ok(output.stdout)
         } else {
             Err(failure_text(&output.stderr, &output.stdout, output.status))
         }
@@ -225,10 +230,12 @@ impl P4Command {
             .map_err(|e| format!("{}: {e}", self.exe_path))
     }
 
-    pub fn get_depot_file_content(file: &UniversalPath) -> Result<String, String> {
-        P4Command::new(false)
-            .for_file(file.clone())
-            .output(&["print", "-q", &file.to_p4_string()])
+    pub fn get_depot_file_bytes(file: &UniversalPath) -> Result<Vec<u8>, String> {
+        P4Command::new(false).for_file(file.clone()).output_bytes(&[
+            "print",
+            "-q",
+            &file.to_p4_string(),
+        ])
     }
     pub fn open_revision_graph(file: &UniversalPath) -> Result<(), String> {
         let path = depot_path_without_revision(file)?;

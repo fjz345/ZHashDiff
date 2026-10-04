@@ -90,6 +90,45 @@ pub fn load_file(
     }
 }
 
+/// Fetches a depot file as bytes and loads it through a temp copy under `temp_root`. The bytes
+/// are never decoded here, so binary content reaches sniffing intact.
+pub fn load_depot_file(
+    display_path: UniversalPath,
+    temp_root: &Path,
+    lexer_mode: u8,
+    fetch: impl FnOnce(&UniversalPath) -> Result<Vec<u8>, String>,
+) -> Result<LoadedFile, String> {
+    let UniversalPath::Depot(depot_str, rev) = &display_path else {
+        return Err(format!("{display_path:?} is not a depot path"));
+    };
+    let mut temp_path = temp_root.join(depot_str.trim_start_matches('/'));
+    if let Some(r) = rev {
+        let mut filename = temp_path.file_name().unwrap_or_default().to_os_string();
+        filename.push(format!("_rev{}", r));
+        temp_path.set_file_name(filename);
+    }
+
+    if let Some(parent) = temp_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create directories for {}: {}", depot_str, e))?;
+    }
+
+    let bytes = fetch(&display_path).map_err(|e| {
+        format!(
+            "P4 command failed for {}: {}",
+            display_path.to_p4_string(),
+            e
+        )
+    })?;
+    std::fs::write(&temp_path, &bytes)
+        .map_err(|e| format!("Failed to write P4 content to temp file: {}", e))?;
+
+    let loaded = load_file(display_path.clone(), &temp_path, lexer_mode)
+        .map_err(|e| format!("Cannot load file {}, Error: {e}", temp_path.display()));
+    let _ = std::fs::remove_file(&temp_path);
+    loaded
+}
+
 fn default_channel() -> (mpsc::Sender<UniversalPath>, mpsc::Receiver<UniversalPath>) {
     mpsc::channel()
 }
@@ -332,63 +371,17 @@ impl FileProcessor {
             let diff_lexer_mode = self.diff_lexer_mode;
 
             std::thread::spawn(move || {
-                let target_path = match &path_clone {
-                    UniversalPath::Local(p) => p.clone(),
-                    UniversalPath::Depot(depot_str, rev) => {
-                        let sanitized = depot_str.trim_start_matches('/');
-                        let mut temp_path = std::env::temp_dir().join(sanitized);
-
-                        if let Some(r) = rev {
-                            let mut filename =
-                                temp_path.file_name().unwrap_or_default().to_os_string();
-                            filename.push(format!("_rev{}", r));
-                            temp_path.set_file_name(filename);
-                        }
-
-                        if let Some(parent) = temp_path.parent() {
-                            if let Err(e) = std::fs::create_dir_all(parent) {
-                                log::error!(
-                                    "Failed to create directories for {}: {}",
-                                    depot_str,
-                                    e
-                                );
-                                let _ = tx.send((path_clone, None));
-                                return;
-                            }
-                        }
-
-                        let p4_path = path_clone.to_p4_string();
-                        let content = match P4Command::get_depot_file_content(&path_clone) {
-                            Ok(c) => c,
-                            Err(e) => {
-                                log::error!("P4 command failed for {}: {}", p4_path, e);
-                                let _ = tx.send((path_clone, None));
-                                return;
-                            }
-                        };
-
-                        if let Err(e) = std::fs::write(&temp_path, content.as_bytes()) {
-                            log::error!("Failed to write P4 content to temp file: {}", e);
-                            let _ = tx.send((path_clone, None));
-                            return;
-                        }
-
-                        temp_path
-                    }
+                let loaded = match &path_clone {
+                    UniversalPath::Local(p) => load_file(path_clone.clone(), p, diff_lexer_mode)
+                        .map_err(|e| format!("Cannot load file {}, Error: {e}", p.display())),
+                    UniversalPath::Depot(..) => load_depot_file(
+                        path_clone.clone(),
+                        &std::env::temp_dir(),
+                        diff_lexer_mode,
+                        P4Command::get_depot_file_bytes,
+                    ),
                 };
-
-                let loaded_file_opt =
-                    match load_file(path_clone.clone(), &target_path, diff_lexer_mode) {
-                        Ok(file) => Some(file),
-                        Err(e) => {
-                            log::error!("Cannot load file {}, Error: {e}", target_path.display());
-                            None
-                        }
-                    };
-
-                if path_clone.is_depot() {
-                    let _ = std::fs::remove_file(&target_path);
-                }
+                let loaded_file_opt = loaded.inspect_err(|e| log::error!("{e}")).ok();
 
                 let _ = tx.send((path_clone, loaded_file_opt));
             });
@@ -525,6 +518,79 @@ mod tests {
         let loaded = load_bytes(bytes);
         assert_eq!(loaded.viewer_kind(), ViewerKind::Hex);
         assert_eq!(loaded.bytes(), bytes);
+    }
+
+    fn load_depot(
+        temp_root: &Path,
+        depot: &str,
+        rev: Option<u32>,
+        fetched: Result<&[u8], &str>,
+    ) -> Result<LoadedFile, String> {
+        let path = UniversalPath::Depot(depot.into(), rev);
+        load_depot_file(path, temp_root, LEXER_MODE_DEFAULT, |_| {
+            fetched.map(<[u8]>::to_vec).map_err(str::to_string)
+        })
+    }
+
+    #[test]
+    fn non_utf8_depot_content_loads_as_bytes_for_hex() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = b"\x89PNG\r\n\x1a\n\xff\xfe\x00caf\xe9";
+        let loaded = load_depot(temp.path(), "//depot/art/logo.png", Some(3), Ok(bytes)).unwrap();
+        assert_eq!(loaded.viewer_kind(), ViewerKind::Hex);
+        assert_eq!(loaded.bytes(), bytes);
+        assert_eq!(
+            loaded.path(),
+            &UniversalPath::Depot("//depot/art/logo.png".into(), Some(3))
+        );
+    }
+
+    #[test]
+    fn utf8_depot_content_still_loads_as_text() {
+        let temp = tempfile::tempdir().unwrap();
+        let text = "fn main() {}\n// ünïcode\n";
+        let loaded = load_depot(
+            temp.path(),
+            "//depot/src/main.rs",
+            None,
+            Ok(text.as_bytes()),
+        )
+        .unwrap();
+        assert_eq!(loaded.viewer_kind(), ViewerKind::Text);
+        assert_eq!(loaded.text().unwrap().contents, text);
+        assert_eq!(
+            loaded.path(),
+            &UniversalPath::Depot("//depot/src/main.rs".into(), None)
+        );
+    }
+
+    #[test]
+    fn depot_fetch_failure_loads_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let result = load_depot(temp.path(), "//depot/a.bin", None, Err("no such file(s)"));
+        assert!(result.unwrap_err().contains("no such file(s)"));
+    }
+
+    #[test]
+    fn depot_temp_copy_is_removed_after_loading() {
+        let temp = tempfile::tempdir().unwrap();
+        load_depot(temp.path(), "//depot/dir/a.bin", Some(2), Ok(b"\x00\x01")).unwrap();
+        load_depot(temp.path(), "//depot/dir/b.txt", None, Ok(b"text")).unwrap();
+        let left: Vec<_> = walk_files(temp.path());
+        assert!(left.is_empty(), "{left:?}");
+    }
+
+    fn walk_files(dir: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(walk_files(&path));
+            } else {
+                files.push(path);
+            }
+        }
+        files
     }
 
     #[test]
