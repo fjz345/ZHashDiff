@@ -23,7 +23,7 @@ use crate::{
     diff_ctx::{DiffProcessor, FindCtx, UpdateDiffRowsInput},
     file::{FileProcessor, LoadedFile},
     keybindings::{Keybindings, QuickDiffPaths, Shortcut, ui_keybindings},
-    p4::{P4Command, get_p4_config, ui_p4config, update_p4_config},
+    p4::{P4Command, P4Profiles, set_p4_slot_profile, ui_p4_profiles, update_p4_profiles},
     revert::{
         self, HistoryStep, PendingP4Edit, RevertHistory, RevertRecord, RevertRefusal, RevertTarget,
         RevertWrite, WriteRefusal,
@@ -77,6 +77,9 @@ pub struct AppStateCtx {
     // ### Keybindings
     pub keybindings: Keybindings,
 
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub p4_profiles: P4Profiles,
+
     // ### UI TEMP
     pub scroll_left: f32,
     pub scroll_right: f32,
@@ -124,6 +127,7 @@ impl Default for AppStateCtx {
             find_input: Default::default(),
             diff_lexer_mode: LEXER_MODE_DEFAULT,
             keybindings: Default::default(),
+            p4_profiles: Default::default(),
             myers_diff_algorithm: Default::default(),
             code_language: "rs".to_string(),
             code_language_custom: "".into(),
@@ -207,6 +211,8 @@ impl<'a> ZApp {
         if let Some(state) = &mut self.state {
             match state {
                 AppState::Startup(ctx) | AppState::Idle(ctx) => {
+                    update_p4_profiles(ctx.p4_profiles.clone());
+
                     let args: Vec<String> = env::args().collect();
 
                     if let (Some(p1), Some(p2)) = (args.get(1), args.get(2)) {
@@ -371,6 +377,7 @@ impl<'a> ZApp {
         scroll_right: &mut f32,
         lexer_mode: &mut u8,
         keybindings: &mut Keybindings,
+        p4_profiles: &mut P4Profiles,
         extension_map: &mut ExtensionMap,
         myers_diff_algorithm: &mut MyersDiffAlgorithm,
         code_language: &mut String,
@@ -623,7 +630,7 @@ impl<'a> ZApp {
                 "Option - Shortcuts",
                 true,
                 |ui| {
-                    ui_keybindings(ui, keybindings);
+                    ui_keybindings(ui, keybindings, &p4_profiles.profiles);
                 },
             );
         }
@@ -645,12 +652,12 @@ impl<'a> ZApp {
                 "Option - P4Config",
                 true,
                 |ui| {
-                    let mut p4_config = get_p4_config();
-                    let before_config = p4_config.clone();
-                    ui_p4config(ui, &mut p4_config);
-                    if p4_config != before_config {
-                        log::info!("P4 config changed: {:?}", p4_config);
-                        update_p4_config(p4_config);
+                    let before = p4_profiles.clone();
+                    ui_p4_profiles(ui, p4_profiles);
+                    if *p4_profiles != before {
+                        // Not the profiles themselves: they hold passwords.
+                        log::info!("P4 profiles changed");
+                        update_p4_profiles(p4_profiles.clone());
                     }
                 },
             );
@@ -684,6 +691,7 @@ impl<'a> ZApp {
                 revert_history,
                 code_language,
                 code_language_custom,
+                p4_profiles,
             } = app_ctx;
             let is_hex = *viewer_kind == Some(ViewerKind::Hex);
             let is_image = *viewer_kind == Some(ViewerKind::Image);
@@ -698,6 +706,7 @@ impl<'a> ZApp {
                 scroll_right,
                 lexer_mode,
                 keybindings,
+                p4_profiles,
                 extension_map,
                 myers_diff_algorithm,
                 code_language,
@@ -1202,17 +1211,21 @@ impl<'a> ZApp {
                                 app_state_ctx.file_1.get_full_path(),
                                 app_state_ctx.file_2.get_full_path()
                             );
-                        } else if path.source.is_some() {
-                            log::info!(
-                                "User Quick Diff Shortcut set paths:\nSource: {:?}\nTarget: {:?}",
-                                app_state_ctx.file_1.get_full_path(),
-                                app_state_ctx.file_2.get_full_path()
-                            );
                         } else {
-                            log::info!(
-                                "User Quick Diff Shortcut set paths:\nTarget: {:?}",
-                                app_state_ctx.file_2.get_full_path()
-                            );
+                            // Before the sides load: their fetches read it on the loader thread.
+                            set_p4_slot_profile(path.p4_profile);
+                            if path.source.is_some() {
+                                log::info!(
+                                    "User Quick Diff Shortcut set paths:\nSource: {:?}\nTarget: {:?}",
+                                    app_state_ctx.file_1.get_full_path(),
+                                    app_state_ctx.file_2.get_full_path()
+                                );
+                            } else {
+                                log::info!(
+                                    "User Quick Diff Shortcut set paths:\nTarget: {:?}",
+                                    app_state_ctx.file_2.get_full_path()
+                                );
+                            }
                         }
                     });
                 }
@@ -1549,6 +1562,56 @@ mod tests {
         assert_eq!(restored.keybindings.redo_revert, ctx.keybindings.find);
     }
 
+    #[test]
+    fn p4_profiles_and_slot_profiles_survive_a_restart() {
+        let mut ctx = AppStateCtx::default();
+        let id = ctx.p4_profiles.add("work".into());
+        ctx.p4_profiles.profiles[0].config.port = "ssl:p4:1666".into();
+        ctx.p4_profiles.profiles[0].config.password = "pw".into();
+        ctx.p4_profiles.default = Some(id);
+        ctx.keybindings.user_quick_diffs[1].1.p4_profile = Some(id);
+
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.p4_profiles, ctx.p4_profiles);
+        let slot_profiles: Vec<_> = restored
+            .keybindings
+            .user_quick_diffs
+            .iter()
+            .map(|(_, slot)| slot.p4_profile)
+            .collect();
+        assert_eq!(slot_profiles, [None, Some(id), None, None]);
+    }
+
+    /// The single p4 config before profiles was never saved, so such a save has no profiles.
+    #[test]
+    fn a_save_without_p4_profiles_loads_with_none_and_auto_slots() {
+        let mut ctx = AppStateCtx::default();
+        ctx.p4_profiles.add("work".into());
+        let mut json = serde_json::to_value(&ctx).unwrap();
+        json.as_object_mut().unwrap().remove("p4_profiles").unwrap();
+        for slot in json["keybindings"]["user_quick_diffs"]
+            .as_array_mut()
+            .unwrap()
+        {
+            slot[1]
+                .as_object_mut()
+                .unwrap()
+                .remove("p4_profile")
+                .unwrap();
+        }
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.p4_profiles, P4Profiles::default());
+        assert_eq!(restored.keybindings.user_quick_diffs.len(), 4);
+        assert!(
+            restored
+                .keybindings
+                .user_quick_diffs
+                .iter()
+                .all(|(_, slot)| slot.p4_profile.is_none())
+        );
+    }
+
     mod quick_diff {
         use super::*;
 
@@ -1562,6 +1625,7 @@ mod tests {
             QuickDiffPaths {
                 target: ("//depot/main".into(), String::new()),
                 source: None,
+                p4_profile: None,
             }
         }
 
@@ -1626,6 +1690,7 @@ mod tests {
                 QuickDiffPaths {
                     target: ("//depot/main".into(), "src/main.rs".into()),
                     source: Some((WORKSPACE.into(), WORKSPACE_FILE.into())),
+                    p4_profile: None,
                 },
             ];
             for slot in slots {

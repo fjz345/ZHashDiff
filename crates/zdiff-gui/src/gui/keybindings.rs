@@ -1,5 +1,7 @@
 use eframe::egui::{self, Key, Modifiers};
 
+use crate::p4::{P4Profile, ui_p4_profile_combo};
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Shortcut {
@@ -38,6 +40,9 @@ type RootAndPath = (String, String);
 pub struct QuickDiffPaths {
     pub target: RootAndPath,
     pub source: Option<RootAndPath>,
+    /// A `P4Profile` id; `None` is Auto.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub p4_profile: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -288,7 +293,7 @@ fn default_redo_revert_alt() -> Option<Shortcut> {
     })
 }
 
-pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
+pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings, p4_profiles: &[P4Profile]) {
     if ui.button("Reset to defaults").clicked() {
         *keybindings = Keybindings::default();
     }
@@ -388,6 +393,16 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                         &mut quick_diff_path.target.0,
                         &mut quick_diff_path.target.1,
                     );
+
+                    ui.label("P4 Profile");
+                    ui_p4_profile_combo(
+                        ui,
+                        ("quick_diff_p4_profile", i),
+                        p4_profiles,
+                        "Auto",
+                        &mut quick_diff_path.p4_profile,
+                    );
+                    ui.end_row();
 
                     let mut action_remove = false;
                     let mut action_add = false;
