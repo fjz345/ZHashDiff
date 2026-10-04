@@ -55,22 +55,25 @@ pub struct FindCtx {
     #[allow(unused)] // most likely will use this somehow?
     found_lines_2: Vec<usize>,
     cached_found_lines: Vec<usize>,
+    /// 0-based file line of each hit, per side. The rows above are derived from these, so they
+    /// can be rebuilt for another layout of the rows, e.g. after an expansion.
+    found_file_lines: (Vec<usize>, Vec<usize>),
 }
 impl FindCtx {
     pub fn new(find_input: &str, diff_ctx: &MinimalDiffCtx) -> Self {
         Self::build(find_input, diff_ctx)
     }
 
-    /// Moves the found rows to another layout of the same rows. The count stays the same, so
-    /// the find cursor stays valid.
-    fn remap_rows(&mut self, remap: impl Fn(usize) -> usize) {
-        for rows in [
-            &mut self.found_lines_1,
-            &mut self.found_lines_2,
-            &mut self.cached_found_lines,
-        ] {
-            rows.iter_mut().for_each(|row| *row = remap(*row));
-        }
+    /// Rebuilds the found rows from the hits' file lines. The count can change: hits on lines
+    /// without a row of their own share one.
+    fn map_to_rows(&mut self, file_rows: &PrecomputedFileRows) {
+        let rows = |lines: &[usize], line_to_row: &[usize]| -> Vec<usize> {
+            lines.iter().map(|&line| line_to_row[line]).collect()
+        };
+        self.found_lines_1 = rows(&self.found_file_lines.0, &file_rows.0);
+        self.found_lines_2 = rows(&self.found_file_lines.1, &file_rows.1);
+        self.cached_found_lines =
+            Self::combine_found_lines(&self.found_lines_1, &self.found_lines_2);
     }
 
     fn combine_found_lines(found_lines_1: &Vec<usize>, found_lines_2: &Vec<usize>) -> Vec<usize> {
@@ -82,34 +85,21 @@ impl FindCtx {
     }
 
     fn build(find_input: &str, diff_ctx: &MinimalDiffCtx) -> Self {
-        let mut find_found_lines_1: Vec<usize> = Vec::new();
-        let mut find_found_lines_2: Vec<usize> = Vec::new();
-
-        if let Some(file) = &diff_ctx.input.file_1 {
-            find_found_lines_1 = file
-                .content_search(&find_input)
-                .into_iter()
-                .map(|f| diff_ctx.precomputed_file_rows.0[f])
-                .collect()
-        }
-
-        if let Some(file) = &diff_ctx.input.file_2 {
-            find_found_lines_2 = file
-                .content_search(&find_input)
-                .into_iter()
-                .map(|f| diff_ctx.precomputed_file_rows.1[f])
-                .collect()
-        }
-        log::debug!("Found (in #1): {:?}", find_found_lines_1);
-        log::debug!("Found (in #2): {:?}", find_found_lines_2);
-
-        let cached_found_lines =
-            Self::combine_found_lines(&find_found_lines_1, &find_found_lines_2);
-        let find_ctx = Self {
-            found_lines_1: find_found_lines_1,
-            found_lines_2: find_found_lines_2,
-            cached_found_lines,
+        let search = |file: &Option<Arc<CachedFile<RawToken>>>| {
+            file.as_ref()
+                .map(|file| file.content_search(&find_input))
+                .unwrap_or_default()
         };
+        let mut find_ctx = Self {
+            found_file_lines: (
+                search(&diff_ctx.input.file_1),
+                search(&diff_ctx.input.file_2),
+            ),
+            ..Default::default()
+        };
+        find_ctx.map_to_rows(&diff_ctx.precomputed_file_rows);
+        log::debug!("Found (in #1): {:?}", find_ctx.found_lines_1);
+        log::debug!("Found (in #2): {:?}", find_ctx.found_lines_2);
         log::debug!("create_find_ctx: {:?}", find_ctx);
         find_ctx
     }
@@ -964,7 +954,18 @@ impl DiffProcessor {
         let new = self.get_minimal_diff_ctx().expect("diff shown above");
 
         let remap = |row| remap_row(&old.row_blocks, &new.row_blocks, row);
-        self.find_ctx.remap_rows(remap);
+        // The find cursor stays on its hit's row, or moves to the next hit after it.
+        let find_row = self
+            .find_ctx
+            .cached_found_lines
+            .get(self.find_cursor.get())
+            .map(|&row| remap(row));
+        self.find_ctx.map_to_rows(&new.precomputed_file_rows);
+        let found = &self.find_ctx.cached_found_lines;
+        let find_max = found.len().saturating_sub(1);
+        self.find_cursor.set_max(find_max);
+        let find_index = find_row.map_or(0, |row| found.partition_point(|&r| r < row));
+        self.find_cursor.set(find_index.min(find_max));
         let mut highlights: Vec<usize> = self.active_highlights.iter().map(|&r| remap(r)).collect();
         highlights.dedup();
         self.active_highlights = highlights;
@@ -1991,6 +1992,30 @@ mod tests {
                 assert_eq!(ctx.precomputed_file_rows.0[9], goto.start);
 
                 assert_eq!(plan_hunk_revert(&ctx, revert), Ok(planned));
+            }
+
+            #[test]
+            fn a_find_hit_inside_the_block_lands_on_its_line_once_expanded() {
+                let dir = tempfile::tempdir().unwrap();
+                let pair = gap_pair(dir.path());
+                let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
+                // Hidden lines have no row of their own, so the hit sits on row 0.
+                assert_eq!(collapsed.precomputed_file_rows.0[9], 0);
+                processor.update_find(FindCtx::new("keep_10", &collapsed));
+                processor.get_scroll_to_row();
+
+                processor.set_block_expanded(only_block(&collapsed), true);
+                assert_eq!(
+                    processor.get_scroll_to_row(),
+                    None,
+                    "expanding must not scroll"
+                );
+
+                let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
+                assert_eq!(
+                    processor.find_scroll_to_row().map(|s| s.start),
+                    Some(row_of_left_line(&ctx.diff_rows, 10))
+                );
             }
         }
     }
