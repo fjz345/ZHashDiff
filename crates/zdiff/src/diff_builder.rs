@@ -394,6 +394,71 @@ mod tests {
         harness.assert_row(0, 1, 1, "\t#define hello_there\n", "\t#define world_here\n");
         harness.assert_row(1, 2, 2, "\t// Comment\n", "\t// Comment\n");
     }
+
+    mod line_then_token {
+        use std::sync::{Arc, atomic::AtomicBool};
+
+        use super::*;
+        use crate::{
+            lexer::{LexerDefault, RawToken},
+            myers::{MyersDiffAlgorithm, myers_diff_path},
+            test_harness::DiffTestHarness,
+        };
+
+        const ALGORITHMS: [MyersDiffAlgorithm; 3] = [
+            MyersDiffAlgorithm::Trace,
+            MyersDiffAlgorithm::Linear,
+            MyersDiffAlgorithm::LinearMT,
+        ];
+
+        /// Rows built from the line-then-token diff; the harness lexes with the same lexer.
+        fn harness<'a>(
+            algorithm: MyersDiffAlgorithm,
+            s1: &'a str,
+            s2: &'a str,
+            ghost_rows: bool,
+        ) -> DiffTestHarness<'a> {
+            let t1: Vec<RawToken> = LexerDefault::<RawToken>::new(s1).collect();
+            let t2: Vec<RawToken> = LexerDefault::<RawToken>::new(s2).collect();
+            let cmp = |a: &RawToken, b: &RawToken| {
+                a.kind == b.kind && s1[a.span.clone()] == s2[b.span.clone()]
+            };
+            let path = myers_diff_path(algorithm, &t1, &t2, cmp, Arc::new(AtomicBool::new(false)))
+                .expect("not cancelled");
+            DiffTestHarness::new(
+                s1,
+                s2,
+                path,
+                DiffBuilderOptions {
+                    ghost_rows,
+                    ..Default::default()
+                },
+                8,
+            )
+        }
+
+        #[test]
+        fn line_inserted_mid_hunk_gets_its_own_row() {
+            let s1 = "let a = 1;\nlet b = 2;\nlet c = 3;\nlet d = 4;\n";
+            let s2 = "let a = 10;\nlet b = 20;\nnew();\nlet c = 30;\nlet d = 40;\n";
+            for algorithm in ALGORITHMS {
+                let h = harness(algorithm, s1, s2, false);
+                h.assert_row(0, 1, 1, "let a = 1;\n", "let a = 10;\n");
+                h.assert_row(1, 2, 2, "let b = 2;\n", "let b = 20;\n");
+                h.assert_row(2, -1, 3, "VOID", "new();\n");
+                h.assert_row(3, 3, 4, "let c = 3;\n", "let c = 30;\n");
+                h.assert_row(4, 4, 5, "let d = 4;\n", "let d = 40;\n");
+
+                // Ghost tokens inline: each row carries the other side's changed tokens.
+                let h = harness(algorithm, s1, s2, true);
+                h.assert_row(0, 1, 1, "let a = 110;\n", "let a = 110;\n");
+                h.assert_row(1, 2, 2, "let b = 220;\n", "let b = 220;\n");
+                h.assert_row(2, -1, 3, "new();\n", "new();\n");
+                h.assert_row(3, 3, 4, "let c = 330;\n", "let c = 330;\n");
+                h.assert_row(4, 4, 5, "let d = 440;\n", "let d = 440;\n");
+            }
+        }
+    }
 }
 
 #[cfg(test)]

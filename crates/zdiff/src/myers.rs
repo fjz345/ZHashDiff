@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    ops::Range,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use crate::lexer::{RawTokenTrait, TokenKind};
@@ -17,6 +20,8 @@ pub enum MyersDiffAlgorithm {
     LinearMT, // N+M memory with multi-threading
 }
 
+/// Token-level edit path of `source` -> `target`: `line_diff`, then `token_diff`. A unit-step
+/// path from (0, 0) to (source.len(), target.len()). None when cancelled.
 pub fn myers_diff_path<T, F>(
     algorithm: MyersDiffAlgorithm,
     source: &[T],
@@ -28,16 +33,181 @@ where
     T: RawTokenTrait,
     F: Fn(&T, &T) -> bool + Sync,
 {
-    let path = match algorithm {
+    let hunks = line_diff(algorithm, source, target, &cmp, cancel_flag.clone())?;
+    token_diff(algorithm, source, target, &hunks, &cmp, cancel_flag)
+}
+
+/// A run of non-equal lines, as token ranges. Either range may be empty (pure insert/delete).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineHunk {
+    pub source: Range<usize>,
+    pub target: Range<usize>,
+}
+
+/// Line phase: Myers over lines, where two lines are equal when their tokens are pairwise equal
+/// under `cmp`. Returns the hunks in order; tokens outside them pair up one to one.
+pub fn line_diff<T, F>(
+    algorithm: MyersDiffAlgorithm,
+    source: &[T],
+    target: &[T],
+    cmp: F,
+    cancel_flag: Arc<AtomicBool>,
+) -> Option<Vec<LineHunk>>
+where
+    T: RawTokenTrait,
+    F: Fn(&T, &T) -> bool + Sync,
+{
+    if cancel_flag.load(Ordering::Relaxed) {
+        return None;
+    }
+    if source.len() == target.len() && source.iter().zip(target).all(|(a, b)| cmp(a, b)) {
+        return Some(Vec::new());
+    }
+
+    let (source_lines, target_lines) = (split_lines(source), split_lines(target));
+    let line_eq = |a: &Range<usize>, b: &Range<usize>| {
+        a.len() == b.len()
+            && source[a.clone()]
+                .iter()
+                .zip(&target[b.clone()])
+                .all(|(a, b)| cmp(a, b))
+    };
+    let path = raw_diff_path(
+        algorithm,
+        &source_lines,
+        &target_lines,
+        line_eq,
+        cancel_flag.clone(),
+    )?;
+    // The inner algorithms don't check the flag on every path (Trace's backtrack skips it for a
+    // one-row trace, Linear's midpoint search gives up silently), so check it here.
+    if cancel_flag.load(Ordering::Relaxed) {
+        return None;
+    }
+
+    let token_start = |lines: &[Range<usize>], line: usize, num_tokens: usize| {
+        lines.get(line).map_or(num_tokens, |l| l.start)
+    };
+    let mut hunks = Vec::new();
+    let (mut x, mut y) = (0, 0);
+    let mut open: Option<(usize, usize)> = None;
+    for step in path_steps(&path).into_iter().chain([Step::Equal]) {
+        if step != Step::Equal {
+            open.get_or_insert((x, y));
+        } else if let Some((x0, y0)) = open.take() {
+            hunks.push(LineHunk {
+                source: token_start(&source_lines, x0, source.len())
+                    ..token_start(&source_lines, x, source.len()),
+                target: token_start(&target_lines, y0, target.len())
+                    ..token_start(&target_lines, y, target.len()),
+            });
+        }
+        match step {
+            Step::Equal => (x, y) = (x + 1, y + 1),
+            Step::Delete => x += 1,
+            Step::Insert => y += 1,
+        }
+    }
+    Some(hunks)
+}
+
+/// Token phase: Myers over each hunk's tokens, Equal for every token outside the hunks.
+/// Returns a unit-step path over the whole files.
+pub fn token_diff<T, F>(
+    algorithm: MyersDiffAlgorithm,
+    source: &[T],
+    target: &[T],
+    hunks: &[LineHunk],
+    cmp: F,
+    cancel_flag: Arc<AtomicBool>,
+) -> Option<MyersPath>
+where
+    T: RawTokenTrait,
+    F: Fn(&T, &T) -> bool + Sync,
+{
+    if cancel_flag.load(Ordering::Relaxed) {
+        return None;
+    }
+    let mut path = Vec::with_capacity(source.len() + target.len() + 1);
+    path.push((0, 0));
+    let (mut x, mut y) = (0, 0);
+
+    for hunk in hunks {
+        if cancel_flag.load(Ordering::Relaxed) {
+            return None;
+        }
+        push_equal_run(&mut path, (x, y), (hunk.source.start, hunk.target.start));
+        (x, y) = (hunk.source.start, hunk.target.start);
+
+        let (s, t) = (&source[hunk.source.clone()], &target[hunk.target.clone()]);
+        if s.is_empty() || t.is_empty() {
+            path.extend((1..=s.len()).map(|i| ((x + i) as i32, y as i32)));
+            path.extend((1..=t.len()).map(|i| (x as i32, (y + i) as i32)));
+        } else {
+            let local = raw_diff_path(algorithm, s, t, &cmp, cancel_flag.clone())?;
+            if cancel_flag.load(Ordering::Relaxed) {
+                return None;
+            }
+            let is_line_end = |t: &T| t.as_ref().kind == TokenKind::Newline;
+            let local = align_runs_to_line_ends(&local, s, t, &cmp, is_line_end);
+            path.extend(
+                local[1..]
+                    .iter()
+                    .map(|&(lx, ly)| (x as i32 + lx, y as i32 + ly)),
+            );
+        }
+        (x, y) = (hunk.source.end, hunk.target.end);
+    }
+    push_equal_run(&mut path, (x, y), (source.len(), target.len()));
+    Some(path)
+}
+
+/// Unit diagonal steps from `from` to `to`: the tokens of equal lines between hunks.
+fn push_equal_run(path: &mut MyersPath, from: (usize, usize), to: (usize, usize)) {
+    assert_eq!(
+        to.0 - from.0,
+        to.1 - from.1,
+        "equal lines must have the same number of tokens on both sides"
+    );
+    path.extend((1..=to.0 - from.0).map(|i| ((from.0 + i) as i32, (from.1 + i) as i32)));
+}
+
+/// Each line's token range, including its line break token. A last line without a line break
+/// is included; an empty file has no lines.
+fn split_lines<T: RawTokenTrait>(tokens: &[T]) -> Vec<Range<usize>> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for (i, token) in tokens.iter().enumerate() {
+        if token.as_ref().kind == TokenKind::Newline {
+            lines.push(start..i + 1);
+            start = i + 1;
+        }
+    }
+    if start < tokens.len() {
+        lines.push(start..tokens.len());
+    }
+    lines
+}
+
+fn raw_diff_path<T, F>(
+    algorithm: MyersDiffAlgorithm,
+    source: &[T],
+    target: &[T],
+    cmp: F,
+    cancel_flag: Arc<AtomicBool>,
+) -> Option<MyersPath>
+where
+    T: Sync,
+    F: Fn(&T, &T) -> bool + Sync,
+{
+    match algorithm {
         MyersDiffAlgorithm::Trace => {
             let trace = myers_diff_trace(source, target, &cmp);
             myers_backtrack(trace, source.len() as i32, target.len() as i32, cancel_flag)
         }
         MyersDiffAlgorithm::Linear => myers_diff_linear(source, target, &cmp, cancel_flag),
         MyersDiffAlgorithm::LinearMT => myers_diff_linear_mt(source, target, &cmp, cancel_flag),
-    }?;
-    let is_line_end = |t: &T| t.as_ref().kind == TokenKind::Newline;
-    Some(align_runs_to_line_ends(&path, source, target, &cmp, is_line_end))
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -45,6 +215,19 @@ enum Step {
     Equal,
     Delete,
     Insert,
+}
+
+/// Unit steps of a path, with the same window semantics as DiffIR::generate_ir: edits first,
+/// then the snake.
+fn path_steps(path: &[(i32, i32)]) -> Vec<Step> {
+    let mut steps = Vec::with_capacity(path.len());
+    for w in path.windows(2) {
+        let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+        let edit = if dx > dy { Step::Delete } else { Step::Insert };
+        steps.extend(std::iter::repeat_n(edit, (dx - dy).unsigned_abs() as usize));
+        steps.extend(std::iter::repeat_n(Step::Equal, dx.min(dy) as usize));
+    }
+    steps
 }
 
 /// How far a run may slide; bounds the cost on long runs of identical tokens.
@@ -69,13 +252,13 @@ where
         return Vec::new();
     };
 
-    // Same window semantics as DiffIR::generate_ir: edits first, then the snake.
-    let mut steps = Vec::with_capacity(source.len() + target.len());
-    for w in path.windows(2) {
-        let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
-        let edit = if dx > dy { Step::Delete } else { Step::Insert };
-        steps.extend(std::iter::repeat_n(edit, (dx - dy).unsigned_abs() as usize));
-        steps.extend(std::iter::repeat_n(Step::Equal, dx.min(dy) as usize));
+    let mut steps = path_steps(path);
+    // Interleaved edits (`+a -b +c`) leave no run next to the following equals, so put each
+    // block's deletes first. Same cost and the same equal pairs.
+    for block in steps.split_mut(|s| *s == Step::Equal) {
+        let deletes = block.iter().filter(|s| **s == Step::Delete).count();
+        block[..deletes].fill(Step::Delete);
+        block[deletes..].fill(Step::Insert);
     }
 
     let (mut x, mut y) = (start.0 as usize, start.1 as usize);
@@ -90,12 +273,19 @@ where
         let end = i + steps[i..].iter().take_while(|s| **s == edit).count();
         let n = end - i;
 
-        // Sliding forward by one pairs source[x + j] with target[y + j] for either run kind.
-        let forward = (0..MAX_SLIDE)
-            .take_while(|&j| {
-                steps.get(end + j) == Some(&Step::Equal) && cmp(&source[x + j], &target[y + j])
-            })
-            .count();
+        // Sliding the run's edits from `split` on forward by one pairs the token at the run's
+        // other-side cursor with the token at `split` for either run kind.
+        let forward_from = |split: usize| {
+            (0..MAX_SLIDE)
+                .take_while(|&j| {
+                    steps.get(end + j) == Some(&Step::Equal)
+                        && match edit {
+                            Step::Insert => cmp(&source[x + j], &target[y + split + j]),
+                            _ => cmp(&source[x + split + j], &target[y + j]),
+                        }
+                })
+                .count()
+        };
         let backward = (1..=MAX_SLIDE.min(i))
             .take_while(|&j| {
                 steps[i - j] == Step::Equal
@@ -110,16 +300,29 @@ where
             let tokens = if edit == Step::Insert { target } else { source };
             is_line_end(&tokens[last as usize])
         };
-        let shift = (-(backward as isize)..=forward as isize)
+        let mut split = 0;
+        let mut shift = (-(backward as isize)..=forward_from(0) as isize)
             .rev()
-            .find(|&d| ends_line(d))
-            .unwrap_or(0);
+            .find(|&d| ends_line(d));
+        if shift.is_none() {
+            // The run can't move as a whole, but its tail may: in `-2 +20 +; +\n +new +( +) =; =\n`
+            // keeping `+20` in place and sliding the rest gives `-2 +20 =; =\n +new +( +) +; +\n`.
+            (split, shift) = (1..n.min(MAX_SLIDE))
+                .find_map(|k| {
+                    let d = (1..=forward_from(k) as isize)
+                        .rev()
+                        .find(|&d| ends_line(d))?;
+                    Some((k, Some(d)))
+                })
+                .unwrap_or((0, None));
+        }
+        let shift = shift.unwrap_or(0);
 
         // The shifted region holds the same steps, so the cursors past it are unchanged.
         if shift > 0 {
             let d = shift as usize;
-            steps[i..i + d].fill(Step::Equal);
-            steps[i + d..end + d].fill(edit);
+            steps[i + split..i + split + d].fill(Step::Equal);
+            steps[i + split + d..end + d].fill(edit);
         } else if shift < 0 {
             let d = (-shift) as usize;
             steps[i - d..end - d].fill(edit);
@@ -1267,5 +1470,325 @@ mod tests {
     fn already_aligned_run_stays_put() {
         let path = [(0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (4, 5), (4, 6)];
         assert_eq!(align(&path, "a\nx\n", "a\nx\nx\n"), "=a=\n=x=\n+x+\n");
+    }
+
+    mod line_then_token {
+        use super::*;
+        use crate::lexer::{LexerDefault, RawToken};
+
+        const ALGORITHMS: [MyersDiffAlgorithm; 3] = [
+            MyersDiffAlgorithm::Trace,
+            MyersDiffAlgorithm::Linear,
+            MyersDiffAlgorithm::LinearMT,
+        ];
+
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        enum Op {
+            Equal,
+            Delete,
+            Insert,
+        }
+
+        /// One entry per token: the op, the source and target line of the token (None on the
+        /// side that doesn't have it).
+        type Script = Vec<(Op, Option<usize>, Option<usize>)>;
+
+        fn lex(text: &str) -> Vec<RawToken> {
+            LexerDefault::<RawToken>::new(text).parse()
+        }
+
+        fn line_of(text: &str, token: &RawToken) -> usize {
+            text[..token.span.start].matches('\n').count()
+        }
+
+        fn diff(
+            algorithm: MyersDiffAlgorithm,
+            source: &str,
+            target: &str,
+            cancel: bool,
+        ) -> Option<Script> {
+            let (ts, tt) = (lex(source), lex(target));
+            let cmp = |a: &RawToken, b: &RawToken| {
+                a.kind == b.kind && source[a.span.clone()] == target[b.span.clone()]
+            };
+            let path =
+                myers_diff_path(algorithm, &ts, &tt, cmp, Arc::new(AtomicBool::new(cancel)))?;
+
+            assert_eq!(path.first(), Some(&(0, 0)), "{algorithm:?}");
+            assert_eq!(
+                path.last(),
+                Some(&(ts.len() as i32, tt.len() as i32)),
+                "{algorithm:?}"
+            );
+            let mut script = Script::new();
+            let (mut rebuilt_source, mut rebuilt_target) = (String::new(), String::new());
+            for w in path.windows(2) {
+                let ((x, y), (x2, y2)) = (w[0], w[1]);
+                let (s, t) = (ts.get(x as usize), tt.get(y as usize));
+                let entry = match (x2 - x, y2 - y) {
+                    (1, 1) => {
+                        let (s, t) = (s.unwrap(), t.unwrap());
+                        assert!(cmp(s, t), "{algorithm:?}: Equal pairs unequal tokens");
+                        rebuilt_source.push_str(&source[s.span.clone()]);
+                        rebuilt_target.push_str(&target[t.span.clone()]);
+                        (
+                            Op::Equal,
+                            Some(line_of(source, s)),
+                            Some(line_of(target, t)),
+                        )
+                    }
+                    (1, 0) => {
+                        rebuilt_source.push_str(&source[s.unwrap().span.clone()]);
+                        (Op::Delete, Some(line_of(source, s.unwrap())), None)
+                    }
+                    (0, 1) => {
+                        rebuilt_target.push_str(&target[t.unwrap().span.clone()]);
+                        (Op::Insert, None, Some(line_of(target, t.unwrap())))
+                    }
+                    step => panic!("{algorithm:?}: not a unit step: {step:?}"),
+                };
+                script.push(entry);
+            }
+            assert_eq!(
+                rebuilt_source, source,
+                "{algorithm:?}: source reconstruction"
+            );
+            assert_eq!(
+                rebuilt_target, target,
+                "{algorithm:?}: target reconstruction"
+            );
+            Some(script)
+        }
+
+        /// The concatenated text of the deleted and of the inserted tokens.
+        fn changed_text(source: &str, target: &str, script: &Script) -> (String, String) {
+            let (ts, tt) = (lex(source), lex(target));
+            let (mut si, mut ti) = (0, 0);
+            let (mut deleted, mut inserted) = (String::new(), String::new());
+            for (op, _, _) in script {
+                match op {
+                    Op::Equal => (si, ti) = (si + 1, ti + 1),
+                    Op::Delete => {
+                        deleted.push_str(&source[ts[si].span.clone()]);
+                        si += 1;
+                    }
+                    Op::Insert => {
+                        inserted.push_str(&target[tt[ti].span.clone()]);
+                        ti += 1;
+                    }
+                }
+            }
+            (deleted, inserted)
+        }
+
+        #[test]
+        fn edit_script_reconstructs_both_inputs() {
+            let pairs = [
+                (
+                    "fn main() {\n    let x = 10;\n}\n",
+                    "fn main() {\n    let x = 20;\n    let y = 30;\n}\n",
+                ),
+                ("a\r\nb\r\nc\r\n", "a\r\nB\r\nc\r\nd"),
+                ("no newline at end", "no newline\nat end\n"),
+                ("line\n", "line\n\n\n"),
+                ("\t\tindent\n    spaces\n", "\t\tindent;\n    spaces;\n"),
+                ("/* a\n b */ x\n", "/* a\n c */ x\n// y\n"),
+                ("x\ny\nx\ny\n", "y\nx\ny\nx\n"),
+            ];
+            for algorithm in ALGORITHMS {
+                for (source, target) in pairs {
+                    diff(algorithm, source, target, false).expect("not cancelled");
+                    diff(algorithm, target, source, false).expect("not cancelled");
+                }
+            }
+        }
+
+        #[test]
+        fn insert_delete_and_replace_hunks_change_only_their_lines() {
+            let base = "fn f() {\n    let a = 1;\n    let b = 2;\n}\n";
+            let inserted = "fn f() {\n    let a = 1;\n    call(a);\n    let b = 2;\n}\n";
+            let replaced = "fn f() {\n    let a = 7;\n    let b = 2;\n}\n";
+            for algorithm in ALGORITHMS {
+                let script = diff(algorithm, base, inserted, false).unwrap();
+                assert_eq!(
+                    changed_text(base, inserted, &script),
+                    (String::new(), "    call(a);\n".into()),
+                    "{algorithm:?}: insert"
+                );
+
+                let script = diff(algorithm, inserted, base, false).unwrap();
+                assert_eq!(
+                    changed_text(inserted, base, &script),
+                    ("    call(a);\n".into(), String::new()),
+                    "{algorithm:?}: delete"
+                );
+
+                let script = diff(algorithm, base, replaced, false).unwrap();
+                assert_eq!(
+                    changed_text(base, replaced, &script),
+                    ("1".into(), "7".into()),
+                    "{algorithm:?}: replace"
+                );
+            }
+        }
+
+        #[test]
+        fn line_inserted_mid_hunk_does_not_shift_later_pairings() {
+            // Every line changes, so the line phase sees one hunk; the new line sits in the middle.
+            let source = "let a = 1;\nlet b = 2;\nlet c = 3;\nlet d = 4;\n";
+            let target = "let a = 10;\nlet b = 20;\nnew();\nlet c = 30;\nlet d = 40;\n";
+            for algorithm in ALGORITHMS {
+                let script = diff(algorithm, source, target, false).unwrap();
+                let pairs: Vec<(usize, usize)> = script
+                    .iter()
+                    .filter(|(op, _, _)| *op == Op::Equal)
+                    .map(|&(_, s, t)| (s.unwrap(), t.unwrap()))
+                    .collect();
+                assert!(
+                    pairs
+                        .iter()
+                        .all(|&(s, t)| t == if s < 2 { s } else { s + 1 }),
+                    "{algorithm:?}: {pairs:?}"
+                );
+                for line in 0..4 {
+                    assert!(
+                        pairs.iter().any(|&(s, _)| s == line),
+                        "{algorithm:?}: {line}"
+                    );
+                }
+                assert_eq!(
+                    changed_text(source, target, &script),
+                    ("1234".into(), "1020new();\n3040".into()),
+                    "{algorithm:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn identical_files_produce_no_hunks() {
+            let text = "fn main() {\r\n    // comment\r\n    let x = \"s\";\r\n}";
+            for algorithm in ALGORITHMS {
+                let script = diff(algorithm, text, text, false).unwrap();
+                assert!(
+                    script.iter().all(|(op, _, _)| *op == Op::Equal),
+                    "{algorithm:?}"
+                );
+                assert_eq!(script.len(), lex(text).len());
+                assert_eq!(diff(algorithm, "", "", false).unwrap(), Script::new());
+            }
+        }
+
+        #[test]
+        fn one_empty_file() {
+            let text = "a\nb c\n\nd";
+            for algorithm in ALGORITHMS {
+                let script = diff(algorithm, "", text, false).unwrap();
+                assert!(
+                    script.iter().all(|(op, _, _)| *op == Op::Insert),
+                    "{algorithm:?}"
+                );
+                let script = diff(algorithm, text, "", false).unwrap();
+                assert!(
+                    script.iter().all(|(op, _, _)| *op == Op::Delete),
+                    "{algorithm:?}"
+                );
+            }
+        }
+
+        /// Deterministic generator (xorshift64*): no rand dependency.
+        struct Rng(u64);
+
+        impl Rng {
+            fn below(&mut self, n: u64) -> u64 {
+                self.0 ^= self.0 >> 12;
+                self.0 ^= self.0 << 25;
+                self.0 ^= self.0 >> 27;
+                self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) % n
+            }
+
+            /// Words from a small vocabulary plus a unique id, so lines never repeat but their
+            /// tokens do.
+            fn line(&mut self, id: &mut usize) -> String {
+                let words = ["let", "x", "y", "=", "+", "1", "2", "(", ")", ";", "{", "}"];
+                let len = 1 + self.below(8);
+                *id += 1;
+                (0..len)
+                    .map(|_| words[self.below(words.len() as u64) as usize])
+                    .chain([format!("id{id}").as_str()])
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+        }
+
+        #[test]
+        fn large_generated_pair_marks_only_edited_lines() {
+            // Tokens repeat across lines, so a global token diff may match tokens of unrelated
+            // lines around an edit; the line phase must keep unedited lines equal.
+            let (mut rng, mut id) = (Rng(7), 0);
+            let (mut source, mut target) = (Vec::new(), Vec::new());
+            let (mut edited_source, mut edited_target) = (Vec::new(), Vec::new());
+            for _ in 0..1500 {
+                let line = rng.line(&mut id);
+                match rng.below(20) {
+                    0 => {
+                        edited_source.push(source.len());
+                        source.push(line);
+                    }
+                    1 => {
+                        edited_target.push(target.len());
+                        target.push(rng.line(&mut id));
+                        source.push(line.clone());
+                        target.push(line);
+                    }
+                    2 => {
+                        edited_source.push(source.len());
+                        edited_target.push(target.len());
+                        source.push(line);
+                        target.push(rng.line(&mut id));
+                    }
+                    _ => {
+                        source.push(line.clone());
+                        target.push(line);
+                    }
+                }
+            }
+            let (source, target) = (source.join("\n") + "\n", target.join("\n") + "\n");
+
+            for algorithm in ALGORITHMS {
+                let script = diff(algorithm, &source, &target, false).unwrap();
+                for (op, s, t) in &script {
+                    match op {
+                        Op::Delete => assert!(
+                            edited_source.contains(&s.unwrap()),
+                            "{algorithm:?}: delete on unedited source line {s:?}"
+                        ),
+                        Op::Insert => assert!(
+                            edited_target.contains(&t.unwrap()),
+                            "{algorithm:?}: insert on unedited target line {t:?}"
+                        ),
+                        Op::Equal => {}
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn cancellation_returns_none() {
+            let pairs = [
+                ("a\nb\nc\n", "a\nx\nc\nd\n"),
+                ("same\ntext\n", "same\ntext\n"),
+                ("", "only target\n"),
+                ("", ""),
+            ];
+            for algorithm in ALGORITHMS {
+                for (source, target) in pairs {
+                    assert_eq!(
+                        diff(algorithm, source, target, true),
+                        None,
+                        "{algorithm:?}: {source:?} -> {target:?}"
+                    );
+                }
+            }
+        }
     }
 }

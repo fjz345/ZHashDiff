@@ -16,7 +16,8 @@ use zdiff::{
     diff_ir::{DiffIR, DiffOp},
     lexer::RawToken,
     myers::{
-        MyersDiffAlgorithm, MyersNumAddDelete, MyersPath, myers_count_add_deletes, myers_diff_path,
+        MyersDiffAlgorithm, MyersNumAddDelete, MyersPath, line_diff, myers_count_add_deletes,
+        token_diff,
     },
 };
 
@@ -161,7 +162,8 @@ pub struct MyersCtx {
 
     num_add_delete: MyersNumAddDelete,
     path: MyersPath,
-    elapsed: Duration,
+    line_elapsed: Duration,
+    token_elapsed: Duration,
 }
 #[derive(Debug)]
 pub struct DiffIRCtx {
@@ -182,13 +184,15 @@ pub struct DiffRowsCtx {
 /// took when it ran, so the total is what the shown diff cost, not what the last request did.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct DiffStageTimes {
-    pub myers: Duration,
+    /// The Myers stage's two phases.
+    pub line_diff: Duration,
+    pub token_diff: Duration,
     pub diff_ir: Duration,
     pub diff_rows: Duration,
 }
 impl DiffStageTimes {
     pub fn total(&self) -> Duration {
-        self.myers + self.diff_ir + self.diff_rows
+        self.line_diff + self.token_diff + self.diff_ir + self.diff_rows
     }
 }
 
@@ -448,18 +452,26 @@ impl DiffCtx {
                     let (c1, c2, _) = resolve_files(&input.file_1, &input.file_2);
                     let cmp = |a: &RawToken, b: &RawToken| compare_tokens(a, b, c1, c2);
 
-                    let cancel_ref = cancel.clone();
-                    if let Some(path) =
-                        myers_diff_path(input.algo, &c1.tokens, &c2.tokens, cmp, cancel)
-                    {
+                    // myers_diff_path's two phases, timed separately.
+                    let (t1, t2) = (&c1.tokens, &c2.tokens);
+                    let result =
+                        line_diff(input.algo, t1, t2, &cmp, cancel.clone()).and_then(|hunks| {
+                            let line_elapsed = start.elapsed();
+                            let start = Instant::now();
+                            let path =
+                                token_diff(input.algo, t1, t2, &hunks, &cmp, cancel.clone())?;
+                            Some((path, line_elapsed, start.elapsed()))
+                        });
+                    if let Some((path, line_elapsed, token_elapsed)) = result {
                         let num_add_delete = myers_count_add_deletes(&path);
                         let _ = tx.send(Some(MyersCtx {
                             input,
                             num_add_delete,
                             path,
-                            elapsed: start.elapsed(),
+                            line_elapsed,
+                            token_elapsed,
                         }));
-                    } else if !cancel_ref.load(Ordering::Relaxed) {
+                    } else if !cancel.load(Ordering::Relaxed) {
                         let _ = tx.send(None);
                     }
                 })
@@ -599,7 +611,8 @@ impl DiffCtx {
         cancel_flag: Arc<AtomicBool>,
     ) -> Option<MinimalDiffCtx> {
         let myers_ctx = self.request_myers(cancel_flag.clone())?;
-        let (num_add_deletes, myers_elapsed) = (myers_ctx.num_add_delete, myers_ctx.elapsed);
+        let num_add_deletes = myers_ctx.num_add_delete;
+        let (line_elapsed, token_elapsed) = (myers_ctx.line_elapsed, myers_ctx.token_elapsed);
         let diff_row_ctx = self.request_diff_rows(cancel_flag)?;
 
         let diff_rows = diff_row_ctx.rows.clone();
@@ -615,7 +628,8 @@ impl DiffCtx {
             .expect("diff rows without a diff IR ctx")
             .elapsed;
         let stage_times = DiffStageTimes {
-            myers: myers_elapsed,
+            line_diff: line_elapsed,
+            token_diff: token_elapsed,
             diff_ir: diff_ir_elapsed,
             diff_rows: diff_rows_elapsed,
         };
@@ -1006,15 +1020,13 @@ fn update_diff_rows_minimal_diff_ctx(
     let cmp = |a: &RawToken, b: &RawToken| compare_tokens(a, b, c1, c2);
 
     track_alloc!(reg, "before myers_diff");
+    let (algo, t1, t2) = (input.myers_diff_algorithm, &c1.tokens, &c2.tokens);
     let start = Instant::now();
-    let myers_path = myers_diff_path(
-        input.myers_diff_algorithm,
-        &c1.tokens,
-        &c2.tokens,
-        cmp,
-        cancel_flag.clone(),
-    )?;
-    let myers_elapsed = start.elapsed();
+    let hunks = line_diff(algo, t1, t2, &cmp, cancel_flag.clone())?;
+    let line_elapsed = start.elapsed();
+    let start = Instant::now();
+    let myers_path = token_diff(algo, t1, t2, &hunks, &cmp, cancel_flag.clone())?;
+    let token_elapsed = start.elapsed();
     track_alloc!(reg, "myers_diff");
     check_cancel!(cancel_flag, "myers_diff_path");
 
@@ -1051,7 +1063,8 @@ fn update_diff_rows_minimal_diff_ctx(
         c2.metadata.line_starts.len(),
     );
     let stage_times = DiffStageTimes {
-        myers: myers_elapsed,
+        line_diff: line_elapsed,
+        token_diff: token_elapsed,
         diff_ir: diff_ir_elapsed,
         diff_rows: start.elapsed(),
     };
@@ -1366,10 +1379,14 @@ mod tests {
                 .expect("diff never completed")
                 .stage_times;
 
-            assert!(times.myers > Duration::ZERO, "{times:?}");
+            assert!(times.line_diff > Duration::ZERO, "{times:?}");
+            assert!(times.token_diff > Duration::ZERO, "{times:?}");
             assert!(times.diff_ir > Duration::ZERO, "{times:?}");
             assert!(times.diff_rows > Duration::ZERO, "{times:?}");
-            assert_eq!(times.total(), times.myers + times.diff_ir + times.diff_rows);
+            assert_eq!(
+                times.total(),
+                times.line_diff + times.token_diff + times.diff_ir + times.diff_rows
+            );
         }
 
         #[test]

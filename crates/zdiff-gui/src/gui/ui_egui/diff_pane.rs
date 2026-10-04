@@ -973,8 +973,8 @@ fn diff_status_text(
     (
         format!("+{adds}/-{deletes}  {:.1?}", times.total()),
         format!(
-            "Myers: {:.1?}\nIR: {:.1?}\nRows: {:.1?}",
-            times.myers, times.diff_ir, times.diff_rows
+            "Line diff: {:.1?}\nToken diff: {:.1?}\nIR: {:.1?}\nRows: {:.1?}",
+            times.line_diff, times.token_diff, times.diff_ir, times.diff_rows
         ),
     )
 }
@@ -1178,15 +1178,19 @@ mod tests {
     #[test]
     fn diff_status_shows_counts_and_total_time_with_each_stage_in_the_tooltip() {
         let times = DiffStageTimes {
-            myers: Duration::from_micros(12_340),
+            line_diff: Duration::from_micros(12_340),
+            token_diff: Duration::from_micros(1_000),
             diff_ir: Duration::from_micros(500),
             diff_rows: Duration::from_millis(2),
         };
 
         let (label, tooltip) = diff_status_text((7, 3), &times);
 
-        assert_eq!(label, "+7/-3  14.8ms");
-        assert_eq!(tooltip, "Myers: 12.3ms\nIR: 500.0µs\nRows: 2.0ms");
+        assert_eq!(label, "+7/-3  15.8ms");
+        assert_eq!(
+            tooltip,
+            "Line diff: 12.3ms\nToken diff: 1.0ms\nIR: 500.0µs\nRows: 2.0ms"
+        );
     }
 
     const SOURCE: &str = "fn main() {\n    let x = 1;\n    let y = 2;\n}\n";

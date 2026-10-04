@@ -1,4 +1,4 @@
-//! Per-stage timings of the diff pipeline (lex, myers, ir, rows) on large fixtures.
+//! Per-stage timings of the diff pipeline (lex, line, token, ir, rows) on large fixtures.
 //! Run with `cargo bench -p zdiff --bench pipeline`. See the zdiff README.
 
 use std::{
@@ -13,13 +13,13 @@ use zdiff::{
     diff_builder::{DiffBuilderOptions, build_diff_rows},
     diff_ir::DiffIR,
     lexer::{LexerGreedy, RawToken},
-    myers::{MyersDiffAlgorithm, myers_count_add_deletes, myers_diff_path},
+    myers::{MyersDiffAlgorithm, line_diff, myers_count_add_deletes, token_diff},
     read_file_contents,
 };
 
 const WARMUP: usize = 1;
 const ITERATIONS: usize = 7;
-const STAGES: [&str; 4] = ["lex", "myers", "ir", "rows"];
+const STAGES: [&str; 5] = ["lex", "line", "token", "ir", "rows"];
 
 const LARGE_LINES: usize = 20_000;
 const DIFFERENT_LINES: usize = 2_000;
@@ -124,16 +124,29 @@ fn run_once(source: &str, target: &str) -> Run {
     let cmp = |a: &RawToken, b: &RawToken| {
         a.kind == b.kind && source.as_bytes()[a.span.clone()] == target.as_bytes()[b.span.clone()]
     };
+    // The two phases of myers_diff_path, timed separately.
     let start = Instant::now();
-    let path = myers_diff_path(
+    let hunks = line_diff(
         MyersDiffAlgorithm::Linear,
         &tokens_source,
         &tokens_target,
-        cmp,
+        &cmp,
         cancel.clone(),
     )
     .expect("never cancelled");
-    let myers = start.elapsed();
+    let line = start.elapsed();
+
+    let start = Instant::now();
+    let path = token_diff(
+        MyersDiffAlgorithm::Linear,
+        &tokens_source,
+        &tokens_target,
+        &hunks,
+        &cmp,
+        cancel.clone(),
+    )
+    .expect("never cancelled");
+    let token = start.elapsed();
 
     let start = Instant::now();
     let diff_ir = DiffIR::new(black_box(&path), true, cancel).expect("never cancelled");
@@ -151,7 +164,7 @@ fn run_once(source: &str, target: &str) -> Run {
     let num_rows = black_box(&diff_rows).len();
 
     Run {
-        stages: [lex, myers, ir, rows],
+        stages: [lex, line, token, ir, rows],
         tokens: (tokens_source.len(), tokens_target.len()),
         adds_deletes: myers_count_add_deletes(&path),
         num_rows,
