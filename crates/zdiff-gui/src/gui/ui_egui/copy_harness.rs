@@ -156,6 +156,11 @@ impl CopyHarness {
         self.rows[index] = row;
     }
 
+    /// Replaces all rows, e.g. with the GUI's collapsed or expanded rows.
+    pub fn set_rows(&mut self, rows: Vec<DiffRow>) {
+        self.rows = rows;
+    }
+
     /// Drags from `from` to `to` on `side`, copies, and returns the copied text
     /// (`None` if no copy command was emitted).
     pub fn drag_and_copy(&mut self, side: Side, from: RowCol, to: RowCol) -> Option<String> {

@@ -624,6 +624,7 @@ impl<'a> ZApp {
             } else {
                 diff_processor.get_minimal_diff_ctx()
             };
+            let mut block_toggle_request = None;
             let mut behavior = TreeBehavior {
                 ctx_file_diff: FileDiffPaneCtx {
                     diff_ctx: diff_ctx.as_ref(),
@@ -663,6 +664,7 @@ impl<'a> ZApp {
                     diff_loading: diff_processor.is_in_progress(),
                     code_language,
                     revert_request: &mut None,
+                    block_toggle_request: &mut block_toggle_request,
                     hex_view: is_hex.then(|| hex_processor.view_ctx()),
                 },
             };
@@ -755,6 +757,10 @@ impl<'a> ZApp {
             diff_processor.find_cursor = clone_find;
             diff_processor.active_side = clone_active_side;
             diff_processor.conflict_cursor = clone_conflict;
+            if let Some((key, expand)) = block_toggle_request {
+                diff_processor.set_block_expanded(key, expand);
+                ctx.request_repaint();
+            }
 
             for (_tile_id, tile) in self.tree.tiles.iter() {
                 if let Tile::Pane(Pane::FileDiff(..)) = tile {

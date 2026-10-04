@@ -1,5 +1,6 @@
 use std::{
-    ops::RangeInclusive,
+    collections::BTreeSet,
+    ops::{Range, RangeInclusive},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -58,6 +59,18 @@ pub struct FindCtx {
 impl FindCtx {
     pub fn new(find_input: &str, diff_ctx: &MinimalDiffCtx) -> Self {
         Self::build(find_input, diff_ctx)
+    }
+
+    /// Moves the found rows to another layout of the same rows. The count stays the same, so
+    /// the find cursor stays valid.
+    fn remap_rows(&mut self, remap: impl Fn(usize) -> usize) {
+        for rows in [
+            &mut self.found_lines_1,
+            &mut self.found_lines_2,
+            &mut self.cached_found_lines,
+        ] {
+            rows.iter_mut().for_each(|row| *row = remap(*row));
+        }
     }
 
     fn combine_found_lines(found_lines_1: &Vec<usize>, found_lines_2: &Vec<usize>) -> Vec<usize> {
@@ -121,6 +134,26 @@ pub struct ScrollSpan {
 }
 pub type DiffRows = Vec<DiffRow>; // Span with optional end
 
+/// The rows a `Collapsed` row stands for, kept so the block can be expanded without
+/// recomputing the diff.
+#[derive(Debug)]
+pub struct CollapsedBlock {
+    /// Index of the block's `Collapsed` row in the unexpanded rows. Identifies the block.
+    pub row: usize,
+    hidden: Vec<DiffRow>,
+}
+pub type CollapsedBlocks = Vec<CollapsedBlock>;
+
+/// Where a collapsed block sits in the shown rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowBlock {
+    /// `CollapsedBlock::row` of the block.
+    pub key: usize,
+    /// The block's `Collapsed` row, or its hidden rows when expanded.
+    pub rows: Range<usize>,
+    pub expanded: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MyersCtxInput {
     pub file_1: Option<Arc<CachedFile<RawToken>>>,
@@ -182,6 +215,9 @@ pub struct DiffRowsCtx {
     rows: Arc<DiffRows>,
     precomputed_diffs: Arc<PrecomputedDiffs>,
     precomputed_file_rows: Arc<PrecomputedFileRows>,
+    collapsed_blocks: Arc<CollapsedBlocks>,
+    /// Every block unexpanded.
+    row_blocks: Arc<Vec<RowBlock>>,
     elapsed: Duration,
 }
 
@@ -217,6 +253,10 @@ pub struct MinimalDiffCtx {
     pub diff_rows: Arc<DiffRows>,
     /// The IR the rows were built from. Revert reads the token alignment from it.
     pub diff_ir: Arc<DiffIR>,
+    /// Hidden rows of each collapsed block, ordered by row.
+    pub collapsed_blocks: Arc<CollapsedBlocks>,
+    /// Each collapsed block's place in `diff_rows`, ordered by row.
+    pub row_blocks: Arc<Vec<RowBlock>>,
 }
 
 macro_rules! check_cancel {
@@ -593,7 +633,7 @@ impl DiffCtx {
                         return;
                     }
 
-                    if let Some((rows, precomputed_diffs)) = finalize_diff_rows(
+                    if let Some((rows, precomputed_diffs, collapsed_blocks)) = finalize_diff_rows(
                         diff_rows,
                         &input.diff_options,
                         c1.metadata.line_starts.len(),
@@ -605,11 +645,14 @@ impl DiffCtx {
                             c1.metadata.line_starts.len(),
                             c2.metadata.line_starts.len(),
                         );
+                        let row_blocks = unexpanded_row_blocks(&collapsed_blocks);
                         let _ = tx.send(Some(DiffRowsCtx {
                             input,
                             rows: Arc::new(rows),
                             precomputed_diffs: Arc::new(precomputed_diffs),
                             precomputed_file_rows: Arc::new(precomputed_file_rows),
+                            collapsed_blocks: Arc::new(collapsed_blocks),
+                            row_blocks: Arc::new(row_blocks),
                             elapsed: start.elapsed(),
                         }));
                     } else if !cancel.load(Ordering::Relaxed) {
@@ -634,6 +677,8 @@ impl DiffCtx {
         let precomputed_diffs = diff_row_ctx.precomputed_diffs.clone();
         let precomputed_file_rows = diff_row_ctx.precomputed_file_rows.clone();
         let diff_ir = diff_row_ctx.input.diff_ir.clone();
+        let collapsed_blocks = diff_row_ctx.collapsed_blocks.clone();
+        let row_blocks = diff_row_ctx.row_blocks.clone();
         let diff_rows_elapsed = diff_row_ctx.elapsed;
         // Rows are only returned when they were built from the current IR ctx. Read it here
         // rather than requesting it again, which would clone and compare the Myers path.
@@ -661,6 +706,8 @@ impl DiffCtx {
             precomputed_file_rows,
             diff_rows,
             diff_ir,
+            collapsed_blocks,
+            row_blocks,
         })
     }
 }
@@ -682,6 +729,8 @@ pub struct DiffProcessor {
 
     last_conflict_scroll_to_row: Option<ScrollSpan>,
     last_find_scroll_to_row: Option<ScrollSpan>,
+    /// `None` while every block is collapsed.
+    expansion: Option<RowExpansion>,
 }
 
 impl Default for DiffProcessor {
@@ -699,6 +748,7 @@ impl Default for DiffProcessor {
             active_side: ActiveSide::default(),
             last_conflict_scroll_to_row: None,
             last_find_scroll_to_row: None,
+            expansion: None,
         }
     }
 }
@@ -716,6 +766,7 @@ impl DiffProcessor {
         self.active_highlights.clear();
         self.last_conflict_scroll_to_row = None;
         self.last_find_scroll_to_row = None;
+        self.expansion = None;
     }
 
     pub fn is_in_progress(&self) -> bool {
@@ -868,7 +919,95 @@ impl DiffProcessor {
         if self.is_in_progress() {
             return None;
         }
-        self.ctx.request_minimal_diff_ctx(self.cancel_flag.clone())
+        let mut ctx = self
+            .ctx
+            .request_minimal_diff_ctx(self.cancel_flag.clone())?;
+        if let Some(expansion) = &self.expansion {
+            if Arc::ptr_eq(&expansion.base, &ctx.diff_rows) {
+                expansion.apply(&mut ctx);
+            } else {
+                // reset_ui drops the expansion whenever a rebuild completes.
+                log::error!("Rows were rebuilt under an expansion; dropping it");
+                self.expansion = None;
+            }
+        }
+        Some(ctx)
+    }
+
+    /// Expands or re-collapses the block whose `RowBlock::key` is `key`. Row indices held across
+    /// frames (find hits, highlights, the last scroll targets) follow their rows, so the view
+    /// doesn't jump.
+    pub fn set_block_expanded(&mut self, key: usize, expanded: bool) {
+        let Some(old) = self.get_minimal_diff_ctx() else {
+            log::warn!("No diff shown to expand a block in");
+            return;
+        };
+        if !old.row_blocks.iter().any(|block| block.key == key) {
+            log::error!("No collapsed block at row {key}");
+            return;
+        }
+
+        let mut keys = self
+            .expansion
+            .take()
+            .map(|expansion| expansion.expanded)
+            .unwrap_or_default();
+        if expanded {
+            keys.insert(key);
+        } else {
+            keys.remove(&key);
+        }
+        if !keys.is_empty() {
+            let base = self.get_minimal_diff_ctx().expect("diff shown above");
+            self.expansion = Some(RowExpansion::new(&base, keys));
+        }
+        let new = self.get_minimal_diff_ctx().expect("diff shown above");
+
+        let remap = |row| remap_row(&old.row_blocks, &new.row_blocks, row);
+        self.find_ctx.remap_rows(remap);
+        let mut highlights: Vec<usize> = self.active_highlights.iter().map(|&r| remap(r)).collect();
+        highlights.dedup();
+        self.active_highlights = highlights;
+        self.last_conflict_scroll_to_row = self.conflict_scroll_to_row();
+        self.last_find_scroll_to_row = self.find_scroll_to_row();
+    }
+}
+
+/// The rows shown with some collapsed blocks expanded, built once per change.
+#[derive(Debug)]
+struct RowExpansion {
+    /// The unexpanded rows the keys refer to. Rebuilt rows invalidate the keys.
+    base: Arc<DiffRows>,
+    expanded: BTreeSet<usize>,
+    diff_rows: Arc<DiffRows>,
+    precomputed_diffs: Arc<PrecomputedDiffs>,
+    precomputed_file_rows: Arc<PrecomputedFileRows>,
+    row_blocks: Arc<Vec<RowBlock>>,
+}
+impl RowExpansion {
+    fn new(base: &MinimalDiffCtx, expanded: BTreeSet<usize>) -> Self {
+        let (rows, row_blocks) = expand_rows(&base.diff_rows, &base.collapsed_blocks, &expanded);
+        let (c1, c2, _) = resolve_files(&base.input.file_1, &base.input.file_2);
+        let precomputed_file_rows = precompute_file_rows(
+            &rows,
+            c1.metadata.line_starts.len(),
+            c2.metadata.line_starts.len(),
+        );
+        Self {
+            base: base.diff_rows.clone(),
+            expanded,
+            precomputed_diffs: Arc::new(precompute_diff_spans(&rows)),
+            precomputed_file_rows: Arc::new(precomputed_file_rows),
+            diff_rows: Arc::new(rows),
+            row_blocks: Arc::new(row_blocks),
+        }
+    }
+
+    fn apply(&self, ctx: &mut MinimalDiffCtx) {
+        ctx.diff_rows = self.diff_rows.clone();
+        ctx.precomputed_diffs = self.precomputed_diffs.clone();
+        ctx.precomputed_file_rows = self.precomputed_file_rows.clone();
+        ctx.row_blocks = self.row_blocks.clone();
     }
 }
 
@@ -1070,7 +1209,7 @@ fn update_diff_rows_minimal_diff_ctx(
     track_alloc!(reg, "build_diff_rows");
     check_cancel!(cancel_flag, "build_diff_rows");
 
-    let (final_rows, precomputed_diffs) = finalize_diff_rows(
+    let (final_rows, precomputed_diffs, collapsed_blocks) = finalize_diff_rows(
         diff_rows,
         &input.options,
         c1.metadata.line_starts.len(),
@@ -1101,6 +1240,8 @@ fn update_diff_rows_minimal_diff_ctx(
         precomputed_file_rows: Arc::new(precomputed_file_rows),
         diff_rows: Arc::new(final_rows),
         diff_ir: Arc::new(diff_ir),
+        row_blocks: Arc::new(unexpanded_row_blocks(&collapsed_blocks)),
+        collapsed_blocks: Arc::new(collapsed_blocks),
     })
 }
 
@@ -1141,13 +1282,15 @@ fn compare_tokens(
     a_bytes == b_bytes
 }
 
-fn finalize_diff_rows(
+/// Pivot alignment and diff-only collapsing. A block collapsed with zero context rows leaves no
+/// `Collapsed` row, so it has no `CollapsedBlock` and can't be expanded.
+pub(crate) fn finalize_diff_rows(
     mut diff_rows: DiffRows,
     options: &DiffBuilderOptions,
     c1_lines: usize,
     c2_lines: usize,
     cancel_flag: &Arc<AtomicBool>,
-) -> Option<(DiffRows, PrecomputedDiffs)> {
+) -> Option<(DiffRows, PrecomputedDiffs, CollapsedBlocks)> {
     if let Some(pivot_lines) = &options.pivot_lines {
         if pivot_lines.left > 0 && pivot_lines.right > 0 {
             let precomputed = precompute_file_rows(&diff_rows, c1_lines, c2_lines);
@@ -1158,6 +1301,7 @@ fn finalize_diff_rows(
     check_cancel!(cancel_flag, "pivot_lines");
 
     let mut precomputed_diffs = precompute_diff_spans(&diff_rows);
+    let mut collapsed_blocks = CollapsedBlocks::new();
 
     check_cancel!(cancel_flag, "precomputed_diffs");
 
@@ -1181,21 +1325,119 @@ fn finalize_diff_rows(
             if keep_indices[idx] {
                 filtered_rows.push(row);
                 in_gap = false;
-            } else if !in_gap {
-                if diff_only_rows > 0 {
-                    let mut void_row = row.clone();
-                    void_row.left = LineContent::Collapsed;
-                    void_row.right = LineContent::Collapsed;
-                    filtered_rows.push(void_row);
+            } else if diff_only_rows == 0 {
+                // No Collapsed row to expand from, so the row is dropped.
+            } else {
+                if !in_gap {
+                    collapsed_blocks.push(CollapsedBlock {
+                        row: filtered_rows.len(),
+                        hidden: Vec::new(),
+                    });
+                    filtered_rows.push(DiffRow {
+                        left: LineContent::Collapsed,
+                        right: LineContent::Collapsed,
+                    });
+                    in_gap = true;
                 }
-                in_gap = true;
+                collapsed_blocks
+                    .last_mut()
+                    .expect("a gap starts with a block")
+                    .hidden
+                    .push(row);
             }
         }
         diff_rows = filtered_rows;
         precomputed_diffs = precompute_diff_spans(&diff_rows);
     }
 
-    Some((diff_rows, precomputed_diffs))
+    Some((diff_rows, precomputed_diffs, collapsed_blocks))
+}
+
+/// `rows` (the unexpanded rows) with the hidden rows of every block in `expanded` put back in
+/// place of its `Collapsed` row, and where each block ends up.
+pub(crate) fn expand_rows(
+    rows: &[DiffRow],
+    blocks: &[CollapsedBlock],
+    expanded: &BTreeSet<usize>,
+) -> (DiffRows, Vec<RowBlock>) {
+    let extra: usize = blocks
+        .iter()
+        .filter(|block| expanded.contains(&block.row))
+        .map(|block| block.hidden.len() - 1)
+        .sum();
+    let mut shown = Vec::with_capacity(rows.len() + extra);
+    let mut row_blocks = Vec::with_capacity(blocks.len());
+    let mut next = 0;
+    for block in blocks {
+        assert!(
+            matches!(rows[block.row].left, LineContent::Collapsed),
+            "block key {} is not a collapsed row",
+            block.row
+        );
+        shown.extend_from_slice(&rows[next..block.row]);
+        let start = shown.len();
+        let is_expanded = expanded.contains(&block.row);
+        if is_expanded {
+            shown.extend_from_slice(&block.hidden);
+        } else {
+            shown.push(rows[block.row].clone());
+        }
+        row_blocks.push(RowBlock {
+            key: block.row,
+            rows: start..shown.len(),
+            expanded: is_expanded,
+        });
+        next = block.row + 1;
+    }
+    shown.extend_from_slice(&rows[next..]);
+    (shown, row_blocks)
+}
+
+/// Every block of `blocks` unexpanded.
+fn unexpanded_row_blocks(blocks: &[CollapsedBlock]) -> Vec<RowBlock> {
+    blocks
+        .iter()
+        .map(|block| RowBlock {
+            key: block.row,
+            rows: block.row..block.row + 1,
+            expanded: false,
+        })
+        .collect()
+}
+
+/// The shown row `row` of a view laid out as `from`, in a view of the same rows laid out as
+/// `to`. A row inside a block that `to` collapses maps to its `Collapsed` row.
+fn remap_row(from: &[RowBlock], to: &[RowBlock], row: usize) -> usize {
+    // Shown rows minus unexpanded rows, after a block.
+    let shift = |block: &RowBlock| block.rows.end - (block.key + 1);
+
+    let mut unexpanded = (row, 0);
+    for block in from {
+        if row < block.rows.start {
+            break;
+        }
+        if block.rows.contains(&row) {
+            unexpanded = (block.key, row - block.rows.start);
+            break;
+        }
+        unexpanded = (row - shift(block), 0);
+    }
+
+    let (row, offset) = unexpanded;
+    let mut shown = row;
+    for block in to {
+        if row < block.key {
+            break;
+        }
+        if row == block.key {
+            return match block.expanded {
+                true => block.rows.start + offset.min(block.rows.len() - 1),
+                false => block.rows.start,
+            };
+        }
+        shown = row + shift(block);
+    }
+    shown
 }
 
 #[cfg(test)]
@@ -1230,6 +1472,27 @@ mod tests {
     #[test]
     fn goto_in_an_empty_file_has_no_row() {
         assert_eq!(row_for_line(1, &[]), None);
+    }
+
+    #[test]
+    fn remap_moves_rows_by_the_rows_an_expansion_adds_or_removes() {
+        let block = |key, rows, expanded| RowBlock {
+            key,
+            rows,
+            expanded,
+        };
+        // Blocks at unexpanded rows 2 and 5; the first hides 4 rows.
+        let collapsed = [block(2, 2..3, false), block(5, 5..6, false)];
+        let expanded = [block(2, 2..6, true), block(5, 8..9, false)];
+
+        let forth: Vec<_> = (0..7)
+            .map(|row| remap_row(&collapsed, &expanded, row))
+            .collect();
+        assert_eq!(forth, [0, 1, 2, 6, 7, 8, 9]);
+        let back: Vec<_> = (0..10)
+            .map(|row| remap_row(&expanded, &collapsed, row))
+            .collect();
+        assert_eq!(back, [0, 1, 2, 2, 2, 2, 3, 4, 5, 6]);
     }
 
     mod pipeline {
@@ -1516,6 +1779,219 @@ mod tests {
             );
             let ctx = settle(&mut processor).expect("pattern edit never completed");
             assert!(ctx.input == current, "diff shows {:?}", ctx.input);
+        }
+
+        mod expansion {
+            use super::*;
+            use crate::revert::{RevertRequest, RevertTarget, plan_hunk_revert};
+
+            type Pair = (
+                Option<Arc<CachedFile<RawToken>>>,
+                Option<Arc<CachedFile<RawToken>>>,
+            );
+
+            /// 20 lines where lines 3 and 18 differ, so 2 context rows collapse lines 6..=15.
+            fn gap_pair(dir: &Path) -> Pair {
+                let write = |name: &str, edit: bool| {
+                    let contents: String = (1..=20)
+                        .map(|n| match edit && (n == 3 || n == 18) {
+                            true => format!("edit_{n}\n"),
+                            false => format!("keep_{n}\n"),
+                        })
+                        .collect();
+                    let path = dir.join(name);
+                    std::fs::write(&path, contents).unwrap();
+                    load(&UniversalPath::from(path))
+                };
+                (write("left.rs", false), write("right.rs", true))
+            }
+
+            fn diff_only(pair: &Pair, context_rows: usize) -> UpdateDiffRowsInput {
+                let mut input = input(&pair.0, &pair.1);
+                input.options.diff_only_with_extra_rows = Some(context_rows);
+                input
+            }
+
+            fn opened(input: &UpdateDiffRowsInput) -> (DiffProcessor, MinimalDiffCtx) {
+                let mut processor = DiffProcessor::default();
+                open(&mut processor, input);
+                let ctx = settle(&mut processor).expect("diff never completed");
+                (processor, ctx)
+            }
+
+            /// (left, right) line number, 0 where a side has no line.
+            fn line_nums(row: &DiffRow) -> (i32, i32) {
+                let num = |content: &LineContent| match content {
+                    LineContent::Code { line_num, .. } => *line_num,
+                    _ => 0,
+                };
+                (num(&row.left), num(&row.right))
+            }
+
+            fn collapsed_rows(rows: &[DiffRow]) -> Vec<usize> {
+                (0..rows.len())
+                    .filter(|&i| matches!(rows[i].left, LineContent::Collapsed))
+                    .collect()
+            }
+
+            fn row_of_left_line(rows: &[DiffRow], line: i32) -> usize {
+                rows.iter()
+                    .position(|row| line_nums(row).0 == line)
+                    .unwrap_or_else(|| panic!("no row shows left line {line}"))
+            }
+
+            fn only_block(ctx: &MinimalDiffCtx) -> usize {
+                let [key] = collapsed_rows(&ctx.diff_rows)[..] else {
+                    panic!("expected one collapsed row: {:#?}", ctx.diff_rows);
+                };
+                key
+            }
+
+            #[test]
+            fn expanding_restores_the_hidden_rows_at_the_block_with_their_line_numbers() {
+                let dir = tempfile::tempdir().unwrap();
+                let pair = gap_pair(dir.path());
+                let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
+                let key = only_block(&collapsed);
+                assert_eq!(
+                    *collapsed.row_blocks,
+                    vec![RowBlock {
+                        key,
+                        rows: key..key + 1,
+                        expanded: false
+                    }]
+                );
+
+                processor.set_block_expanded(key, true);
+                // Polling and other state changes leave the expansion alone.
+                processor.update();
+                processor.conflict_cursor.set_max(2);
+                processor.conflict_cursor.set(1);
+                processor.get_scroll_to_row();
+                let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
+
+                assert!(collapsed_rows(&ctx.diff_rows).is_empty());
+                let shown: Vec<_> = ctx.diff_rows[key..key + 10].iter().map(line_nums).collect();
+                let expected: Vec<_> = (6..=15).map(|n| (n, n)).collect();
+                assert_eq!(shown, expected);
+                assert_eq!(
+                    *ctx.row_blocks,
+                    vec![RowBlock {
+                        key,
+                        rows: key..key + 10,
+                        expanded: true
+                    }]
+                );
+                assert_eq!(
+                    format!("{:?}", &ctx.diff_rows[..key]),
+                    format!("{:?}", &collapsed.diff_rows[..key])
+                );
+                assert_eq!(
+                    format!("{:?}", &ctx.diff_rows[key + 10..]),
+                    format!("{:?}", &collapsed.diff_rows[key + 1..])
+                );
+                let (_, full) = opened(&input(&pair.0, &pair.1));
+                assert_eq!(
+                    format!("{:?}", ctx.diff_rows),
+                    format!("{:?}", full.diff_rows)
+                );
+            }
+
+            #[test]
+            fn re_collapsing_restores_the_collapsed_rows() {
+                let dir = tempfile::tempdir().unwrap();
+                let pair = gap_pair(dir.path());
+                let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
+                let key = only_block(&collapsed);
+
+                processor.set_block_expanded(key, true);
+                processor.set_block_expanded(key, false);
+                let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
+
+                assert_eq!(
+                    format!("{:?}", ctx.diff_rows),
+                    format!("{:?}", collapsed.diff_rows)
+                );
+                assert_eq!(ctx.row_blocks, collapsed.row_blocks);
+                assert_eq!(
+                    format!("{:?}", ctx.precomputed_diffs),
+                    format!("{:?}", collapsed.precomputed_diffs)
+                );
+                assert_eq!(ctx.precomputed_file_rows, collapsed.precomputed_file_rows);
+            }
+
+            #[test]
+            fn a_row_rebuild_clears_the_expansion() {
+                let dir = tempfile::tempdir().unwrap();
+                let pair = gap_pair(dir.path());
+                let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
+                processor.set_block_expanded(only_block(&collapsed), true);
+
+                open(&mut processor, &diff_only(&pair, 3));
+                let rebuilt = settle(&mut processor).expect("rebuild never completed");
+                only_block(&rebuilt);
+                assert!(rebuilt.row_blocks.iter().all(|block| !block.expanded));
+
+                open(&mut processor, &diff_only(&pair, 2));
+                let back = settle(&mut processor).expect("rebuild never completed");
+                assert_eq!(
+                    format!("{:?}", back.diff_rows),
+                    format!("{:?}", collapsed.diff_rows)
+                );
+                assert_eq!(back.row_blocks, collapsed.row_blocks);
+            }
+
+            #[test]
+            fn conflicts_find_goto_and_revert_land_on_the_right_rows_after_an_expansion() {
+                let dir = tempfile::tempdir().unwrap();
+                let pair = gap_pair(dir.path());
+                let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
+                let key = only_block(&collapsed);
+                let revert = RevertRequest {
+                    hunk: 1,
+                    target: RevertTarget::Left,
+                };
+                let planned = plan_hunk_revert(&collapsed, revert).expect("revert planned");
+
+                // The second conflict and a find hit below the block were navigated to.
+                assert_eq!(collapsed.precomputed_diffs.len(), 2);
+                processor.conflict_cursor.set_max(2);
+                processor.conflict_cursor.set(2);
+                processor.update_find(FindCtx::new("keep_19", &collapsed));
+                assert!(processor.get_scroll_to_row().is_some());
+
+                processor.set_block_expanded(key, true);
+                assert_eq!(
+                    processor.get_scroll_to_row(),
+                    None,
+                    "expanding must not scroll"
+                );
+
+                let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
+                let rows = &ctx.diff_rows;
+                let found = row_of_left_line(rows, 19);
+                assert_eq!(processor.active_highlights, vec![found]);
+                assert_eq!(processor.find_scroll_to_row().map(|s| s.start), Some(found));
+
+                let conflict = processor.conflict_scroll_to_row().expect("conflict 2");
+                let conflict_rows = conflict.start..=conflict.maybe_end.expect("a span");
+                assert!(
+                    rows[conflict_rows.clone()]
+                        .iter()
+                        .any(|row| line_nums(row).1 == 18),
+                    "conflict 2 is rows {conflict_rows:?}"
+                );
+                assert_eq!(ctx.precomputed_diffs[1].rows(), conflict_rows);
+
+                // Line 10 was hidden before the expansion.
+                processor.active_side = ActiveSide::Left;
+                processor.update_goto(Some(10));
+                let goto = processor.get_scroll_to_row().expect("goto scrolls");
+                assert_eq!(goto.start, row_of_left_line(rows, 10));
+                assert_eq!(ctx.precomputed_file_rows.0[9], goto.start);
+
+                assert_eq!(plan_hunk_revert(&ctx, revert), Ok(planned));
+            }
         }
     }
 }

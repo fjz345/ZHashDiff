@@ -59,6 +59,8 @@ pub struct FileDiffPaneCtx<'a> {
     pub set_file_2_root_request: &'a mut Option<UniversalPath>,
     pub pivot: &'a mut (Option<usize>, Option<usize>),
     pub revert_request: &'a mut Option<RevertRequest>,
+    /// `(RowBlock::key, expand)` of a clicked expand or re-collapse button.
+    pub block_toggle_request: &'a mut Option<(usize, bool)>,
     /// Set when the pair resolved to the Hex viewer; the table then shows hex rows.
     pub hex_view: Option<HexViewCtx<'a>>,
 }
@@ -634,6 +636,22 @@ impl FileDiffPane {
                                                                     Err(_) => {}
                                                                 }
                                                             };
+                                                            // A collapsed row, or the first row of an expanded block.
+                                                            let block = diff_ctx.and_then(|d| {
+                                                                d.row_blocks
+                                                                    .binary_search_by_key(&row_index, |b| b.rows.start)
+                                                                    .ok()
+                                                                    .map(|i| &d.row_blocks[i])
+                                                            });
+                                                            if let Some(block) = block {
+                                                                let (label, hover) = match block.expanded {
+                                                                    true => ("-", "Collapse these rows again"),
+                                                                    false => ("+", "Expand the collapsed rows"),
+                                                                };
+                                                                if ui.button(label).on_hover_text(hover).clicked() {
+                                                                    *ctx.block_toggle_request = Some((block.key, !block.expanded));
+                                                                }
+                                                            }
                                                             revert_button(ui, RevertTarget::Left, "<", "Replace this hunk in the left file with the right side");
                                                             ui.add(
                                                                 egui::Label::new(
@@ -1463,6 +1481,51 @@ mod tests {
         harness.set_row(1, collapsed);
 
         assert_only_real_text(harness.drag_and_copy(Side::Left, (0, 0), (2, 14)));
+    }
+
+    #[test]
+    fn copy_skips_a_collapsed_block_and_includes_it_once_expanded() {
+        use std::{
+            collections::BTreeSet,
+            sync::{Arc, atomic::AtomicBool},
+        };
+
+        use crate::diff_ctx::{expand_rows, finalize_diff_rows};
+
+        // Lines 1 and 12 differ, so one context row each leaves lines 3..=10 collapsed.
+        let source: String = (1..=12).map(|n| format!("line {n}\n")).collect();
+        let target = source
+            .replace("line 1\n", "edit 1\n")
+            .replace("line 12\n", "edit 12\n");
+        let options = DiffBuilderOptions {
+            diff_only_with_extra_rows: Some(1),
+            ..Default::default()
+        };
+        let mut harness = CopyHarness::new(&source, &target, &options);
+        let (collapsed, _, blocks) = finalize_diff_rows(
+            harness.rows().to_vec(),
+            &options,
+            source.lines().count(),
+            target.lines().count(),
+            &Arc::new(AtomicBool::new(false)),
+        )
+        .expect("not cancelled");
+        let [ref block] = blocks[..] else {
+            panic!("expected one collapsed block: {collapsed:#?}");
+        };
+
+        harness.set_rows(collapsed.clone());
+        let copied = harness
+            .drag_and_copy(Side::Left, (1, 0), (3, 7))
+            .expect("copy command emitted");
+        let without_newlines: String = copied.chars().filter(|c| *c != '\n').collect();
+        assert_eq!(without_newlines, "line 2line 11");
+
+        let (expanded, _) = expand_rows(&collapsed, &blocks, &BTreeSet::from([block.row]));
+        harness.set_rows(expanded);
+        let expected: Vec<String> = (2..=11).map(|n| format!("line {n}")).collect();
+        let copied = harness.drag_and_copy(Side::Left, (1, 0), (10, 7));
+        assert_eq!(copied, Some(expected.join("\n")));
     }
 
     #[test]

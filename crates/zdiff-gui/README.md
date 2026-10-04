@@ -33,11 +33,9 @@ GUI for zdiff crate
 * Better handling of temp paths (example: [p4] Zdiff.exe %s %s)
     - Need to be able to use QuickDiffs after opening a file via p4 diff
 * Selecting word in diff highlights all usages of that text in both diffs
-* Fix multi line text selection
 
 * p4 feature to quick diff towards the current local file
     - Keybinding?
-* Feature to click "collapsed rows" to expand them
 * Add platform image for .exe
 * show time it took to compute the diff
 
