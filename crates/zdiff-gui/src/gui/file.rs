@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 
 use zdiff::cached_file::CachedFile;
@@ -6,13 +7,94 @@ use zdiff::lexer::{LEXER_MODE_DEFAULT, RawToken};
 use zdiff::universal_path::UniversalPath;
 
 use crate::p4::P4Command;
+use crate::viewer::{ViewerKind, sniff_viewer_kind};
+
+/// A file whose content was sniffed as not text, kept as raw bytes for the Hex viewer.
+pub struct BinaryFile {
+    pub path: UniversalPath,
+    pub bytes: Vec<u8>,
+}
+
+// Input logging prints the loaded files; the bytes can be hundreds of MB.
+impl std::fmt::Debug for BinaryFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BinaryFile")
+            .field("path", &self.path)
+            .field("len", &self.bytes.len())
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum LoadedFile {
+    Text(Arc<CachedFile<RawToken>>),
+    Binary(Arc<BinaryFile>),
+}
+
+impl LoadedFile {
+    pub fn path(&self) -> &UniversalPath {
+        match self {
+            LoadedFile::Text(file) => &file.path,
+            LoadedFile::Binary(file) => &file.path,
+        }
+    }
+
+    /// The exact file bytes; text contents are read unmodified, so they are the file's bytes too.
+    pub fn bytes(&self) -> &[u8] {
+        match self {
+            LoadedFile::Text(file) => file.contents.as_bytes(),
+            LoadedFile::Binary(file) => &file.bytes,
+        }
+    }
+
+    pub fn viewer_kind(&self) -> ViewerKind {
+        match self {
+            LoadedFile::Text(_) => ViewerKind::Text,
+            LoadedFile::Binary(_) => ViewerKind::Hex,
+        }
+    }
+
+    pub fn text(&self) -> Option<&Arc<CachedFile<RawToken>>> {
+        match self {
+            LoadedFile::Text(file) => Some(file),
+            LoadedFile::Binary(_) => None,
+        }
+    }
+
+    /// Same load, not just equal content: every load makes new `Arc`s.
+    pub fn is_same_load(&self, other: &Self) -> bool {
+        match (self, other) {
+            (LoadedFile::Text(a), LoadedFile::Text(b)) => Arc::ptr_eq(a, b),
+            (LoadedFile::Binary(a), LoadedFile::Binary(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+pub fn load_file(
+    display_path: UniversalPath,
+    physical_path: &Path,
+    lexer_mode: u8,
+) -> io::Result<LoadedFile> {
+    let bytes = std::fs::read(physical_path)?;
+    match sniff_viewer_kind(&bytes) {
+        // Reads the file a second time, so text loading stays in CachedFile until the
+        // text-encoding-eol decoder replaces it.
+        ViewerKind::Text => CachedFile::new(display_path, physical_path, lexer_mode)
+            .map(|file| LoadedFile::Text(Arc::new(file))),
+        ViewerKind::Hex => Ok(LoadedFile::Binary(Arc::new(BinaryFile {
+            path: display_path,
+            bytes,
+        }))),
+    }
+}
 
 fn default_channel() -> (mpsc::Sender<UniversalPath>, mpsc::Receiver<UniversalPath>) {
     mpsc::channel()
 }
-fn default_channel_cached_file() -> (
-    mpsc::Sender<(UniversalPath, Option<Arc<CachedFile<RawToken>>>)>,
-    mpsc::Receiver<(UniversalPath, Option<Arc<CachedFile<RawToken>>>)>,
+fn default_channel_loaded_file() -> (
+    mpsc::Sender<(UniversalPath, Option<LoadedFile>)>,
+    mpsc::Receiver<(UniversalPath, Option<LoadedFile>)>,
 ) {
     mpsc::channel()
 }
@@ -33,7 +115,7 @@ pub struct FileProcessor {
     root_path: Option<UniversalPath>,
 
     #[cfg_attr(feature = "serde", serde(skip))]
-    cached_file: Option<Arc<CachedFile<RawToken>>>,
+    loaded_file: Option<LoadedFile>,
     diff_lexer_mode: u8,
 
     #[cfg_attr(feature = "serde", serde(skip))]
@@ -41,11 +123,11 @@ pub struct FileProcessor {
 
     #[cfg_attr(
         feature = "serde",
-        serde(skip, default = "default_channel_cached_file")
+        serde(skip, default = "default_channel_loaded_file")
     )]
-    channel_cached_file: (
-        mpsc::Sender<(UniversalPath, Option<Arc<CachedFile<RawToken>>>)>,
-        mpsc::Receiver<(UniversalPath, Option<Arc<CachedFile<RawToken>>>)>,
+    channel_loaded_file: (
+        mpsc::Sender<(UniversalPath, Option<LoadedFile>)>,
+        mpsc::Receiver<(UniversalPath, Option<LoadedFile>)>,
     ),
     #[cfg_attr(feature = "serde", serde(skip))]
     loading_path: Option<UniversalPath>,
@@ -56,11 +138,11 @@ impl Default for FileProcessor {
         Self {
             channel: default_channel(),
             file_path: default_file_path(),
-            cached_file: None,
+            loaded_file: None,
             diff_lexer_mode: LEXER_MODE_DEFAULT,
             cached_file_path: None,
             root_path: None,
-            channel_cached_file: default_channel_cached_file(),
+            channel_loaded_file: default_channel_loaded_file(),
             loading_path: None,
         }
     }
@@ -210,7 +292,7 @@ impl FileProcessor {
 
     pub fn invalidate_cache_file(&mut self) {
         log::debug!("Invalidating cache file for path: {:?}", self.file_path);
-        self.cached_file = None;
+        self.loaded_file = None;
         self.cached_file_path = None;
     }
 
@@ -218,10 +300,15 @@ impl FileProcessor {
         self.loading_path.as_ref()
     }
 
+    /// The loaded file only when it is text; a binary load gives `None`.
     pub fn get_cached_file(&mut self) -> Option<Arc<CachedFile<RawToken>>> {
-        while let Ok((loaded_path, file_opt)) = self.channel_cached_file.1.try_recv() {
+        self.get_loaded_file().and_then(|file| file.text().cloned())
+    }
+
+    pub fn get_loaded_file(&mut self) -> Option<LoadedFile> {
+        while let Ok((loaded_path, file_opt)) = self.channel_loaded_file.1.try_recv() {
             if self.cached_file_path.as_ref() == Some(&loaded_path) {
-                self.cached_file = file_opt;
+                self.loaded_file = file_opt;
                 self.loading_path = None;
             }
         }
@@ -230,16 +317,16 @@ impl FileProcessor {
 
         if !path.is_empty() && self.cached_file_path.as_ref() != Some(path) {
             self.cached_file_path = Some(path.clone());
-            self.cached_file = None;
+            self.loaded_file = None;
             self.loading_path = Some(path.clone());
 
             log::debug!(
-                "Constructing CachedFile asynchronously: {:?} with lexer mode {:?}",
+                "Loading file asynchronously: {:?} with lexer mode {:?}",
                 path,
                 self.diff_lexer_mode
             );
 
-            let tx = self.channel_cached_file.0.clone();
+            let tx = self.channel_loaded_file.0.clone();
             let path_clone = path.clone();
             let diff_lexer_mode = self.diff_lexer_mode;
 
@@ -289,11 +376,11 @@ impl FileProcessor {
                     }
                 };
 
-                let cached_file_opt =
-                    match CachedFile::new(path_clone.clone(), &target_path, diff_lexer_mode) {
-                        Ok(r) => Some(Arc::new(r)),
+                let loaded_file_opt =
+                    match load_file(path_clone.clone(), &target_path, diff_lexer_mode) {
+                        Ok(file) => Some(file),
                         Err(e) => {
-                            log::error!("Cannot find file {}, Error: {e}", target_path.display());
+                            log::error!("Cannot load file {}, Error: {e}", target_path.display());
                             None
                         }
                     };
@@ -302,11 +389,11 @@ impl FileProcessor {
                     let _ = std::fs::remove_file(&target_path);
                 }
 
-                let _ = tx.send((path_clone, cached_file_opt));
+                let _ = tx.send((path_clone, loaded_file_opt));
             });
         }
 
-        self.cached_file.clone()
+        self.loaded_file.clone()
     }
 
     pub fn get_cached_file_hash(&mut self) -> Option<String> {
@@ -319,6 +406,7 @@ impl FileProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::viewer::ViewerKind;
     use std::path::PathBuf;
     #[test]
     fn test_is_root_valid_local() {
@@ -405,5 +493,44 @@ mod tests {
 
         assert!(FileProcessor::is_root_valid(&local, &depot));
         assert!(FileProcessor::is_root_valid(&depot, &local));
+    }
+
+    fn load_bytes(bytes: &[u8]) -> LoadedFile {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.bin");
+        std::fs::write(&path, bytes).unwrap();
+        load_file(UniversalPath::from(path.clone()), &path, LEXER_MODE_DEFAULT).unwrap()
+    }
+
+    #[test]
+    fn valid_utf8_loads_as_text() {
+        let loaded = load_bytes("fn main() {}\n// ünïcode\n".as_bytes());
+        assert_eq!(loaded.viewer_kind(), ViewerKind::Text);
+        let LoadedFile::Text(file) = loaded else {
+            panic!("expected text");
+        };
+        assert_eq!(file.contents, "fn main() {}\n// ünïcode\n");
+    }
+
+    #[test]
+    fn empty_file_loads_as_text() {
+        assert_eq!(load_bytes(b"").viewer_kind(), ViewerKind::Text);
+    }
+
+    #[test]
+    fn nul_containing_content_loads_as_bytes_for_hex() {
+        // Valid UTF-8 apart from the NUL rule, so only the NUL makes it binary.
+        let bytes = b"PK\x03\x04\x00\x00abc";
+        let loaded = load_bytes(bytes);
+        assert_eq!(loaded.viewer_kind(), ViewerKind::Hex);
+        assert_eq!(loaded.bytes(), bytes);
+    }
+
+    #[test]
+    fn invalid_utf8_loads_as_bytes_for_hex() {
+        let bytes = b"caf\xe9 au lait";
+        let loaded = load_bytes(bytes);
+        assert_eq!(loaded.viewer_kind(), ViewerKind::Hex);
+        assert_eq!(loaded.bytes(), bytes);
     }
 }

@@ -12,6 +12,7 @@ mod file;
 mod keybindings;
 mod p4;
 pub mod ui_egui;
+mod viewer;
 
 #[cfg(feature = "debug_alloc")]
 use stats_alloc::INSTRUMENTED_SYSTEM;

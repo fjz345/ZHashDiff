@@ -24,6 +24,7 @@ use crate::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},
     },
+    viewer::{ViewerKind, hex::HexDiffProcessor, resolve_viewer_kind},
 };
 
 #[derive(Debug)]
@@ -34,6 +35,11 @@ pub struct AppStateCtx {
 
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub diff_processor: DiffProcessor,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub hex_processor: HexDiffProcessor,
+    /// Resolved each frame from the loaded files; `None` while neither side is loaded.
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub viewer_kind: Option<ViewerKind>,
 
     pub diff_lexer_mode: u8,
     pub diff_options: DiffBuilderOptions,
@@ -66,6 +72,8 @@ impl Default for AppStateCtx {
             file_2: Default::default(),
             diff_options: Default::default(),
             diff_processor: Default::default(),
+            hex_processor: Default::default(),
+            viewer_kind: None,
             scroll_left: Default::default(),
             scroll_right: Default::default(),
             goto_open: Default::default(),
@@ -526,9 +534,12 @@ impl<'a> ZApp {
                 keybindings,
                 myers_diff_algorithm,
                 diff_processor,
+                hex_processor,
+                viewer_kind,
                 code_language,
                 code_language_custom,
             } = app_ctx;
+            let is_hex = *viewer_kind == Some(ViewerKind::Hex);
             self.show_menu(
                 ui,
                 file_1,
@@ -591,7 +602,12 @@ impl<'a> ZApp {
                 *find_open = find_window_open;
             }
 
-            let scroll_to_rows = &diff_processor.get_scroll_to_row();
+            // The text diff's state is stale while the hex viewer shows the pair.
+            let scroll_to_rows = &if is_hex {
+                None
+            } else {
+                diff_processor.get_scroll_to_row()
+            };
             if let Some(scroll_to) = scroll_to_rows {
                 log::info!("Navigating to line: {:?}", scroll_to);
             }
@@ -602,7 +618,11 @@ impl<'a> ZApp {
             let mut find_cursor = diff_processor.find_cursor.clone();
             let mut active_side = diff_processor.active_side;
 
-            let diff_ctx = diff_processor.get_minimal_diff_ctx();
+            let diff_ctx = if is_hex {
+                None
+            } else {
+                diff_processor.get_minimal_diff_ctx()
+            };
             let mut behavior = TreeBehavior {
                 ctx_file_diff: FileDiffPaneCtx {
                     diff_ctx: diff_ctx.as_ref(),
@@ -629,9 +649,9 @@ impl<'a> ZApp {
                             &file_1.get_full_path(),
                         ),
                     file_source_path_valid: file_1.get_loading_path().is_some()
-                        || file_1.get_cached_file().clone().is_some(),
+                        || file_1.get_loaded_file().is_some(),
                     file_target_path_valid: file_2.get_loading_path().is_some()
-                        || file_2.get_cached_file().clone().is_some(),
+                        || file_2.get_loaded_file().is_some(),
                     file_source_loading: file_1.get_loading_path().is_some(),
                     file_target_loading: file_2.get_loading_path().is_some(),
                     active_highlights: &active_highlights,
@@ -642,6 +662,7 @@ impl<'a> ZApp {
                     diff_loading: diff_processor.is_in_progress(),
                     code_language,
                     revert_request: &mut None,
+                    hex_view: is_hex.then(|| hex_processor.view_ctx()),
                 },
             };
 
@@ -753,9 +774,14 @@ impl<'a> ZApp {
                         .and_then(|f| Some(f.num_add_deletes))
                         .unwrap_or_default()
                         .1;
+                    let counts = if is_hex {
+                        "hex".to_string()
+                    } else {
+                        format!("+{}/-{}", total_adds, total_deletes)
+                    };
                     ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
-                        "zdiff [+{}/-{}] - {}, {}",
-                        total_adds, total_deletes, source, target
+                        "zdiff [{}] - {}, {}",
+                        counts, source, target
                     )));
                     break;
                 }
@@ -990,12 +1016,17 @@ impl eframe::App for ZApp {
                 .as_mut()
                 .expect("State was not valid while processing inputs")
                 .ctx_mut();
-            let conflict_max = app_ctx
-                .diff_processor
-                .get_minimal_diff_ctx()
-                .as_ref()
-                .and_then(|f| Some(f.precomputed_diffs.len()))
-                .unwrap_or_default();
+            // The hex viewer has no conflict navigation yet; the text diff's count is stale there.
+            let conflict_max = if app_ctx.viewer_kind == Some(ViewerKind::Hex) {
+                0
+            } else {
+                app_ctx
+                    .diff_processor
+                    .get_minimal_diff_ctx()
+                    .as_ref()
+                    .and_then(|f| Some(f.precomputed_diffs.len()))
+                    .unwrap_or_default()
+            };
             app_ctx.diff_processor.conflict_cursor.set_max(conflict_max);
         }
 
@@ -1018,6 +1049,21 @@ impl eframe::App for ZApp {
             AppState::Idle(mut state) => {
                 state.file_1.set_lexer_mode(state.diff_lexer_mode);
                 state.file_2.set_lexer_mode(state.diff_lexer_mode);
+
+                let loaded_1 = state.file_1.get_loaded_file();
+                let loaded_2 = state.file_2.get_loaded_file();
+                state.viewer_kind = resolve_viewer_kind(
+                    loaded_1.as_ref().map(|f| f.viewer_kind()),
+                    loaded_2.as_ref().map(|f| f.viewer_kind()),
+                );
+                let is_hex = state.viewer_kind == Some(ViewerKind::Hex);
+                if is_hex {
+                    state.hex_processor.request(loaded_1, loaded_2);
+                } else {
+                    // Cancels a running compare and drops the old pair's bytes.
+                    state.hex_processor.request(None, None);
+                }
+                state.hex_processor.poll();
 
                 let update_input = UpdateDiffRowsInput {
                     file_1: state.file_1.get_cached_file().clone(),
@@ -1044,6 +1090,7 @@ impl eframe::App for ZApp {
                 };
 
                 if diff_ctx_invalidated
+                    && !is_hex
                     && (state.file_1.get_cached_file().is_some()
                         || state.file_2.get_cached_file().is_some())
                 {

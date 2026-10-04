@@ -7,6 +7,7 @@ use crate::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
         panes::ZAppPane,
     },
+    viewer::hex::{self, HexViewCtx},
 };
 use eframe::egui::{
     self, Layout, TextEdit, UiBuilder, Vec2, scroll_area::ScrollBarVisibility,
@@ -56,6 +57,8 @@ pub struct FileDiffPaneCtx<'a> {
     pub set_file_2_root_request: &'a mut Option<UniversalPath>,
     pub pivot: &'a mut (Option<usize>, Option<usize>),
     pub revert_request: &'a mut Option<DiffResult>,
+    /// Set when the pair resolved to the Hex viewer; the table then shows hex rows.
+    pub hex_view: Option<HexViewCtx<'a>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -249,6 +252,10 @@ impl FileDiffPane {
                     ui.add(egui::Label::new(label).selectable(false))
                         .on_hover_text(tooltip);
                 });
+            } else if let Some(hex_view) = &ctx.hex_view {
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(egui::Label::new(hex_view.status_text()).selectable(false));
+                });
             }
         });
 
@@ -287,6 +294,11 @@ impl FileDiffPane {
         };
         waiting_for_diff |= ctx.diff_loading;
         do_not_render_diff |= waiting_for_diff;
+        // The hex viewer draws the loaded bytes and needs no text diff.
+        if ctx.hex_view.is_some() {
+            waiting_for_diff = false;
+            do_not_render_diff = false;
+        }
         let diff_rows_len = diff_rows.map(|f| f.len()).unwrap_or_else(|| 0);
 
         ui.add_space(4.0);
@@ -302,7 +314,7 @@ impl FileDiffPane {
         ui.vertical(|ui| {
             ui.set_min_width(available_width);
 
-            if table_height > 0.0 && diff_rows_len > 0 {
+            if table_height > 0.0 && (diff_rows_len > 0 || ctx.hex_view.is_some()) {
                 table_rect = ui.allocate_ui(egui::vec2(ui.available_width(), table_height), |ui| {
                     egui::Frame::default()
                         .fill(egui::Color32::from_gray(15))
@@ -460,6 +472,16 @@ impl FileDiffPane {
                                     });
                                 })
                                 .body(|body| {
+                                    if let Some(hex_view) = &ctx.hex_view {
+                                        hex::table_body(
+                                            body,
+                                            hex_view,
+                                            row_height,
+                                            &mut left_rect,
+                                            &mut right_rect,
+                                        );
+                                        return;
+                                    }
                                     if do_not_render_diff {
                                         return Default::default();
                                     }
@@ -685,7 +707,8 @@ impl FileDiffPane {
                 });
             }
 
-            if !(waiting_for_diff || do_not_render_diff) {
+            // The sliders scroll text rows; hex rows have a fixed width.
+            if !(waiting_for_diff || do_not_render_diff) && ctx.hex_view.is_none() {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     let left_w = available_width * 0.48;

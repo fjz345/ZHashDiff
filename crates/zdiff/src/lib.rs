@@ -3,6 +3,7 @@ use std::path::Path;
 pub mod cached_file;
 pub mod diff_builder;
 pub mod diff_ir;
+pub mod hex;
 pub mod lexer;
 pub mod myers;
 pub mod row_text;
