@@ -811,7 +811,7 @@ impl<'a> ZApp {
                         let written = revert::write_revert(
                             planned,
                             &std::env::temp_dir(),
-                            &P4Command::new(false),
+                            &P4Command::new(false).for_file(UniversalPath::Local(path.clone())),
                         );
                         match written {
                             Ok(RevertWrite::NeedsP4Edit(pending)) => {
@@ -862,7 +862,8 @@ impl<'a> ZApp {
                 match confirmed {
                     Some(true) => {
                         let path = pending.path().to_path_buf();
-                        let result = pending.confirm(&std::env::temp_dir(), &P4Command::new(false));
+                        let p4 = P4Command::new(false).for_file(UniversalPath::Local(path.clone()));
+                        let result = pending.confirm(&std::env::temp_dir(), &p4);
                         Self::finish_revert_write(
                             result,
                             &path,
@@ -1032,8 +1033,8 @@ impl<'a> ZApp {
                 handle_kb(
                     &app_state_ctx.keybindings.revision_graph,
                     &mut |_kb| match &app_state_ctx.file_1.get_full_path() {
-                        UniversalPath::Depot(path, _rev) => {
-                            match P4Command::open_revision_graph(path) {
+                        file @ UniversalPath::Depot(..) => {
+                            match P4Command::open_revision_graph(file) {
                                 Ok(_) => {
                                     log::info!("Revision graph returned Ok");
                                 }
@@ -1052,8 +1053,8 @@ impl<'a> ZApp {
                 handle_kb(
                     &app_state_ctx.keybindings.timelapse_view,
                     &mut |_kb| match &app_state_ctx.file_1.get_full_path() {
-                        UniversalPath::Depot(path, _rev) => {
-                            match P4Command::open_timelapse_view(path) {
+                        file @ UniversalPath::Depot(..) => {
+                            match P4Command::open_timelapse_view(file) {
                                 Ok(_) => {
                                     log::info!("Timelapse view returned Ok");
                                 }

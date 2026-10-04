@@ -1,7 +1,9 @@
+use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::{env, str};
 
 use eframe::egui;
+use zdiff::universal_path::UniversalPath;
 
 use std::sync::RwLock;
 
@@ -99,9 +101,63 @@ pub fn escape_local_path(path: &str) -> String {
     escaped
 }
 
+/// How one p4 command's environment differs from the app's.
+#[derive(Debug, Default, PartialEq)]
+pub struct P4Env {
+    pub set: Vec<(&'static str, String)>,
+    pub unset: Vec<&'static str>,
+    pub cwd: Option<PathBuf>,
+}
+
+/// A non-empty field sets its variable, `#` unsets it, and an empty one leaves the inherited
+/// value. A local file's directory becomes the working directory so p4 finds the P4CONFIG file
+/// of the repository that file lives in; a depot path has no directory to pick one, and a
+/// relative path keeps the app's cwd.
+pub fn resolve_p4_env(config: &P4Config, file: Option<&UniversalPath>) -> P4Env {
+    let mut env = P4Env::default();
+    for (var, value) in [
+        ("P4PORT", &config.port),
+        ("P4USER", &config.user),
+        ("P4PASSWORD", &config.password),
+        ("P4CLIENT", &config.client),
+        ("P4CHARSET", &config.charset),
+    ] {
+        if value == "#" {
+            env.unset.push(var);
+        } else if !value.is_empty() {
+            env.set.push((var, value.clone()));
+        }
+    }
+    env.cwd = match file {
+        // A relative path would name another file once the cwd moves (it is also the argument).
+        Some(UniversalPath::Local(path)) if path.is_absolute() => {
+            path.parent().map(|dir| dir.to_path_buf())
+        }
+        Some(_) | None => None,
+    };
+    env
+}
+
+fn depot_path_without_revision(file: &UniversalPath) -> Result<&str, String> {
+    match file {
+        UniversalPath::Depot(path, _rev) => Ok(path),
+        UniversalPath::Local(path) => Err(format!("{} is not a depot path", path.display())),
+    }
+}
+
+/// What a failed command reports: stderr, else stdout, else the exit status.
+fn failure_text(stderr: &[u8], stdout: &[u8], status: impl std::fmt::Display) -> String {
+    [stderr, stdout]
+        .iter()
+        .map(|text| String::from_utf8_lossy(text).trim().to_string())
+        .find(|text| !text.is_empty())
+        .unwrap_or_else(|| format!("p4 failed ({status})"))
+}
+
 pub struct P4Command {
     exe_path: String,
     _is_gui: bool,
+    file: Option<UniversalPath>,
 }
 
 impl P4Command {
@@ -114,28 +170,33 @@ impl P4Command {
         Self {
             exe_path,
             _is_gui: is_gui,
+            file: None,
         }
     }
 
-    fn prepare_cmd(&self) -> Command {
+    /// The file the command is about, so it runs with that file's environment.
+    pub fn for_file(mut self, file: UniversalPath) -> Self {
+        self.file = Some(file);
+        self
+    }
+
+    fn build_cmd(&self, config: &P4Config) -> Command {
         let mut cmd = Command::new(&self.exe_path);
-
-        let apply_cmd_env = |cmd: &mut Command, str: &str, env_var: &'static str| {
-            if !str.is_empty() {
-                cmd.env(env_var, &str);
-            } else if str == "#" {
-                cmd.env(env_var, "");
-            }
-        };
-
-        let config = get_p4_config();
-        apply_cmd_env(&mut cmd, &config.port, "P4PORT");
-        apply_cmd_env(&mut cmd, &config.user, "P4USER");
-        apply_cmd_env(&mut cmd, &config.password, "P4PASSWORD");
-        apply_cmd_env(&mut cmd, &config.client, "P4CLIENT");
-        apply_cmd_env(&mut cmd, &config.charset, "P4CHARSET");
-
+        let env = resolve_p4_env(config, self.file.as_ref());
+        for (var, value) in env.set {
+            cmd.env(var, value);
+        }
+        for var in env.unset {
+            cmd.env_remove(var);
+        }
+        if let Some(cwd) = env.cwd {
+            cmd.current_dir(cwd);
+        }
         cmd
+    }
+
+    fn prepare_cmd(&self) -> Command {
+        self.build_cmd(&get_p4_config())
     }
 
     pub fn output(&self, args: &[&str]) -> Result<String, String> {
@@ -143,12 +204,17 @@ impl P4Command {
             .prepare_cmd()
             .args(args)
             .output()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| format!("{}: {e}", self.exe_path))?;
 
         if output.status.success() {
+            // p4 exits 0 on some warnings ("no such file(s)", "not in client view").
+            let warnings = String::from_utf8_lossy(&output.stderr);
+            if !warnings.trim().is_empty() {
+                log::warn!("p4 {}: {}", args.join(" "), warnings.trim());
+            }
             String::from_utf8(output.stdout).map_err(|e| e.to_string())
         } else {
-            Err(String::from_utf8_lossy(&output.stderr).to_string())
+            Err(failure_text(&output.stderr, &output.stdout, output.status))
         }
     }
 
@@ -156,18 +222,26 @@ impl P4Command {
         self.prepare_cmd()
             .args(args)
             .spawn()
-            .map_err(|e| e.to_string())
+            .map_err(|e| format!("{}: {e}", self.exe_path))
     }
 
-    pub fn get_depot_file_content(path: &str) -> Result<String, String> {
-        P4Command::new(false).output(&["print", "-q", path])
+    pub fn get_depot_file_content(file: &UniversalPath) -> Result<String, String> {
+        P4Command::new(false)
+            .for_file(file.clone())
+            .output(&["print", "-q", &file.to_p4_string()])
     }
-    pub fn open_revision_graph(path: &str) -> Result<(), String> {
-        P4Command::new(true).spawn(&["revisiongraph", path])?;
+    pub fn open_revision_graph(file: &UniversalPath) -> Result<(), String> {
+        let path = depot_path_without_revision(file)?;
+        P4Command::new(true)
+            .for_file(file.clone())
+            .spawn(&["revisiongraph", path])?;
         Ok(())
     }
-    pub fn open_timelapse_view(path: &str) -> Result<(), String> {
-        P4Command::new(true).spawn(&["timelapse", path])?;
+    pub fn open_timelapse_view(file: &UniversalPath) -> Result<(), String> {
+        let path = depot_path_without_revision(file)?;
+        P4Command::new(true)
+            .for_file(file.clone())
+            .spawn(&["timelapse", path])?;
         Ok(())
     }
     #[allow(dead_code)]
@@ -217,7 +291,104 @@ impl<F: Fn(&[&str]) -> Result<String, String>> P4Runner for FakeP4<F> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
     use super::*;
+
+    fn config(port: &str, user: &str, client: &str, charset: &str, password: &str) -> P4Config {
+        P4Config {
+            port: port.into(),
+            user: user.into(),
+            client: client.into(),
+            charset: charset.into(),
+            password: password.into(),
+        }
+    }
+
+    #[test]
+    fn non_empty_fields_are_set() {
+        let env = resolve_p4_env(&config("ssl:p4:1666", "me", "ws", "utf8", "pw"), None);
+        assert_eq!(
+            env.set,
+            vec![
+                ("P4PORT", "ssl:p4:1666".to_string()),
+                ("P4USER", "me".to_string()),
+                ("P4PASSWORD", "pw".to_string()),
+                ("P4CLIENT", "ws".to_string()),
+                ("P4CHARSET", "utf8".to_string()),
+            ]
+        );
+        assert!(env.unset.is_empty());
+    }
+
+    #[test]
+    fn empty_fields_are_left_to_the_environment() {
+        assert_eq!(resolve_p4_env(&P4Config::default(), None), P4Env::default());
+
+        let env = resolve_p4_env(&config("", "me", "", "", ""), None);
+        assert_eq!(env.set, vec![("P4USER", "me".to_string())]);
+        assert!(env.unset.is_empty());
+    }
+
+    #[test]
+    fn hash_unsets_the_variable() {
+        let env = resolve_p4_env(&config("#", "me", "#", "", "#"), None);
+        assert_eq!(env.set, vec![("P4USER", "me".to_string())]);
+        assert_eq!(env.unset, vec!["P4PORT", "P4PASSWORD", "P4CLIENT"]);
+    }
+
+    #[test]
+    fn a_local_file_runs_in_its_directory() {
+        let dir = env::temp_dir().join("repo").join("src");
+        let file = UniversalPath::Local(dir.join("a.txt"));
+        let env = resolve_p4_env(&P4Config::default(), Some(&file));
+        assert_eq!(env.cwd, Some(dir));
+    }
+
+    #[test]
+    fn a_depot_path_a_relative_path_or_no_file_keep_the_cwd() {
+        let depot = UniversalPath::Depot("//depot/main/a.txt".into(), Some(3));
+        let bare = UniversalPath::Local(PathBuf::from("a.txt"));
+        let relative = UniversalPath::Local(PathBuf::from("sub").join("a.txt"));
+        for file in [Some(&depot), Some(&bare), Some(&relative), None] {
+            assert_eq!(
+                resolve_p4_env(&P4Config::default(), file).cwd,
+                None,
+                "{file:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_command_sets_removes_and_runs_in_the_resolved_directory() {
+        let dir = env::temp_dir().join("ws");
+        let cmd = P4Command::new(false)
+            .for_file(UniversalPath::Local(dir.join("a.txt")))
+            .build_cmd(&config("ssl:p4:1666", "#", "", "", ""));
+        let envs: Vec<_> = cmd.get_envs().collect();
+        assert_eq!(
+            envs,
+            vec![
+                (OsStr::new("P4PORT"), Some(OsStr::new("ssl:p4:1666"))),
+                (OsStr::new("P4USER"), None),
+            ]
+        );
+        assert_eq!(cmd.get_current_dir(), Some(dir.as_path()));
+
+        let cmd = P4Command::new(false).build_cmd(&P4Config::default());
+        assert_eq!(cmd.get_envs().count(), 0);
+        assert_eq!(cmd.get_current_dir(), None);
+    }
+
+    #[test]
+    fn failure_text_is_stderr_then_stdout_then_the_exit_status() {
+        assert_eq!(failure_text(b"err\n", b"out\n", "exit code: 1"), "err");
+        assert_eq!(failure_text(b"  ", b"out\n", "exit code: 1"), "out");
+        assert_eq!(
+            failure_text(b"", b"", "exit code: 1"),
+            "p4 failed (exit code: 1)"
+        );
+    }
 
     #[test]
     fn local_path_escapes_p4_revision_and_wildcard_characters() {
