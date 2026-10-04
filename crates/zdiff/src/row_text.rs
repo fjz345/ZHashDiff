@@ -329,6 +329,8 @@ mod tests {
             diff_ir,
             Some(&file_source.tokens),
             Some(&file_target.tokens),
+            source,
+            target,
             &DiffBuilderOptions::default(),
             4,
         );

@@ -459,7 +459,7 @@ impl DiffCtx {
 
                     // myers_diff_path's two phases, timed separately.
                     let (t1, t2) = (&c1.tokens, &c2.tokens);
-                    let ignore = input.ignore.mask(t1, t2);
+                    let ignore = input.ignore.mask(t1, &c1.contents, t2, &c2.contents);
                     let result = line_diff(input.algo, t1, t2, &cmp, &ignore, cancel.clone())
                         .and_then(|hunks| {
                             let line_elapsed = start.elapsed();
@@ -583,6 +583,8 @@ impl DiffCtx {
                         (*input.diff_ir).clone(),
                         Some(&c1.tokens),
                         Some(&c2.tokens),
+                        &c1.contents,
+                        &c2.contents,
                         &input.diff_options,
                         c1.metadata.num_lines().max(c2.metadata.num_lines()),
                     );
@@ -1035,7 +1037,10 @@ fn update_diff_rows_minimal_diff_ctx(
     track_alloc!(reg, "before myers_diff");
     let (algo, t1, t2) = (input.myers_diff_algorithm, &c1.tokens, &c2.tokens);
     let start = Instant::now();
-    let ignore = input.options.ignore.mask(t1, t2);
+    let ignore = input
+        .options
+        .ignore
+        .mask(t1, &c1.contents, t2, &c2.contents);
     let hunks = line_diff(algo, t1, t2, &cmp, &ignore, cancel_flag.clone())?;
     let line_elapsed = start.elapsed();
     let start = Instant::now();
@@ -1057,6 +1062,8 @@ fn update_diff_rows_minimal_diff_ctx(
         diff_ir.clone(),
         Some(&c1.tokens),
         Some(&c2.tokens),
+        &c1.contents,
+        &c2.contents,
         &input.options,
         c1.metadata.num_lines().max(c2.metadata.num_lines()),
     );
@@ -1232,7 +1239,7 @@ mod tests {
         };
 
         use zcommon::logger::LogCollector;
-        use zdiff::universal_path::UniversalPath;
+        use zdiff::{ignore::IgnorePatterns, universal_path::UniversalPath};
 
         use super::*;
         use crate::file::FileProcessor;
@@ -1486,6 +1493,28 @@ mod tests {
                 "ignore-comments must recompute the diff stage"
             );
             let ctx = settle(&mut processor).expect("ignore toggle never completed");
+            assert!(ctx.input == current, "diff shows {:?}", ctx.input);
+        }
+
+        #[test]
+        fn editing_ignore_patterns_recomputes_the_diff_stage() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 300, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 300, 2)),
+            );
+            let mut processor = DiffProcessor::default();
+            let mut current = input(&a.0, &a.1);
+            open(&mut processor, &current);
+            settle(&mut processor).expect("first diff never completed");
+
+            current.options.ignore.patterns = IgnorePatterns::new("\\d+");
+            open(&mut processor, &current);
+            assert!(
+                processor.ctx.myers_inflight_input.is_some(),
+                "a pattern edit must recompute the diff stage"
+            );
+            let ctx = settle(&mut processor).expect("pattern edit never completed");
             assert!(ctx.input == current, "diff shows {:?}", ctx.input);
         }
     }

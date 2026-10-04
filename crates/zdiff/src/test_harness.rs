@@ -35,6 +35,8 @@ impl<'a> DiffTestHarness<'a> {
             diff_ir.clone(),
             Some(&t1),
             Some(&t2),
+            s1,
+            s2,
             &options,
             estimated_num_rows,
         );

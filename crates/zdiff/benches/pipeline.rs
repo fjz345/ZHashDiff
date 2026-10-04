@@ -160,6 +160,8 @@ fn run_once(source: &str, target: &str) -> Run {
         diff_ir,
         Some(&tokens_source),
         Some(&tokens_target),
+        source,
+        target,
         &DiffBuilderOptions::default(),
         num_lines,
     );

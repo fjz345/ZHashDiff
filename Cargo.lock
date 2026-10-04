@@ -5029,6 +5029,7 @@ dependencies = [
  "env_logger 0.11.9",
  "log",
  "rayon",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

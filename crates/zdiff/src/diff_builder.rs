@@ -91,6 +91,7 @@ struct DiffTheme {
     ins: Color32,
     del_bg: Color32,
     ins_bg: Color32,
+    dimmed: Color32,
 }
 
 impl Default for DiffTheme {
@@ -102,6 +103,7 @@ impl Default for DiffTheme {
             ins: [100, 255, 100, 255].into(),
             del_bg: [255, 0, 0, 20].into(),
             ins_bg: [0, 255, 0, 20].into(),
+            dimmed: [128, 128, 128, 110].into(),
         }
     }
 }
@@ -149,6 +151,8 @@ pub struct DiffBuilder<'a, 'b, T: RawTokenTrait> {
     options: &'b DiffBuilderOptions,
     theme: DiffTheme,
     rows: Vec<DiffRow>,
+    /// Per token of (source, target), true when an ignore pattern matched it. Empty: none.
+    dimmed: (Vec<bool>, Vec<bool>),
     left: SideState,
     right: SideState,
 }
@@ -166,6 +170,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             options,
             theme: DiffTheme::default(),
             rows: Vec::with_capacity(capacity),
+            dimmed: Default::default(),
             left: SideState::with_capacity(64),
             right: SideState::with_capacity(64),
         }
@@ -190,6 +195,14 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         }
     }
 
+    /// `color`, or the dimmed color when an ignore pattern matched the token.
+    fn dim(&self, dimmed: &[bool], token_idx: Option<u32>, color: Color32) -> Color32 {
+        match token_idx {
+            Some(i) if dimmed.get(i as usize).copied().unwrap_or(false) => self.theme.dimmed,
+            _ => color,
+        }
+    }
+
     pub fn handle_match(&mut self, diff_result: DiffResult) {
         assert!(matches!(diff_result.operation, DiffOp::Equal(_)));
 
@@ -200,9 +213,12 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
         let color = self.get_color(token.as_ref().kind.is_keyword());
         let is_newline = token.as_ref().kind == TokenKind::Newline;
+        // A pattern match depends on the line around the token, so each side has its own flag.
+        let left_color = self.dim(&self.dimmed.0, diff_result.token_source_idx, color);
+        let right_color = self.dim(&self.dimmed.1, diff_result.token_target_idx, color);
 
-        self.left.push(diff_result.clone(), color, false);
-        self.right.push(diff_result, color, false);
+        self.left.push(diff_result.clone(), left_color, false);
+        self.right.push(diff_result, right_color, false);
 
         if is_newline {
             self.emit_row(true, true, true, true);
@@ -229,6 +245,12 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
 
         let is_newline = token.as_ref().kind == TokenKind::Newline;
 
+        let color = if is_deletion {
+            self.dim(&self.dimmed.0, diff_result.token_source_idx, self.theme.del)
+        } else {
+            self.dim(&self.dimmed.1, diff_result.token_target_idx, self.theme.ins)
+        };
+
         let side = if is_deletion {
             &mut self.left
         } else {
@@ -238,11 +260,6 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             side.active_diff = true;
         }
 
-        let color = if is_deletion {
-            self.theme.del
-        } else {
-            self.theme.ins
-        };
         side.push(diff_result.clone(), color, false);
 
         if self.options.ghost_rows {
@@ -338,21 +355,27 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
     }
 }
 
+/// `text_*` is the text a side's token spans index into; ignore patterns are matched on it.
 pub fn build_diff_rows<'a, T: RawTokenTrait>(
     mut diff_ir: DiffIR,
     tokens_source: Option<&'a [T]>,
     tokens_target: Option<&'a [T]>,
+    text_source: &str,
+    text_target: &str,
     options: &DiffBuilderOptions,
     estimated_num_rows: usize,
 ) -> Vec<DiffRow> {
     let ignore = options.ignore.mask(
         tokens_source.unwrap_or_default(),
+        text_source,
         tokens_target.unwrap_or_default(),
+        text_target,
     );
     diff_ir = diff_ir_hide_ignored(diff_ir, &ignore);
 
     let mut builder =
         DiffBuilder::with_capacity(tokens_source, tokens_target, options, estimated_num_rows);
+    builder.dimmed = (ignore.matched_source, ignore.matched_target);
     for diff_result in diff_ir.entries {
         match &diff_result.operation {
             DiffOp::Equal(_) => builder.handle_match(diff_result),
@@ -404,6 +427,7 @@ mod tests {
 
         use super::*;
         use crate::{
+            ignore::IgnorePatterns,
             lexer::{LexerDefault, RawToken},
             myers::{MyersDiffAlgorithm, myers_diff_path},
             test_harness::DiffTestHarness,
@@ -446,7 +470,7 @@ mod tests {
                 &t1,
                 &t2,
                 cmp,
-                &options.ignore.mask(&t1, &t2),
+                &options.ignore.mask(&t1, s1, &t2, s2),
                 Arc::new(AtomicBool::new(false)),
             )
             .expect("not cancelled");
@@ -564,6 +588,90 @@ mod tests {
                 }
             }
         }
+
+        #[test]
+        fn lines_differing_only_in_matched_text_form_no_diff_span_and_are_dimmed() {
+            let s1 = "[12:00:01] start\nkeep(1);\n[12:00:02] done\n";
+            let s2 = "[12:00:05] start\nkeep(1);\n[12:00:09] done\n";
+            let (t1, t2): (Vec<RawToken>, Vec<RawToken>) = (
+                LexerDefault::<RawToken>::new(s1).collect(),
+                LexerDefault::<RawToken>::new(s2).collect(),
+            );
+            let has_visible_change = |content: &LineContent| match content {
+                LineContent::Code { tokens, .. } => tokens.iter().any(|(res, _, _)| {
+                    !res.hide_in_diff && !matches!(res.operation, DiffOp::Equal(_))
+                }),
+                _ => false,
+            };
+            // The timestamp is bytes 1..9 of its line; nothing else matches, not even `1`.
+            let in_timestamp = |text: &str, token: &RawToken| {
+                let line_start = text[..token.span.start].rfind('\n').map_or(0, |i| i + 1);
+                text[line_start..].starts_with('[')
+                    && token.span.start >= line_start + 1
+                    && token.span.end <= line_start + 9
+            };
+            let dimmed = DiffTheme::default().dimmed;
+            for algorithm in ALGORITHMS {
+                for ghost_rows in [false, true] {
+                    let options = DiffBuilderOptions {
+                        ignore: IgnoreOptions {
+                            patterns: IgnorePatterns::new(r"\d\d:\d\d:\d\d"),
+                            ..Default::default()
+                        },
+                        ghost_rows,
+                        ..Default::default()
+                    };
+                    let h = harness_with(algorithm, s1, s2, options);
+                    if !ghost_rows {
+                        h.assert_row(0, 1, 1, "[12:00:01] start\n", "[12:00:05] start\n");
+                        h.assert_row(1, 2, 2, "keep(1);\n", "keep(1);\n");
+                        h.assert_row(2, 3, 3, "[12:00:02] done\n", "[12:00:09] done\n");
+                    }
+                    assert_eq!(h.rows().len(), 3, "{algorithm:?}, ghosts {ghost_rows}");
+                    for (idx, row) in h.rows().iter().enumerate() {
+                        assert!(
+                            !has_visible_change(&row.left) && !has_visible_change(&row.right),
+                            "{algorithm:?}, ghosts {ghost_rows}: row {idx} is a diff span"
+                        );
+                        for (content, text, tokens, is_left) in
+                            [(&row.left, s1, &t1, true), (&row.right, s2, &t2, false)]
+                        {
+                            let LineContent::Code {
+                                tokens: row_tokens, ..
+                            } = content
+                            else {
+                                panic!("row {idx} is not code");
+                            };
+                            for (res, color, _) in row_tokens.iter().filter(|(_, _, g)| !g) {
+                                let token_idx = if is_left {
+                                    res.token_source_idx
+                                } else {
+                                    res.token_target_idx
+                                };
+                                let token = &tokens[token_idx.unwrap() as usize];
+                                assert_eq!(
+                                    *color == dimmed,
+                                    in_timestamp(text, token),
+                                    "{algorithm:?}, ghosts {ghost_rows}: row {idx} {:?}",
+                                    &text[token.span.clone()]
+                                );
+                            }
+                        }
+                    }
+
+                    // Without patterns the timestamp rows are diff spans.
+                    let h = harness(algorithm, s1, s2, ghost_rows);
+                    let spans = h
+                        .rows()
+                        .iter()
+                        .filter(|row| {
+                            has_visible_change(&row.left) || has_visible_change(&row.right)
+                        })
+                        .count();
+                    assert_eq!(spans, 2, "{algorithm:?}, ghosts {ghost_rows}");
+                }
+            }
+        }
     }
 }
 
@@ -632,6 +740,8 @@ mod integration_tests {
             DiffIR::new(&path, false, Arc::new(AtomicBool::new(false))).unwrap(),
             Some(&f1.tokens),
             Some(&f2.tokens),
+            &f1.contents,
+            &f2.contents,
             &DiffBuilderOptions {
                 ignore: IgnoreOptions::default(),
                 ghost_rows: false,

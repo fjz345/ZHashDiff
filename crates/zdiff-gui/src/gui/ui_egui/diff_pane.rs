@@ -19,6 +19,7 @@ use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffBuilderOptions, LineContent},
     diff_ir::{DiffOp, DiffResult},
+    ignore::IgnorePatterns,
     lexer::RawTokenTrait,
     myers::MyersNumAddDelete,
     row_text::build_row_text,
@@ -134,6 +135,7 @@ impl FileDiffPane {
                     egui::RichText::new("C").strong().into(),
                     "Ignore Comments",
                 );
+                ignore_patterns_btn(ui, button_size, &mut ctx.diff_options.ignore.patterns);
                 toggle_btn(
                     ui,
                     &mut ctx.diff_options.highlight_rows,
@@ -969,6 +971,33 @@ impl FileDiffPane {
     }
 }
 
+/// Toolbar button with a popup editing the ignore patterns. Patterns are recompiled only when the
+/// text changes; invalid ones are listed under the field and skipped by the diff.
+fn ignore_patterns_btn(ui: &mut egui::Ui, button_size: Vec2, patterns: &mut IgnorePatterns) {
+    let btn = egui::Button::new(egui::RichText::new("R").strong()).selected(!patterns.is_empty());
+    let response = ui
+        .add_sized(button_size, btn)
+        .on_hover_text("Ignore Regex: text matching these patterns is ignored and dimmed");
+    egui::Popup::from_toggle_button_response(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.label("One regex per line, matched per line. Ignores tokens a match fully covers.");
+            let mut text = patterns.text().to_owned();
+            let edit = TextEdit::multiline(&mut text)
+                .code_editor()
+                .desired_rows(4)
+                .hint_text(r"\d\d:\d\d:\d\d");
+            if ui.add(edit).changed() {
+                *patterns = IgnorePatterns::new(text);
+            }
+            for error in patterns.errors() {
+                let message = format!("Line {}: {}", error.line + 1, error.message);
+                let message = egui::RichText::new(message).monospace();
+                ui.colored_label(ui.visuals().error_fg_color, message);
+            }
+        });
+}
+
 /// Label and per-stage tooltip of a completed diff. Plain text so the segment can move into a
 /// shared status line.
 fn diff_status_text(
@@ -1126,7 +1155,7 @@ mod tests {
 
     use zdiff::{
         diff_builder::{DiffBuilderOptions, DiffRow, LineContent},
-        ignore::IgnoreOptions,
+        ignore::{IgnoreOptions, IgnorePatterns},
     };
 
     use crate::{
@@ -1157,6 +1186,33 @@ mod tests {
         // State saved before the option existed still loads, with the option off.
         let mut old = json;
         old.as_object_mut().unwrap().remove("ignore_comments");
+        let loaded: DiffBuilderOptions = serde_json::from_value(old).unwrap();
+        assert_eq!(loaded, DiffBuilderOptions::default());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn ignore_patterns_are_persisted_with_the_diff_options() {
+        // The invalid line is kept, so a typo isn't lost on restart.
+        let text = "\\d\\d:\\d\\d\n(";
+        let options = DiffBuilderOptions {
+            ignore: IgnoreOptions {
+                patterns: IgnorePatterns::new(text),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&options).unwrap();
+        assert_eq!(json["ignore_regex"], text);
+        let loaded: DiffBuilderOptions = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(loaded, options);
+        // Loading compiles the patterns again.
+        assert!(!loaded.ignore.patterns.is_empty());
+        assert_eq!(loaded.ignore.patterns.errors().len(), 1);
+
+        // State saved before the option existed still loads, with no patterns.
+        let mut old = json;
+        old.as_object_mut().unwrap().remove("ignore_regex");
         let loaded: DiffBuilderOptions = serde_json::from_value(old).unwrap();
         assert_eq!(loaded, DiffBuilderOptions::default());
     }

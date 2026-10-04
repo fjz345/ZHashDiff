@@ -114,7 +114,7 @@ impl CopyHarness {
             cmp,
             &options
                 .ignore
-                .mask(&file_source.tokens, &file_target.tokens),
+                .mask(&file_source.tokens, source, &file_target.tokens, target),
             Arc::new(AtomicBool::new(false)),
         )
         .expect("myers was not cancelled");
@@ -124,6 +124,8 @@ impl CopyHarness {
             diff_ir,
             Some(&file_source.tokens),
             Some(&file_target.tokens),
+            source,
+            target,
             options,
             file_source
                 .metadata

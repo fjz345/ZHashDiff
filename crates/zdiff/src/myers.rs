@@ -1645,7 +1645,7 @@ mod tests {
                 &ts,
                 &tt,
                 cmp,
-                &ignore.mask(&ts, &tt),
+                &ignore.mask(&ts, source, &tt, target),
                 Arc::new(AtomicBool::new(cancel)),
             )?;
 
@@ -1958,7 +1958,7 @@ mod tests {
                     &ts,
                     &tt,
                     cmp,
-                    &ignore.mask(&ts, &tt),
+                    &ignore.mask(&ts, source, &tt, target),
                     Arc::new(AtomicBool::new(false)),
                 )
                 .expect("not cancelled")
@@ -2059,6 +2059,7 @@ mod tests {
                 IgnoreOptions {
                     whitespace: true,
                     comments: true,
+                    ..Default::default()
                 }
             }
 
@@ -2076,7 +2077,11 @@ mod tests {
             ];
 
             /// The (kind, text) of every deleted and inserted token.
-            fn edited(source: &str, target: &str, script: &Script) -> Vec<(TokenKind, String)> {
+            pub(super) fn edited(
+                source: &str,
+                target: &str,
+                script: &Script,
+            ) -> Vec<(TokenKind, String)> {
                 let (ts, tt) = (lex(source), lex(target));
                 let (mut si, mut ti) = (0, 0);
                 let mut edited = Vec::new();
@@ -2186,6 +2191,134 @@ mod tests {
                             edited
                                 .iter()
                                 .all(|(kind, _)| kind.is_comment() || kind.is_whitespace()),
+                            "{algorithm:?}: {s:?} -> {t:?}: {edited:?}"
+                        );
+                    }
+                }
+            }
+        }
+
+        mod ignore_regex {
+            use super::{ignore_comments::edited, ignore_whitespace::hunks, *};
+            use crate::ignore::IgnorePatterns;
+
+            const TIME: &str = r"\d\d:\d\d:\d\d";
+
+            fn on(patterns: &str) -> IgnoreOptions {
+                IgnoreOptions {
+                    patterns: IgnorePatterns::new(patterns),
+                    ..Default::default()
+                }
+            }
+
+            /// Lines that differ only in text the patterns match: timestamps (several tokens per
+            /// match), and an id under a second pattern.
+            const MATCHED_ONLY: [(&str, &str); 3] = [
+                (
+                    "[12:00:01] start\n[12:00:02] done\n",
+                    "[12:00:05] start\n[12:00:09] done\n",
+                ),
+                ("a();\nid=1234 ok\nb();\n", "a();\nid=98 ok\nb();\n"),
+                ("[01:02:03] id=7\n", "[23:59:59] id=1234\n"),
+            ];
+            const PATTERNS: &str = "\\d\\d:\\d\\d:\\d\\d\nid=\\d+";
+
+            /// Token text the patterns can cover. An ignored run is edited as a whole, so equal
+            /// separators inside a timestamp may be deleted and reinserted (all hidden).
+            fn is_matched_text(text: &str) -> bool {
+                ["id", "="].contains(&text) || text.chars().all(|c| c.is_ascii_digit() || c == ':')
+            }
+
+            #[test]
+            fn matched_only_line_changes_form_a_hunk_only_with_patterns() {
+                for algorithm in ALGORITHMS {
+                    for (source, target) in MATCHED_ONLY {
+                        for (s, t) in [(source, target), (target, source)] {
+                            assert_eq!(
+                                hunks(algorithm, s, t, &on(PATTERNS)),
+                                vec![],
+                                "{algorithm:?}: {s:?} -> {t:?}"
+                            );
+                            assert_ne!(
+                                hunks(algorithm, s, t, &IgnoreOptions::default()),
+                                vec![],
+                                "{algorithm:?}: {s:?} -> {t:?}"
+                            );
+
+                            let script = diff_with(algorithm, s, t, &on(PATTERNS), false).unwrap();
+                            let edited = edited(s, t, &script);
+                            assert!(
+                                edited.iter().all(|(_, text)| is_matched_text(text)),
+                                "{algorithm:?}: {s:?} -> {t:?}: {edited:?}"
+                            );
+                        }
+                    }
+                }
+            }
+
+            #[test]
+            fn a_partially_matched_token_change_is_still_a_hunk() {
+                // `fooba` covers part of the changed identifier only.
+                let (source, target) = ("x();\nfoobar();\n", "x();\nfoobaz();\n");
+                for algorithm in ALGORITHMS {
+                    assert_eq!(
+                        hunks(algorithm, source, target, &on("fooba")),
+                        vec![("foobar();\n".into(), "foobaz();\n".into())],
+                        "{algorithm:?}"
+                    );
+                }
+            }
+
+            #[test]
+            fn an_invalid_pattern_leaves_the_valid_ones_working() {
+                let (source, target) = MATCHED_ONLY[0];
+                for algorithm in ALGORITHMS {
+                    let ignore = on(&format!("(\n{TIME}\n["));
+                    assert_eq!(ignore.patterns.errors().len(), 2);
+                    assert_eq!(hunks(algorithm, source, target, &ignore), vec![]);
+                }
+            }
+
+            #[test]
+            fn a_pattern_never_matches_across_lines() {
+                // `\d\n\d` would cover both changed numbers if lines were joined.
+                let (source, target) = ("a 1\n2 b\n", "a 3\n4 b\n");
+                for algorithm in ALGORITHMS {
+                    assert_ne!(
+                        hunks(algorithm, source, target, &on(r"\d\n\d")),
+                        vec![],
+                        "{algorithm:?}"
+                    );
+                }
+            }
+
+            #[test]
+            fn matched_whitespace_and_comment_changes_need_all_three_options() {
+                let source = "\t[12:00:01] run(); // a\n";
+                let target = "    [12:00:07] run();   /* b */\n";
+                let options = |whitespace, comments, patterns| IgnoreOptions {
+                    whitespace,
+                    comments,
+                    patterns: IgnorePatterns::new(if patterns { TIME } else { "" }),
+                };
+                for algorithm in ALGORITHMS {
+                    for (s, t) in [(source, target), (target, source)] {
+                        for two in [
+                            options(true, true, false),
+                            options(true, false, true),
+                            options(false, true, true),
+                        ] {
+                            assert_ne!(hunks(algorithm, s, t, &two), vec![], "{algorithm:?}");
+                        }
+                        let all = options(true, true, true);
+                        assert_eq!(hunks(algorithm, s, t, &all), vec![], "{algorithm:?}");
+
+                        let script = diff_with(algorithm, s, t, &all, false).unwrap();
+                        let edited = edited(s, t, &script);
+                        assert!(
+                            edited.iter().all(|(kind, text)| kind.is_comment()
+                                || kind.is_whitespace()
+                                || is_matched_text(text)),
                             "{algorithm:?}: {s:?} -> {t:?}: {edited:?}"
                         );
                     }
