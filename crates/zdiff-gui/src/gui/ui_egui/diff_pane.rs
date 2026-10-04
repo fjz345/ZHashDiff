@@ -7,6 +7,7 @@ use crate::{
     ui_egui::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
         h_scroll,
+        occurrence::{OCCURRENCE_BG, OccurrenceState},
         panes::ZAppPane,
     },
     viewer::{
@@ -89,6 +90,8 @@ pub struct FileDiffPane {
     content_widths: Option<ContentWidths>,
     #[serde(skip)]
     row_heights: Option<RowHeights>,
+    #[serde(skip)]
+    occurrences: OccurrenceState,
 }
 
 /// Each side's widest row, measured once per rows and font.
@@ -163,6 +166,7 @@ impl FileDiffPane {
             active_side: ActiveSideState::default(),
             content_widths: None,
             row_heights: None,
+            occurrences: OccurrenceState::default(),
         }
     }
 
@@ -196,6 +200,7 @@ impl FileDiffPane {
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut FileDiffPaneCtx) -> egui_tiles::UiResponse {
         // No-op once registered.
         ui.ctx().add_plugin(CopyMarkerPlugin);
+        self.occurrences.begin_frame(ui.ctx());
 
         // egui turns Shift+wheel into horizontal delta. Only text rows over a side scroll; the
         // footer bars handle the wheel themselves.
@@ -220,6 +225,7 @@ impl FileDiffPane {
             self.row_heights = None;
         }
         let row_heights = &mut self.row_heights;
+        let occurrences = &mut self.occurrences;
         let mono_font = egui::TextStyle::Monospace.resolve(ui.style());
         let egui_ctx = ui.ctx().clone();
 
@@ -696,6 +702,9 @@ impl FileDiffPane {
                                                     show_scrolled(ui, sl, |ui| {
                                                         Self::render_side_row(
                                                             ui,
+                                                            ActiveSide::Left,
+                                                            row_index,
+                                                            occurrences,
                                                             ctx.diff_ctx
                                                                 .map(|f| f.input.file_1.clone())
                                                                 .unwrap_or_default(),
@@ -856,6 +865,9 @@ impl FileDiffPane {
                                                     show_scrolled(ui, sr, |ui| {
                                                         Self::render_side_row(
                                                             ui,
+                                                            ActiveSide::Right,
+                                                            row_index,
+                                                            occurrences,
                                                             ctx.diff_ctx
                                                                 .map(|f| f.input.file_1.clone())
                                                                 .unwrap_or_default(),
@@ -944,6 +956,7 @@ impl FileDiffPane {
             );
         }
         self.active_side.end_frame(left_rect, right_rect);
+        self.occurrences.end_frame(ui.ctx());
 
         handle_drops(
             ui,
@@ -958,6 +971,9 @@ impl FileDiffPane {
 
     pub(super) fn render_side_row<T: RawTokenTrait>(
         ui: &mut egui::Ui,
+        side: ActiveSide,
+        row_index: usize,
+        occurrences: &mut OccurrenceState,
         file_source: Option<Arc<CachedFile<T>>>,
         file_target: Option<Arc<CachedFile<T>>>,
         content: &LineContent,
@@ -1034,6 +1050,8 @@ impl FileDiffPane {
                         let [r, g, b, a] = DIMMED.0;
                         let dim = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
                         recolor_ranges(&mut layout_job, &dimmed, dim);
+                        let found = occurrences.ranges(side, row_index, &row_text.text);
+                        highlight_ranges(&mut layout_job, &found, OCCURRENCE_BG);
 
                         let font_id = egui::TextStyle::Monospace.resolve(ui.style());
                         let wrap_at = if wrap {
@@ -1064,6 +1082,16 @@ impl FileDiffPane {
                             } else {
                                 None
                             };
+                            if marker.is_none() {
+                                occurrences.track(
+                                    ui,
+                                    &response,
+                                    hit_rect.left_top(),
+                                    &galley,
+                                    side,
+                                    row_index,
+                                );
+                            }
                             let galley = match marker {
                                 Some(marker) => copy_marker_galley(ui, marker),
                                 None => galley,
@@ -1377,7 +1405,7 @@ fn layout_side_text(
 
 /// Lays out the text rows: one line each, or each its wrapped height. A `scroll_to_row` on the
 /// table goes by the same heights.
-fn text_rows(
+pub(super) fn text_rows(
     body: egui_extras::TableBody<'_>,
     wrapped_heights: Option<&[f32]>,
     row_height: f32,
@@ -1620,6 +1648,53 @@ fn recolor_ranges(
     }
 }
 
+/// Sets the background of `ranges` (byte ranges into the job's text, ordered by start, possibly
+/// overlapping), splitting sections at their ends. One pass, as a row can have many matches.
+fn highlight_ranges(
+    job: &mut egui::text::LayoutJob,
+    ranges: &[std::ops::Range<usize>],
+    background: egui::Color32,
+) {
+    if ranges.is_empty() {
+        return;
+    }
+    let mut merged: Vec<std::ops::Range<usize>> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => merged.push(range.clone()),
+        }
+    }
+    let mut merged = merged.into_iter().peekable();
+    let mut sections = Vec::with_capacity(job.sections.len() + 2 * merged.len());
+    for section in job.sections.drain(..) {
+        let std::ops::Range { mut start, end } = section.byte_range.clone();
+        if start == end {
+            sections.push(section);
+            continue;
+        }
+        let mut leading_space = section.leading_space;
+        while start < end {
+            while merged.next_if(|r| r.end <= start).is_some() {}
+            let (piece_end, highlighted) = match merged.peek() {
+                Some(r) if r.start <= start => (end.min(r.end), true),
+                Some(r) => (end.min(r.start), false),
+                None => (end, false),
+            };
+            let mut piece = section.clone();
+            piece.byte_range = start..piece_end;
+            // The gap belongs before the section's first piece only.
+            piece.leading_space = std::mem::take(&mut leading_space);
+            if highlighted {
+                piece.format.background = background;
+            }
+            sections.push(piece);
+            start = piece_end;
+        }
+    }
+    job.sections = sections;
+}
+
 /// Position of each inline ghost relative to the galley origin: inside its gap, which is just
 /// before the glyph at its offset (`ghosts` as for `insert_ghost_gaps`, all inside the text).
 /// Ghosts sharing an offset sit side by side in one gap. When the text wraps right at a gap, the
@@ -1716,7 +1791,8 @@ mod tests {
 
     use super::{
         COPY_MARKER_BLANK_LINE, COPY_MARKER_NO_LINE, GUTTER_GAP, GUTTER_WIDTH, GhostInsertion,
-        diff_status_text, insert_ghost_gaps, layout_side_text, recolor_ranges, strip_copy_markers,
+        diff_status_text, highlight_ranges, insert_ghost_gaps, layout_side_text, recolor_ranges,
+        strip_copy_markers,
     };
 
     #[cfg(feature = "serde")]
@@ -1836,6 +1912,53 @@ mod tests {
                 (4..6, Color32::WHITE)
             ]
         );
+    }
+
+    #[test]
+    fn highlight_splits_sections_once_and_merges_overlapping_ranges() {
+        use eframe::egui::Color32;
+        let bg = Color32::from_rgba_unmultiplied(1, 2, 3, 4);
+        let backgrounds = |job: &eframe::egui::text::LayoutJob| -> Vec<_> {
+            job.sections
+                .iter()
+                .map(|s| (s.byte_range.clone(), s.format.background, s.leading_space))
+                .collect()
+        };
+        let none = Color32::TRANSPARENT;
+
+        // Overlapping matches ("aa" in "aaaa") light up as one run; a later match stays apart.
+        let mut job = job_with_one_section("aaaa-aa");
+        job.sections[0].leading_space = 7.0;
+        highlight_ranges(&mut job, &[0..2, 1..3, 2..4, 5..7], bg);
+        assert_eq!(job.text, "aaaa-aa");
+        assert_eq!(
+            backgrounds(&job),
+            [(0..4, bg, 7.0), (4..5, none, 0.0), (5..7, bg, 0.0)]
+        );
+
+        // A range across a section boundary highlights both parts; the second section keeps its
+        // own leading space and color.
+        let mut job = job_with_one_section("abc");
+        let mut format = job.sections[0].format.clone();
+        format.color = Color32::RED;
+        job.append("def", 2.0, format);
+        highlight_ranges(&mut job, &[2..4], bg);
+        assert_eq!(
+            backgrounds(&job),
+            [
+                (0..2, none, 0.0),
+                (2..3, bg, 0.0),
+                (3..4, bg, 2.0),
+                (4..6, none, 0.0)
+            ]
+        );
+        assert_eq!(job.sections[2].format.color, Color32::RED);
+        assert_eq!(job.sections[3].format.color, Color32::RED);
+
+        // No ranges leaves the job as it was.
+        let mut job = job_with_one_section("abc");
+        highlight_ranges(&mut job, &[], bg);
+        assert_eq!(backgrounds(&job), [(0..3, none, 0.0)]);
     }
 
     #[test]
@@ -2573,6 +2696,137 @@ mod tests {
         let (top, rect) = jump_to_row(None, 200, 100);
         assert!((rect.top() - top).abs() < 1.0, "{rect:?} vs top {top}");
         assert_eq!(rect.height(), 15.0);
+    }
+
+    // Identical on both sides except the last line, so the shared rows carry no ghosts.
+    const OCCURRENCE_SOURCE: &str =
+        "let value = 1;\nlet other = value + value;\nfoo(value);\nold\n";
+    const OCCURRENCE_TARGET: &str =
+        "let value = 1;\nlet other = value + value;\nfoo(value);\nnew\n";
+
+    fn occurrence_harness() -> CopyHarness {
+        CopyHarness::new(
+            OCCURRENCE_SOURCE,
+            OCCURRENCE_TARGET,
+            &DiffBuilderOptions::default(),
+        )
+    }
+
+    #[test]
+    fn a_single_row_drag_searches_for_exactly_the_text_egui_copies() {
+        let mut harness = occurrence_harness();
+        for (side, from, to) in [
+            (Side::Left, (0, 4), (0, 9)),
+            (Side::Left, (1, 14), (1, 6)),
+            (Side::Right, (2, 0), (2, 5)),
+        ] {
+            harness.drag(side, from, to);
+            let copied = harness.copy();
+            assert!(copied.is_some(), "{side:?} {from:?}..{to:?}");
+            assert_eq!(
+                harness.occurrence_needle(),
+                copied,
+                "{side:?} {from:?}..{to:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_double_clicked_word_is_searched_for() {
+        let mut harness = occurrence_harness();
+
+        harness.double_click(Side::Left, (1, 14));
+
+        assert_eq!(harness.occurrence_needle().as_deref(), Some("value"));
+        assert_eq!(harness.copy().as_deref(), Some("value"));
+    }
+
+    #[test]
+    fn every_other_occurrence_is_highlighted_on_both_sides() {
+        let mut harness = occurrence_harness();
+
+        // The second "value" in row 1.
+        harness.drag(Side::Left, (1, 20), (1, 25));
+        assert_eq!(harness.occurrence_needle().as_deref(), Some("value"));
+
+        assert_eq!(harness.occurrence_ranges(Side::Left, 0), [4..9]);
+        assert_eq!(harness.occurrence_ranges(Side::Left, 1), [12..17]);
+        assert_eq!(harness.occurrence_ranges(Side::Left, 2), [4..9]);
+        assert!(harness.occurrence_ranges(Side::Left, 3).is_empty());
+        // The other side's identical row has no selection, so both of its matches show.
+        assert_eq!(harness.occurrence_ranges(Side::Right, 1), [12..17, 20..25]);
+        assert_eq!(harness.occurrence_ranges(Side::Right, 2), [4..9]);
+    }
+
+    #[test]
+    fn a_selection_across_rows_searches_for_nothing() {
+        let mut harness = occurrence_harness();
+
+        // Through the row first, so a selection in it exists before the drag leaves it.
+        harness.drag_through(Side::Left, &[(0, 4), (0, 9), (1, 9)]);
+
+        assert_eq!(harness.copy().as_deref(), Some("value = 1;\nlet other"));
+        assert_eq!(harness.occurrence_needle(), None);
+        assert!(harness.occurrence_ranges(Side::Left, 2).is_empty());
+    }
+
+    #[test]
+    fn short_and_whitespace_only_selections_search_for_nothing() {
+        let mut harness = CopyHarness::new(
+            "let value = 1;\n    value;\n",
+            "let value = 1;\n    value;\n",
+            &DiffBuilderOptions::default(),
+        );
+
+        harness.drag(Side::Left, (0, 4), (0, 5));
+        assert_eq!(harness.copy().as_deref(), Some("v"));
+        assert_eq!(harness.occurrence_needle(), None);
+
+        harness.drag(Side::Left, (1, 0), (1, 4));
+        assert_eq!(harness.copy().as_deref(), Some("    "));
+        assert_eq!(harness.occurrence_needle(), None);
+
+        harness.drag(Side::Left, (1, 3), (1, 6));
+        assert_eq!(harness.occurrence_needle().as_deref(), Some(" va"));
+    }
+
+    #[test]
+    fn the_highlight_clears_with_the_selection() {
+        let mut harness = occurrence_harness();
+
+        harness.drag(Side::Left, (0, 4), (0, 9));
+        assert_eq!(harness.occurrence_needle().as_deref(), Some("value"));
+        harness.press_escape();
+        assert_eq!(harness.occurrence_needle(), None);
+        assert!(harness.occurrence_ranges(Side::Left, 1).is_empty());
+
+        harness.drag(Side::Left, (0, 4), (0, 9));
+        assert_eq!(harness.occurrence_needle().as_deref(), Some("value"));
+        harness.click_outside_the_rows();
+        assert_eq!(harness.occurrence_needle(), None);
+
+        // A plain click in a row selects nothing.
+        harness.drag(Side::Left, (0, 4), (0, 9));
+        harness.drag(Side::Left, (1, 4), (1, 4));
+        assert_eq!(harness.occurrence_needle(), None);
+    }
+
+    #[test]
+    fn only_the_visible_rows_are_searched() {
+        let source: String = (0..2000)
+            .map(|i| format!("let value_{i} = {i};\n"))
+            .collect();
+        let harness = CopyHarness::new(&source, &source, &DiffBuilderOptions::default());
+
+        let height = 400.0;
+        let (searched, row_h) = harness.rows_searched_in_table("value", height);
+
+        assert!(searched > 0);
+        assert!(
+            searched as f32 <= height / row_h + 2.0,
+            "{searched} rows searched of {} at {row_h} per row",
+            harness.rows().len()
+        );
     }
 
     #[test]

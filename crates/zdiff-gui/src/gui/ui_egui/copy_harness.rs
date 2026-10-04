@@ -4,7 +4,10 @@
 //! plain egui `Context` (no window, no GPU), drives synthetic pointer events and returns the
 //! text of the resulting copy command.
 
-use std::sync::{Arc, atomic::AtomicBool};
+use std::{
+    ops::Range,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use eframe::egui::{
     self, Event, Galley, Modifiers, OutputCommand, PointerButton, Pos2, Rect, Shape,
@@ -23,8 +26,9 @@ use crate::ui_egui::{
     active_side::{ActiveSide, ActiveSideState},
     diff_pane::{
         CopyMarkerPlugin, FileDiffPane, measure_wrapped_rows, show_scrolled, side_content_widths,
-        wrap_width, wrapped_row_heights,
+        text_rows, wrap_width, wrapped_row_heights,
     },
+    occurrence::OccurrenceState,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +55,7 @@ pub struct CopyHarness {
     h_offset: f32,
     side_widths: [f32; 2],
     wrap: bool,
+    occurrences: OccurrenceState,
 }
 
 struct FrameLayout {
@@ -156,6 +161,7 @@ impl CopyHarness {
             h_offset: 0.0,
             side_widths: [SIDE_WIDTH; 2],
             wrap: false,
+            occurrences: OccurrenceState::default(),
         }
     }
 
@@ -258,24 +264,38 @@ impl CopyHarness {
     }
 
     fn drag_positions_and_copy(&mut self, p_from: Pos2, p_to: Pos2) -> Option<String> {
+        self.drag_positions(&[p_from, p_to]);
+        self.copy()
+    }
+
+    /// Drags from `from` to `to` on `side` without copying.
+    pub fn drag(&mut self, side: Side, from: RowCol, to: RowCol) {
+        self.drag_through(side, &[from, to]);
+    }
+
+    /// Presses at the first point on `side`, moves through the others one frame each and
+    /// releases at the last, without copying.
+    pub fn drag_through(&mut self, side: Side, points: &[RowCol]) {
+        let layout = self.run_frame(vec![]).0;
+        let path: Vec<Pos2> = points.iter().map(|&p| pos_of(&layout, (side, p))).collect();
+        self.drag_positions(&path);
+    }
+
+    fn drag_positions(&mut self, path: &[Pos2]) {
+        let (first, last) = (path[0], path[path.len() - 1]);
         let button = |pos, pressed| Event::PointerButton {
             pos,
             button: PointerButton::Primary,
             pressed,
             modifiers: Modifiers::NONE,
         };
-        let script = [
-            vec![Event::PointerMoved(p_from)],
-            vec![button(p_from, true)],
-            vec![Event::PointerMoved(p_to)],
-            vec![Event::PointerMoved(p_to)],
-            vec![button(p_to, false)],
-        ];
+        let mut script = vec![vec![Event::PointerMoved(first)], vec![button(first, true)]];
+        script.extend(path[1..].iter().map(|&p| vec![Event::PointerMoved(p)]));
+        script.push(vec![Event::PointerMoved(last)]);
+        script.push(vec![button(last, false)]);
         for events in script {
             self.run_frame(events);
         }
-
-        self.copy()
     }
 
     /// Emits a copy command and returns the copied text (`None` if nothing is selected).
@@ -290,6 +310,113 @@ impl CopyHarness {
                 OutputCommand::CopyText(text) => Some(text),
                 _ => None,
             })
+    }
+
+    /// Double-clicks at `at` on `side`.
+    pub fn double_click(&mut self, side: Side, at: RowCol) {
+        let layout = self.run_frame(vec![]).0;
+        let pos = pos_of(&layout, (side, at));
+        let button = |pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        let script = [
+            vec![Event::PointerMoved(pos)],
+            vec![button(true)],
+            vec![button(false)],
+            vec![button(true)],
+            vec![button(false)],
+        ];
+        for events in script {
+            self.run_frame(events);
+        }
+    }
+
+    /// Clicks below the rows, where there is no text.
+    pub fn click_outside_the_rows(&mut self) {
+        let layout = self.run_frame(vec![]).0;
+        let below = layout.row_rects[0].last().expect("rows exist").bottom() + 100.0;
+        let pos = Pos2::new(20.0, below);
+        let button = |pressed| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        };
+        for events in [
+            vec![Event::PointerMoved(pos)],
+            vec![button(true)],
+            vec![button(false)],
+        ] {
+            self.run_frame(events);
+        }
+    }
+
+    /// The text the occurrence highlight searches for, after one more frame: the pane searches
+    /// the previous frame's selection.
+    pub fn occurrence_needle(&mut self) -> Option<String> {
+        self.run_frame(vec![]);
+        self.occurrences.needle().map(str::to_owned)
+    }
+
+    /// The highlight ranges the pane draws in `side`'s row `row` this frame.
+    pub fn occurrence_ranges(&mut self, side: Side, row: usize) -> Vec<Range<usize>> {
+        let content = match side {
+            Side::Left => &self.rows[row].left,
+            Side::Right => &self.rows[row].right,
+        };
+        let text = match content {
+            LineContent::Code { tokens, .. } => {
+                build_row_text(tokens, Some(&*self.file_source), Some(&*self.file_target)).text
+            }
+            _ => String::new(),
+        };
+        self.occurrences.ranges(active_side_of(side), row, &text)
+    }
+
+    /// Draws the left side's rows through the pane's table body in a window `height` tall,
+    /// searching for `needle`, and returns how many rows were searched and the row height.
+    pub fn rows_searched_in_table(&self, needle: &str, height: f32) -> (usize, f32) {
+        let ctx = egui::Context::default();
+        let mut occurrences = OccurrenceState::with_needle(needle);
+        let mut row_h = 0.0;
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(800.0, height))),
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                row_h = ui.text_style_height(&egui::TextStyle::Monospace);
+                egui_extras::TableBuilder::new(ui)
+                    .column(egui_extras::Column::remainder())
+                    .body(|body| {
+                        text_rows(body, None, row_h, self.rows.len(), |mut row| {
+                            let index = row.index();
+                            row.col(|ui| {
+                                FileDiffPane::render_side_row(
+                                    ui,
+                                    ActiveSide::Left,
+                                    index,
+                                    &mut occurrences,
+                                    Some(self.file_source.clone()),
+                                    Some(self.file_target.clone()),
+                                    &self.rows[index].left,
+                                    SIDE_WIDTH,
+                                    false,
+                                    false,
+                                    false,
+                                    "rs",
+                                );
+                            });
+                        });
+                    });
+            });
+        });
+        (occurrences.searched_rows(), row_h)
     }
 
     pub fn press_escape(&mut self) {
@@ -330,8 +457,11 @@ impl CopyHarness {
         };
         let (file_source, file_target, rows) = (&self.file_source, &self.file_target, &self.rows);
         let (h_offset, side_widths, wrap) = (self.h_offset, self.side_widths, self.wrap);
+        let occurrences = &mut self.occurrences;
 
         let output = self.ctx.run(raw, |ctx| {
+            // Mirrors FileDiffPane::ui.
+            occurrences.begin_frame(ctx);
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
@@ -378,6 +508,9 @@ impl CopyHarness {
                                     show_scrolled(ui, h_offset, |ui| {
                                         FileDiffPane::render_side_row(
                                             ui,
+                                            active_side_of(side),
+                                            row_index,
+                                            occurrences,
                                             Some(file_source.clone()),
                                             Some(file_target.clone()),
                                             content,
@@ -395,6 +528,7 @@ impl CopyHarness {
                     }
                 });
             });
+            occurrences.end_frame(ctx);
         });
 
         for side in [Side::Left, Side::Right] {
