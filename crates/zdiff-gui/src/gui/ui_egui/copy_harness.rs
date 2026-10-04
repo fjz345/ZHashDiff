@@ -21,7 +21,7 @@ use zdiff::{
 
 use crate::ui_egui::{
     active_side::{ActiveSide, ActiveSideState},
-    diff_pane::{CopyMarkerPlugin, FileDiffPane, side_content_widths},
+    diff_pane::{CopyMarkerPlugin, FileDiffPane, show_scrolled, side_content_widths},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +44,8 @@ pub struct CopyHarness {
     rows: Vec<DiffRow>,
     time: f64,
     active_side: ActiveSideState,
+    /// Horizontal scroll offset of both sides.
+    h_offset: f32,
 }
 
 struct FrameLayout {
@@ -144,7 +146,12 @@ impl CopyHarness {
             rows,
             time: 0.0,
             active_side: ActiveSideState::default(),
+            h_offset: 0.0,
         }
+    }
+
+    pub fn set_h_offset(&mut self, offset: f32) {
+        self.h_offset = offset;
     }
 
     /// The pane's horizontal extent of each side, measured with `glyph_width`.
@@ -275,6 +282,7 @@ impl CopyHarness {
             char_width: 0.0,
         };
         let (file_source, file_target, rows) = (&self.file_source, &self.file_target, &self.rows);
+        let h_offset = self.h_offset;
 
         let output = self.ctx.run(raw, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -293,22 +301,30 @@ impl CopyHarness {
                                     Side::Left => &row.left,
                                     Side::Right => &row.right,
                                 };
-                                // Mirrors the per-row, per-side id salt of the real table.
-                                let rect = ui
-                                    .push_id((side_index(side), row_index), |ui| {
+                                // Mirrors the real table: a fixed-size cell per row and side, with
+                                // its own id salt, and the side drawn scrolled inside it.
+                                let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(SIDE_WIDTH, row_h),
+                                    egui::Sense::hover(),
+                                );
+                                let cell = egui::UiBuilder::new()
+                                    .max_rect(rect)
+                                    .id_salt((side_index(side), row_index));
+                                ui.scope_builder(cell, |ui| {
+                                    show_scrolled(ui, h_offset, |ui| {
                                         FileDiffPane::render_side_row(
                                             ui,
                                             Some(file_source.clone()),
                                             Some(file_target.clone()),
                                             content,
-                                            SIDE_WIDTH,
+                                            SIDE_WIDTH + h_offset,
                                             false,
                                             active_side == active_side_of(side),
                                             "rs",
                                         );
-                                    })
-                                    .response
-                                    .rect;
+                                    });
+                                });
                                 layout.row_rects[side_index(side)].push(rect);
                             }
                         });
@@ -333,7 +349,7 @@ impl CopyHarness {
                         }
                         _ => String::new(),
                     };
-                    col_xs(&output, *rect, &real_text)
+                    col_xs(&output, *rect, h_offset, &real_text)
                 })
                 .collect();
         }
@@ -351,8 +367,9 @@ impl CopyHarness {
 /// X of every column of `real_text` as painted in `rect`, plus the end of the text. Found from
 /// the painted shapes so the harness does not depend on how the renderer lays out its gutter or
 /// widget margins. The shape is identified by its text; the rightmost match is the code text
-/// (the gutter is left of it). Empty if the row paints no such text.
-fn col_xs(output: &egui::FullOutput, rect: Rect, real_text: &str) -> Vec<f32> {
+/// (the gutter is left of it). Scrolled text starts `h_offset` left of `rect`, so the other
+/// side's identical text is out of range. Empty if the row paints no such text.
+fn col_xs(output: &egui::FullOutput, rect: Rect, h_offset: f32, real_text: &str) -> Vec<f32> {
     if real_text.is_empty() {
         return Vec::new();
     }
@@ -363,7 +380,10 @@ fn col_xs(output: &egui::FullOutput, rect: Rect, real_text: &str) -> Vec<f32> {
     let Some((pos, galley)) = shapes
         .into_iter()
         .filter(|(p, g)| {
-            p.y >= rect.top() && p.y <= rect.bottom() && p.x < rect.right() && g.text() == real_text
+            p.y >= rect.top()
+                && p.y <= rect.bottom()
+                && p.x < rect.right() - h_offset
+                && g.text() == real_text
         })
         .max_by(|a, b| a.0.x.total_cmp(&b.0.x))
     else {

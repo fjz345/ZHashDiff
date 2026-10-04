@@ -1146,9 +1146,13 @@ pub(super) fn side_content_widths<T: RawTokenTrait>(
     })
 }
 
-/// Draws `add_contents` scrolled left by `offset` and clipped to the cell. The child isn't
-/// allocated in the cell, so the unclipped column doesn't grow to the row's text width.
-fn show_scrolled(ui: &mut egui::Ui, offset: f32, add_contents: impl FnOnce(&mut egui::Ui)) {
+/// Draws `add_contents` scrolled left by `offset` and clipped to the cell. The cell counts as
+/// used, not the text in it, so the unclipped column doesn't grow to the row's text width.
+pub(super) fn show_scrolled(
+    ui: &mut egui::Ui,
+    offset: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
     let cell = ui.max_rect();
     let shifted = egui::Rect::from_min_size(
         cell.min - egui::vec2(offset, 0.0),
@@ -1158,6 +1162,7 @@ fn show_scrolled(ui: &mut egui::Ui, offset: f32, add_contents: impl FnOnce(&mut 
     // Clipping also limits hit-testing, so shifted text can't take clicks from the middle column.
     child.set_clip_rect(cell.intersect(ui.clip_rect()));
     add_contents(&mut child);
+    ui.advance_cursor_after_rect(cell);
 }
 
 /// One side's horizontal scrollbar in `rect`, scrolling `range` points. Returns the offset when
@@ -1967,6 +1972,27 @@ mod tests {
                 assert!(SIDES_SOURCE.lines().any(|s| s == line), "garbled line {line:?}");
             }
         }
+    }
+
+    #[test]
+    fn scrolled_rows_select_by_their_visible_text() {
+        let mut harness = CopyHarness::new(SOURCE, TARGET, &DiffBuilderOptions::default());
+        // The gutter and the first two columns are out of view.
+        harness.set_h_offset(GUTTER_WIDTH + GUTTER_GAP + 15.0);
+
+        let copied = harness.drag_and_copy(Side::Left, (1, 4), (2, 9));
+        assert_eq!(copied.as_deref(), Some("let x = 1;\n    let y"));
+    }
+
+    #[test]
+    fn a_press_on_scrolled_out_text_goes_to_the_row_in_view_there() {
+        let mut harness = CopyHarness::new(SOURCE, TARGET, &DiffBuilderOptions::default());
+        harness.set_h_offset(GUTTER_WIDTH + GUTTER_GAP + 15.0);
+
+        // The right row's first column is scrolled out over the left side, whose row takes the
+        // press: the drag copies left text, never the right row's.
+        let copied = harness.drag_across_and_copy((Side::Right, (2, 0)), (Side::Left, (2, 9)));
+        assert_eq!(copied.as_deref(), Some(" = 2;"));
     }
 
     // One point per char, so a width is the gutter plus a char count.
