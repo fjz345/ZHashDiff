@@ -25,7 +25,11 @@ use crate::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},
     },
-    viewer::{ViewerKind, hex::HexDiffProcessor, resolve_viewer_kind},
+    viewer::{
+        ViewerKind, conflict_count,
+        hex::{HexDiffProcessor, parse_hex_offset},
+        resolve_viewer_kind,
+    },
 };
 
 #[derive(Debug)]
@@ -561,15 +565,28 @@ impl<'a> ZApp {
 
             let mut goto_window_open = *goto_open;
             show_custom_popup(ctx, &mut goto_window_open, "Goto", true, |ui| {
-                goto_input.retain(|c| c.is_ascii_digit());
+                // Hex gotos a byte offset, in decimal or 0x hex.
+                if is_hex {
+                    goto_input.retain(|c| c.is_ascii_hexdigit() || c == 'x' || c == 'X');
+                } else {
+                    goto_input.retain(|c| c.is_ascii_digit());
+                }
                 let response = ui.add(
                     egui::TextEdit::singleline(goto_input)
                         .desired_width(40.0)
-                        .hint_text("#"),
+                        .hint_text(if is_hex { "offset" } else { "#" }),
                 );
                 response.request_focus();
                 if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    if let Ok(line_number) = goto_input.parse::<usize>() {
+                    if is_hex {
+                        match parse_hex_offset(goto_input, hex_processor.max_len()) {
+                            Ok(offset) => {
+                                hex_processor.goto(offset);
+                                *goto_open = false;
+                            }
+                            Err(e) => log::error!("Goto offset {:?}: {}", goto_input, e),
+                        }
+                    } else if let Ok(line_number) = goto_input.parse::<usize>() {
                         diff_processor.update_goto(Some(line_number));
                         *goto_open = false;
                     }
@@ -605,7 +622,7 @@ impl<'a> ZApp {
 
             // The text diff's state is stale while the hex viewer shows the pair.
             let scroll_to_rows = &if is_hex {
-                None
+                hex_processor.scroll_to_row(diff_processor.conflict_cursor.get())
             } else {
                 diff_processor.get_scroll_to_row()
             };
@@ -1021,8 +1038,7 @@ impl eframe::App for ZApp {
                 .as_mut()
                 .expect("State was not valid while processing inputs")
                 .ctx_mut();
-            // The hex viewer has no conflict navigation yet; the text diff's count is stale there.
-            let conflict_max = if app_ctx.viewer_kind == Some(ViewerKind::Hex) {
+            let text_conflicts = if app_ctx.viewer_kind == Some(ViewerKind::Hex) {
                 0
             } else {
                 app_ctx
@@ -1032,6 +1048,11 @@ impl eframe::App for ZApp {
                     .and_then(|f| Some(f.precomputed_diffs.len()))
                     .unwrap_or_default()
             };
+            let conflict_max = conflict_count(
+                app_ctx.viewer_kind,
+                text_conflicts,
+                app_ctx.hex_processor.nav_count(),
+            );
             app_ctx.diff_processor.conflict_cursor.set_max(conflict_max);
         }
 
@@ -1063,7 +1084,10 @@ impl eframe::App for ZApp {
                 );
                 let is_hex = state.viewer_kind == Some(ViewerKind::Hex);
                 if is_hex {
-                    state.hex_processor.request(loaded_1, loaded_2);
+                    // The cursor may hold the text diff's or the previous pair's stop.
+                    if state.hex_processor.request(loaded_1, loaded_2) {
+                        state.diff_processor.conflict_cursor.set(0);
+                    }
                 } else {
                     // Cancels a running compare and drops the old pair's bytes.
                     state.hex_processor.request(None, None);

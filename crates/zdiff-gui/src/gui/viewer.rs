@@ -30,3 +30,25 @@ pub fn resolve_viewer_kind(
         _ => Some(ViewerKind::Text),
     }
 }
+
+/// Stops for the shared conflict cursor: the shown viewer's. The other viewer's state is stale.
+pub fn conflict_count(kind: Option<ViewerKind>, text: usize, hex: usize) -> usize {
+    match kind {
+        Some(ViewerKind::Hex) => hex,
+        Some(ViewerKind::Text) | None => text,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conflict_navigation_counts_the_shown_viewers_stops() {
+        // The conflict shortcuts drive one shared cursor; its max must come from the viewer on
+        // screen, because the other viewer's state is stale.
+        assert_eq!(conflict_count(Some(ViewerKind::Text), 7, 3), 7);
+        assert_eq!(conflict_count(Some(ViewerKind::Hex), 7, 3), 3);
+        assert_eq!(conflict_count(None, 7, 3), 7);
+    }
+}
