@@ -53,15 +53,12 @@ impl PartialEq for UpdateDiffRowsInput {
     }
 }
 
-/// One match of the find text. A row shows its line's text, so the match is the row's
-/// `ordinal`th occurrence of the text on `side`, found the same way the pane paints them.
+/// A row shows its line's text, so `ordinal` picks the same match the pane paints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FindHit {
     pub side: ActiveSide,
-    /// 0-based file line. `row` is derived from it, so it can be rebuilt for another layout of
-    /// the rows, e.g. after an expansion.
+    /// 0-based. `row` is rebuilt from it after an expansion.
     pub line: usize,
-    /// Index of this match among its line's matches.
     pub ordinal: usize,
     pub row: usize,
 }
@@ -69,7 +66,7 @@ pub struct FindHit {
 #[derive(Debug, Clone, Default)]
 pub struct FindCtx {
     needle: String,
-    /// Every match on both sides, by row, then side (left first), then position.
+    /// Sorted by row, then side (left first), then position.
     hits: Vec<FindHit>,
 }
 impl FindCtx {
@@ -103,7 +100,6 @@ impl FindCtx {
         &self.hits
     }
 
-    /// Matches in the whole file. Overlapping ones count, as they do in the row highlight.
     fn search(file: &CachedFile<RawToken>, needle: &str, side: ActiveSide) -> Vec<FindHit> {
         let mut hits: Vec<FindHit> = Vec::new();
         for range in find_occurrences(&file.contents, needle) {
@@ -122,8 +118,6 @@ impl FindCtx {
         hits
     }
 
-    /// Rebuilds the hits' rows from their file lines, and reorders the hits to match. Hits on
-    /// lines without a row of their own share one.
     fn map_to_rows(&mut self, file_rows: &PrecomputedFileRows) {
         for hit in &mut self.hits {
             let line_to_row = match hit.side {
@@ -759,7 +753,7 @@ pub struct DiffProcessor {
     // Active user state
     pub conflict_cursor: ClampedCursor,
     pub active_highlights: Vec<usize>,
-    /// The side `active_highlights` light up: Goto's target side, or `None` for both.
+    /// `None`: both sides.
     pub highlight_side: Option<ActiveSide>,
     pub pivot: (Option<usize>, Option<usize>),
     pub find_cursor: ClampedCursor,
@@ -871,6 +865,13 @@ impl DiffProcessor {
         self.find_cursor.set(0);
     }
 
+    pub fn clear_results(&mut self) {
+        self.update_find(FindCtx::default());
+        self.goto_line_number = None;
+        self.active_highlights.clear();
+        self.highlight_side = None;
+    }
+
     pub fn current_find_hit(&self) -> Option<FindHit> {
         self.find_ctx.hits.get(self.find_cursor.get()).copied()
     }
@@ -898,7 +899,6 @@ impl DiffProcessor {
         let scroll_to_row = find.or(goto).or(conflict);
 
         if let Some(ScrollSpan { start, maybe_end }) = &scroll_to_row {
-            // Goto names one side's line; find and conflicts light up the whole row.
             self.highlight_side = (find.is_none() && goto.is_some()).then_some(goto_side);
             self.active_highlights.clear();
             if let Some(end) = maybe_end {
@@ -1028,7 +1028,6 @@ impl DiffProcessor {
         let new = self.get_minimal_diff_ctx().expect("diff shown above");
 
         let remap = |row| remap_row(&old.row_blocks, &new.row_blocks, row);
-        // The same match stays current; the hits are only reordered.
         let current = self.current_find_hit();
         self.find_ctx.map_to_rows(&new.precomputed_file_rows);
         if let Some(current) = current {
@@ -2287,8 +2286,6 @@ mod tests {
                 let pair = gap_pair(dir.path());
                 let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
                 processor.update_find(FindCtx::new("keep_1", &collapsed));
-                // Left line 12, hidden in the block. The block's row holds all its hidden hits,
-                // the left side's first, so expanding interleaves them with the right side's.
                 let is_left_12 = |hit: &FindHit| hit.side == ActiveSide::Left && hit.line == 11;
                 let before = processor.find_ctx.hits().iter().position(is_left_12);
                 processor
@@ -2325,7 +2322,6 @@ mod tests {
                 (processor, ctx)
             }
 
-            /// Line 2 differs by an inserted " foo"; each line has its own row on both sides.
             fn foo_pair(dir: &Path) -> (DiffProcessor, MinimalDiffCtx) {
                 let opened = opened_pair(dir, "foo foo\nbar\nfoo\n", "foo foo\nbar foo\nfoo\n");
                 let rows = &opened.1.precomputed_file_rows;
@@ -2410,6 +2406,30 @@ mod tests {
             }
 
             #[test]
+            fn clear_results_drops_find_and_goto() {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut processor, ctx) = foo_pair(dir.path());
+                processor.update_find(FindCtx::new("bar", &ctx));
+                assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
+
+                processor.clear_results();
+                assert!(processor.find_ctx.hits().is_empty());
+                assert_eq!(processor.find_ctx.needle(), "");
+                assert!(processor.active_highlights.is_empty());
+                assert_eq!(processor.get_scroll_to_row(), None);
+
+                processor.update_find(FindCtx::new("bar", &ctx));
+                assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
+
+                processor.active_side = Right;
+                processor.update_goto(Some(2));
+                processor.clear_results();
+                assert_eq!(processor.get_scroll_to_row(), None);
+                assert!(processor.active_highlights.is_empty());
+                assert_eq!(processor.highlight_side, None);
+            }
+
+            #[test]
             fn goto_lights_up_only_its_side_until_the_next_navigation() {
                 let dir = tempfile::tempdir().unwrap();
                 let (mut processor, ctx) = foo_pair(dir.path());
@@ -2420,7 +2440,6 @@ mod tests {
                 assert_eq!(processor.active_highlights, [1]);
                 assert_eq!(processor.highlight_side, Some(Right));
 
-                // Later frames keep it.
                 assert_eq!(processor.get_scroll_to_row(), None);
                 assert_eq!(processor.highlight_side, Some(Right));
 

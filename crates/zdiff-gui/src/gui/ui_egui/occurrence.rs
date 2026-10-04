@@ -18,23 +18,16 @@ use crate::ui_egui::active_side::ActiveSide;
 /// the red and green of changes, and egui's blue selection.
 pub const OCCURRENCE_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(66, 40, 96, 110);
 
-/// Background of every match of the find text in the visible rows.
 pub const FIND_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(90, 66, 0, 140);
-
-/// Background of the current find match, stronger than `FIND_BG`.
 pub const FIND_CURRENT_BG: egui::Color32 = egui::Color32::from_rgb(176, 104, 0);
 
-/// What the find bar paints in one side of one row.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RowFind<'a> {
-    /// Empty when nothing is searched for.
     pub needle: &'a str,
-    /// Which of the row's matches is the current find hit, when it is on this row and side.
+    /// Ordinal of the current find hit among this row's matches.
     pub current: Option<usize>,
 }
 
-/// Byte ranges in `text` of every match of the find text, at most `MAX_OCCURRENCES_PER_ROW`,
-/// and of the current one.
 pub fn find_ranges(text: &str, find: RowFind) -> (Vec<Range<usize>>, Option<Range<usize>>) {
     if find.needle.is_empty() {
         return (Vec::new(), None);
@@ -322,10 +315,8 @@ mod tests {
 
         assert_eq!(find("ab", Some(1)), (vec![0..2, 3..5, 6..8], Some(3..5)));
         assert_eq!(find("ab", None), (vec![0..2, 3..5, 6..8], None));
-        // The current match is on another row or side, or past this row's matches.
         assert_eq!(find("ab", Some(3)), (vec![0..2, 3..5, 6..8], None));
         assert_eq!(find("zz", Some(0)), (vec![], None));
-        // No find, or one cleared.
         assert_eq!(find("", Some(0)), (vec![], None));
     }
 

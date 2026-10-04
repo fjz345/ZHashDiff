@@ -243,6 +243,11 @@ impl HexDiffProcessor {
         self.goto_offset = Some(offset);
     }
 
+    pub fn clear_highlight(&mut self) {
+        self.goto_offset = None;
+        self.highlight = None;
+    }
+
     /// The rows to scroll to this frame, from a pending goto or a changed conflict cursor (goto
     /// wins, as in the text viewer), and highlights the target bytes.
     pub fn scroll_to_row(&mut self, conflict_cursor: usize) -> Option<ScrollSpan> {
@@ -529,6 +534,18 @@ mod tests {
         assert_eq!(hex_nav_span(&diff(vec![], None), 1), None);
         assert_eq!(hex_nav_count(Some(&diff(vec![], None))), 0);
         assert_eq!(hex_nav_count(None), 0);
+    }
+
+    #[test]
+    fn clear_highlight_drops_the_goto_highlight() {
+        let mut processor = HexDiffProcessor::default();
+        processor.goto(5);
+        assert!(processor.scroll_to_row(0).is_some());
+        assert_eq!(processor.highlight, Some(5..6));
+
+        processor.clear_highlight();
+        assert_eq!(processor.highlight, None);
+        assert_eq!(processor.scroll_to_row(0), None);
     }
 
     #[test]

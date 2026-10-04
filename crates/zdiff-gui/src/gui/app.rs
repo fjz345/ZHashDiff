@@ -194,6 +194,8 @@ pub struct ZApp {
     /// A revert waiting on the p4 edit prompt.
     #[serde(skip)]
     pending_p4_edit: Option<(RevertTarget, PendingP4Edit)>,
+    #[serde(skip)]
+    toggle_active_side: bool,
 }
 
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
@@ -246,6 +248,7 @@ impl<'a> ZApp {
             open_universal_path_window: false,
             open_viewers_window: false,
             pending_p4_edit: None,
+            toggle_active_side: false,
         }
     }
 
@@ -845,6 +848,7 @@ impl<'a> ZApp {
                     find_hit,
                     find_count,
                     active_side: &mut active_side,
+                    toggle_active_side: std::mem::take(&mut self.toggle_active_side),
                     diff_loading: diff_processor.is_in_progress(),
                     code_language,
                     revert_request: &mut None,
@@ -1052,12 +1056,12 @@ impl<'a> ZApp {
         let text_focused = ctx.wants_keyboard_input();
         let mut history_step = None;
         let mut diff_local_file = false;
+        let mut tab_pressed = false;
+        let mut esc_pressed = false;
         {
             let _input_ctx = ctx.input(|r| {
-                // Esc
-                if r.key_down(egui::Key::Escape) {
-                    // user_quit = true;
-                }
+                tab_pressed = r.key_pressed(egui::Key::Tab);
+                esc_pressed = r.key_pressed(egui::Key::Escape);
 
                 // DoubleLeftClick
                 if r.pointer.button_double_clicked(PointerButton::Primary) {
@@ -1245,6 +1249,19 @@ impl<'a> ZApp {
                     });
                 }
             });
+        }
+        if tab_pressed && !text_focused {
+            // begin_pass already made Tab a focus move; cancel it before any widget takes it.
+            ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+            self.toggle_active_side = true;
+        }
+        if esc_pressed
+            && !app_state_ctx.find_open
+            && !app_state_ctx.goto_open
+            && self.pending_p4_edit.is_none()
+        {
+            app_state_ctx.diff_processor.clear_results();
+            app_state_ctx.hex_processor.clear_highlight();
         }
         // After the input closure: this writes to disk.
         if let Some(step) = history_step {

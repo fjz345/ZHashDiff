@@ -62,15 +62,14 @@ pub struct FileDiffPaneCtx<'a> {
 
     pub scroll_to_row_span: &'a Option<ScrollSpan>,
     pub active_highlights: &'a Vec<usize>,
-    /// The side `active_highlights` light up, `None` for both.
     pub highlight_side: Option<ActiveSide>,
     pub conflict_cursor: &'a mut ClampedCursor,
     pub find_cursor: &'a mut ClampedCursor,
-    /// The find text, painted in every visible row. Empty when nothing is searched for.
     pub find_needle: &'a str,
     pub find_hit: Option<FindHit>,
     pub find_count: usize,
     pub active_side: &'a mut ActiveSide,
+    pub toggle_active_side: bool,
     pub load_file_1_request: &'a mut Option<UniversalPath>,
     pub load_file_2_request: &'a mut Option<UniversalPath>,
     pub set_file_1_root_request: &'a mut Option<UniversalPath>,
@@ -437,6 +436,9 @@ impl FileDiffPane {
                 .then(|| i.pointer.interact_pos())
                 .flatten()
         });
+        if ctx.toggle_active_side {
+            self.active_side.toggle();
+        }
         let active_side =
             self.active_side
                 .begin_frame(press_pos, source_path.is_some(), target_path.is_some());
@@ -957,7 +959,6 @@ impl FileDiffPane {
                     .allocate_space(egui::vec2(ui.available_width(), footer_height - 4.0))
                     .1;
                 if linked {
-                    // Linked sides share one offset and one range, so one bar spans both.
                     let rect = egui::Rect::from_x_y_ranges(
                         left_rect.union(right_rect).x_range(),
                         footer.y_range(),
@@ -1284,12 +1285,9 @@ impl FileDiffPane {
 const GUTTER_WIDTH: f32 = 35.0;
 const GUTTER_GAP: f32 = 4.0;
 
-/// Line number of the line Goto jumped to.
 const GOTO_LINE_NUM: egui::Color32 = egui::Color32::from_rgb(255, 210, 0);
 
-/// What `side`'s row `row`, showing `content`, paints for the find bar. The current hit must be
-/// on the row's line too: lines without a row of their own (hidden in a collapsed block) share
-/// another line's row.
+/// Lines hidden in a collapsed block share another line's row, hence the line check.
 fn row_find<'a>(
     needle: &'a str,
     hit: Option<FindHit>,
@@ -1889,7 +1887,6 @@ mod tests {
         assert_eq!(current(ActiveSide::Right, 4, &code(10)), Some(2));
         assert_eq!(current(ActiveSide::Left, 4, &code(10)), None);
         assert_eq!(current(ActiveSide::Right, 5, &code(10)), None);
-        // A hit hidden in a collapsed block shares another line's row.
         assert_eq!(current(ActiveSide::Right, 4, &code(3)), None);
         assert_eq!(current(ActiveSide::Right, 4, &LineContent::Void), None);
         assert_eq!(

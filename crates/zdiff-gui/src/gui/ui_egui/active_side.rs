@@ -63,6 +63,13 @@ impl ActiveSideState {
         self.side
     }
 
+    pub fn toggle(&mut self) {
+        self.side = match self.side {
+            ActiveSide::Left => ActiveSide::Right,
+            ActiveSide::Right => ActiveSide::Left,
+        };
+    }
+
     /// The side under `pos` in the previous frame.
     pub fn side_at(&self, pos: egui::Pos2) -> Option<ActiveSide> {
         side_at_press(pos, self.left_rect, self.right_rect)
@@ -178,6 +185,23 @@ mod tests {
         let mut state = ActiveSideState::default();
         assert_eq!(state.begin_frame(None, false, true), ActiveSide::Right);
         assert_eq!(state.begin_frame(None, true, true), ActiveSide::Right);
+    }
+
+    #[test]
+    fn toggle_flips_the_side_and_sticks() {
+        let mut state = ActiveSideState::default();
+        state.toggle();
+        assert_eq!(state.begin_frame(None, true, true), ActiveSide::Right);
+        assert_eq!(state.begin_frame(None, true, true), ActiveSide::Right);
+        state.toggle();
+        assert_eq!(state.begin_frame(None, true, true), ActiveSide::Left);
+    }
+
+    #[test]
+    fn toggle_cannot_deactivate_the_only_loaded_side() {
+        let mut state = ActiveSideState::default();
+        state.toggle();
+        assert_eq!(state.begin_frame(None, true, false), ActiveSide::Left);
     }
 
     #[test]
