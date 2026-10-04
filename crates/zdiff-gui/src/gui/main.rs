@@ -45,7 +45,11 @@ fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([2560.0, 1440.0])
-            .with_drag_and_drop(true),
+            .with_drag_and_drop(true)
+            .with_icon(
+                eframe::icon_data::from_png_bytes(include_bytes!("../../img/icon.png"))
+                    .expect("embedded icon.png decodes"),
+            ),
         ..Default::default()
     };
 
