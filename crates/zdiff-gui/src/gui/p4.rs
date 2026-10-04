@@ -61,6 +61,9 @@ pub struct P4Profile {
 pub struct P4Profiles {
     pub profiles: Vec<P4Profile>,
     pub default: Option<u64>,
+    /// Never decreases, so a slot still holding a removed id doesn't pick up a new profile.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub next_id: u64,
 }
 
 impl P4Profiles {
@@ -68,9 +71,12 @@ impl P4Profiles {
         self.profiles.iter().find(|profile| profile.id == id)
     }
 
-    /// Adds an empty profile and returns its id, unused by any listed profile.
+    /// Adds an empty profile and returns its id, never used by a listed or removed profile.
     pub fn add(&mut self, name: String) -> u64 {
-        let id = self.profiles.iter().map(|p| p.id + 1).max().unwrap_or(0);
+        // The listed ids too: a save without next_id loads it as 0.
+        let listed_next = self.profiles.iter().map(|p| p.id + 1).max().unwrap_or(0);
+        let id = self.next_id.max(listed_next);
+        self.next_id = id + 1;
         self.profiles.push(P4Profile {
             id,
             name,
@@ -467,6 +473,7 @@ mod tests {
                 },
             ],
             default: Some(2),
+            next_id: 3,
         }
     }
 
@@ -561,6 +568,19 @@ mod tests {
         let c = profiles.add("c".into());
         assert_ne!(c, b);
         assert_eq!(profiles.profiles.len(), 2);
+    }
+
+    #[test]
+    fn a_removed_id_is_never_reused_so_its_slots_stay_auto() {
+        let mut profiles = P4Profiles::default();
+        profiles.add("a".into());
+        let b = profiles.add("b".into());
+        profiles.remove(b);
+
+        let c = profiles.add("c".into());
+        profiles.profiles.last_mut().unwrap().config.port = "c:1666".into();
+        assert_ne!(c, b);
+        assert_eq!(profiles.resolve(Some(b)), P4Config::default());
     }
 
     #[test]

@@ -1612,6 +1612,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_save_with_p4_profiles_but_no_next_id_adds_unused_ids() {
+        let mut ctx = AppStateCtx::default();
+        let id = ctx.p4_profiles.add("work".into());
+        let mut json = serde_json::to_value(&ctx).unwrap();
+        json["p4_profiles"]
+            .as_object_mut()
+            .unwrap()
+            .remove("next_id")
+            .unwrap();
+        let mut restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert_ne!(restored.p4_profiles.add("new".into()), id);
+    }
+
     mod quick_diff {
         use super::*;
 
