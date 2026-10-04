@@ -8,12 +8,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use zcommon::hash::hash_file_mmap;
+use zcommon::hash::hash_contents;
 use zdiff::{
     cached_file::CachedFile,
     diff_builder::{DiffRow, LineContent},
     diff_ir::{DiffIR, DiffResult},
     lexer::RawToken,
+    universal_path::UniversalPath,
 };
 
 use crate::{
@@ -231,7 +232,7 @@ impl std::fmt::Display for WriteRefusal {
 
 /// Replaces `path` with `contents`, but only if it is not under `temp_root`, still has the
 /// bytes hashed as `loaded_hash`, and is writable. Depot targets can't get here: they have no
-/// local path (see `check_revert`).
+/// local path (see `check_revert`). Returns the bytes it replaced.
 ///
 /// The contents go to a sibling temp file that is synced and then renamed over the target, so a
 /// crash leaves either the old or the new file, never a truncated one. The temp file is deleted
@@ -241,7 +242,7 @@ pub fn write_guarded(
     contents: &[u8],
     loaded_hash: &str,
     temp_root: &Path,
-) -> Result<(), WriteRefusal> {
+) -> Result<Vec<u8>, WriteRefusal> {
     // Canonical paths, so a short (8.3) or differently cased temp dir still matches. Issue 05's
     // temp classifier replaces this check.
     let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
@@ -252,8 +253,10 @@ pub fn write_guarded(
         io::ErrorKind::NotFound => WriteRefusal::Stale,
         _ => WriteRefusal::Io(e),
     };
-    // Same hash function as CachedFile, so an untouched file always matches.
-    if hash_file_mmap(path).map_err(not_found_is_stale)? != loaded_hash {
+    // Same hash function as CachedFile, so an untouched file always matches. The hashed bytes
+    // are the ones undo restores, read once so the check and the record can't disagree.
+    let before = std::fs::read(path).map_err(not_found_is_stale)?;
+    if hash_contents(&before) != loaded_hash {
         return Err(WriteRefusal::Stale);
     }
     let permissions = std::fs::metadata(path)
@@ -273,12 +276,30 @@ pub fn write_guarded(
     // The temp file is created with restrictive permissions; keep the target's.
     std::fs::set_permissions(temp.path(), permissions).map_err(WriteRefusal::Io)?;
     temp.persist(path).map_err(|e| WriteRefusal::Io(e.error))?;
-    Ok(())
+    Ok(before)
+}
+
+/// A written revert: the target's bytes before and after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevertRecord {
+    pub path: PathBuf,
+    pub before: Vec<u8>,
+    pub after: Vec<u8>,
+}
+
+impl RevertRecord {
+    fn new(planned: PlannedRevert, before: Vec<u8>) -> Self {
+        Self {
+            path: planned.path,
+            before,
+            after: planned.contents.into_bytes(),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub enum RevertWrite {
-    Written,
+    Written(RevertRecord),
     /// The target is read-only and Perforce-managed: ask the user before `p4 edit`.
     NeedsP4Edit(PendingP4Edit),
 }
@@ -295,7 +316,11 @@ impl PendingP4Edit {
     }
 
     /// Runs `p4 edit` on the target, then writes. A failed edit writes nothing.
-    pub fn confirm(self, temp_root: &Path, p4: &impl P4Runner) -> Result<(), WriteRefusal> {
+    pub fn confirm(
+        self,
+        temp_root: &Path,
+        p4: &impl P4Runner,
+    ) -> Result<RevertRecord, WriteRefusal> {
         let planned = self.planned;
         let edited = p4
             .run(&["edit", &p4_file_arg(&planned.path)])
@@ -308,8 +333,9 @@ impl PendingP4Edit {
             &planned.loaded_hash,
             temp_root,
         ) {
+            Ok(before) => Ok(RevertRecord::new(planned, before)),
             Err(WriteRefusal::ReadOnly) => Err(WriteRefusal::P4Edit(edited)),
-            result => result,
+            Err(e) => Err(e),
         }
     }
 }
@@ -343,12 +369,85 @@ pub fn write_revert(
         &planned.loaded_hash,
         temp_root,
     ) {
-        Ok(()) => Ok(RevertWrite::Written),
+        Ok(before) => Ok(RevertWrite::Written(RevertRecord::new(planned, before))),
         Err(WriteRefusal::ReadOnly) if is_p4_managed(&planned.path, p4) => {
             Ok(RevertWrite::NeedsP4Edit(PendingP4Edit { planned }))
         }
         Err(WriteRefusal::ReadOnly) => Err(WriteRefusal::ReadOnlyNotP4Managed),
         Err(e) => Err(e),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryStep {
+    Undo,
+    Redo,
+}
+
+/// Undo and redo of the reverts made in one diff. Reverts into either file share one stack, in
+/// the order they were made, and it is cleared when either side's path changes. Not persisted.
+#[derive(Debug, Default)]
+pub struct RevertHistory {
+    pair: Option<(UniversalPath, UniversalPath)>,
+    undo: Vec<RevertRecord>,
+    redo: Vec<RevertRecord>,
+}
+
+impl RevertHistory {
+    /// Clears the history when the diff now shows another file on either side.
+    pub fn observe_pair(&mut self, left: &UniversalPath, right: &UniversalPath) {
+        let same_pair = self
+            .pair
+            .as_ref()
+            .is_some_and(|(l, r)| l == left && r == right);
+        if !same_pair {
+            *self = Self {
+                pair: Some((left.clone(), right.clone())),
+                ..Default::default()
+            };
+        }
+    }
+
+    /// A new revert can't be redone over, so it clears the redo stack.
+    pub fn record(&mut self, record: RevertRecord) {
+        self.redo.clear();
+        self.undo.push(record);
+    }
+
+    /// Writes the latest undo (or redo) through `write(path, contents, expected)`, where
+    /// `expected` is what the file must still hold. The record moves to the other stack only
+    /// when the write succeeds, so a refused step stays and can be retried. `None` when there
+    /// is nothing to step.
+    pub fn step<E>(
+        &mut self,
+        step: HistoryStep,
+        write: impl FnOnce(&Path, &[u8], &[u8]) -> Result<(), E>,
+    ) -> Option<(PathBuf, Result<(), E>)> {
+        let (from, to) = match step {
+            HistoryStep::Undo => (&mut self.undo, &mut self.redo),
+            HistoryStep::Redo => (&mut self.redo, &mut self.undo),
+        };
+        let record = from.last()?;
+        let (contents, expected) = match step {
+            HistoryStep::Undo => (&record.before, &record.after),
+            HistoryStep::Redo => (&record.after, &record.before),
+        };
+        let result = write(&record.path, contents, expected);
+        let path = record.path.clone();
+        if result.is_ok() {
+            to.extend(from.pop());
+        }
+        Some((path, result))
+    }
+}
+
+/// The write for `RevertHistory::step`: a guarded write that requires the file to still hold
+/// exactly `expected`.
+pub fn write_history_step(
+    temp_root: &Path,
+) -> impl FnOnce(&Path, &[u8], &[u8]) -> Result<(), WriteRefusal> + '_ {
+    move |path: &Path, contents: &[u8], expected: &[u8]| {
+        write_guarded(path, contents, &hash_contents(expected), temp_root).map(|_| ())
     }
 }
 
@@ -360,6 +459,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    use zcommon::hash::hash_file_mmap;
     use zdiff::{
         diff_builder::{DiffBuilderOptions, PivotLines},
         lexer::{LEXER_MODE_DEFAULT, LEXER_MODE_GREEDY, LEXER_MODE_NEWLINE, LEXER_MODE_TOKENIZE},
@@ -787,7 +887,7 @@ mod tests {
                 }
             }
 
-            fn write(&self, contents: &[u8]) -> Result<(), WriteRefusal> {
+            fn write(&self, contents: &[u8]) -> Result<Vec<u8>, WriteRefusal> {
                 write_guarded(
                     &self.path,
                     contents,
@@ -901,7 +1001,7 @@ mod tests {
             fn pending(result: Result<RevertWrite, WriteRefusal>) -> PendingP4Edit {
                 match result {
                     Ok(RevertWrite::NeedsP4Edit(pending)) => pending,
-                    Ok(RevertWrite::Written) => panic!("written without p4 edit"),
+                    Ok(RevertWrite::Written(_)) => panic!("written without p4 edit"),
                     Err(e) => panic!("refused: {e:?}"),
                 }
             }
@@ -926,7 +1026,7 @@ mod tests {
                 let target = Target::new(b"loaded\n");
                 let p4 = FakeP4::new(|_: &[&str]| panic!("p4 must not run"));
                 let result = target.revert(&p4);
-                assert!(matches!(result, Ok(RevertWrite::Written)), "{result:?}");
+                assert!(matches!(result, Ok(RevertWrite::Written(_))), "{result:?}");
                 assert_eq!(target.read(), b"reverted\n");
                 assert!(p4.calls().is_empty());
             }
@@ -991,7 +1091,15 @@ mod tests {
                 let result = pending.confirm(target.temp_root.path(), &p4);
                 target.set_readonly(false);
 
-                assert!(result.is_ok(), "{result:?}");
+                // A revert through p4 edit is undoable like any other.
+                assert_eq!(
+                    result.unwrap(),
+                    RevertRecord {
+                        path: target.path.clone(),
+                        before: b"loaded\r\n".to_vec(),
+                        after: b"reverted\n".to_vec(),
+                    }
+                );
                 assert_eq!(target.read(), b"reverted\n");
                 assert_eq!(
                     p4.calls(),
@@ -1059,6 +1167,207 @@ mod tests {
                 assert_eq!(target.read(), b"loaded\n");
                 assert_eq!(p4.calls(), [["fstat".to_string(), target.p4_path()]]);
                 target.assert_no_leftovers();
+            }
+        }
+
+        mod undo {
+            use super::*;
+            use crate::p4::FakeP4;
+            use HistoryStep::{Redo, Undo};
+
+            /// Writes a revert to `contents` like the app does, planned from the bytes on disk
+            /// (the app reloads after every write), and records it.
+            fn revert(target: &Target, history: &mut RevertHistory, contents: &str) {
+                let planned = PlannedRevert {
+                    path: target.path.clone(),
+                    contents: contents.to_string(),
+                    loaded_hash: hash_file_mmap(&target.path).unwrap(),
+                };
+                let p4 = FakeP4::new(|_: &[&str]| panic!("p4 must not run"));
+                match write_revert(planned, target.temp_root.path(), &p4) {
+                    Ok(RevertWrite::Written(record)) => history.record(record),
+                    other => panic!("{other:?}"),
+                }
+            }
+
+            fn step(
+                target: &Target,
+                history: &mut RevertHistory,
+                step: HistoryStep,
+            ) -> Result<(), WriteRefusal> {
+                let (path, result) = history
+                    .step(step, write_history_step(target.temp_root.path()))
+                    .expect("nothing to step");
+                assert_eq!(path, target.path);
+                result
+            }
+
+            #[test]
+            fn undo_restores_the_exact_bytes_and_redo_reapplies() {
+                // BOM, CRLF, non-ASCII, emoji and no final newline.
+                let original: &[u8] =
+                    b"\xEF\xBB\xBFfirst \xC3\xA5\xC3\xA4\r\nsecond \xF0\x9F\x98\x80\r\nlast";
+                let target = Target::new(original);
+                let mut history = RevertHistory::default();
+                revert(&target, &mut history, "one\r\n");
+                revert(&target, &mut history, "two\n");
+
+                step(&target, &mut history, Undo).unwrap();
+                assert_eq!(target.read(), b"one\r\n");
+                step(&target, &mut history, Undo).unwrap();
+                assert_eq!(target.read(), original);
+                step(&target, &mut history, Redo).unwrap();
+                assert_eq!(target.read(), b"one\r\n");
+                step(&target, &mut history, Redo).unwrap();
+                assert_eq!(target.read(), b"two\n");
+                target.assert_no_leftovers();
+            }
+
+            #[test]
+            fn undo_is_refused_after_an_external_change() {
+                let target = Target::new(b"loaded\n");
+                let mut history = RevertHistory::default();
+                revert(&target, &mut history, "reverted\n");
+                std::fs::write(&target.path, b"edited elsewhere\n").unwrap();
+
+                let result = step(&target, &mut history, Undo);
+                assert!(matches!(result, Err(WriteRefusal::Stale)), "{result:?}");
+                assert_eq!(target.read(), b"edited elsewhere\n");
+                target.assert_no_leftovers();
+            }
+
+            #[test]
+            fn redo_is_refused_after_an_external_change() {
+                let target = Target::new(b"loaded\n");
+                let mut history = RevertHistory::default();
+                revert(&target, &mut history, "reverted\n");
+                step(&target, &mut history, Undo).unwrap();
+                std::fs::write(&target.path, b"edited elsewhere\n").unwrap();
+
+                let result = step(&target, &mut history, Redo);
+                assert!(matches!(result, Err(WriteRefusal::Stale)), "{result:?}");
+                assert_eq!(target.read(), b"edited elsewhere\n");
+                target.assert_no_leftovers();
+            }
+        }
+    }
+
+    mod history {
+        use super::*;
+        use HistoryStep::{Redo, Undo};
+
+        fn record(path: &str, before: &str, after: &str) -> RevertRecord {
+            RevertRecord {
+                path: PathBuf::from(path),
+                before: before.into(),
+                after: after.into(),
+            }
+        }
+
+        /// A write: (path, contents written, contents the file had to hold).
+        fn write(path: &str, contents: &str, expected: &str) -> Option<(PathBuf, String, String)> {
+            Some((PathBuf::from(path), contents.into(), expected.into()))
+        }
+
+        /// Steps with a writer that succeeds and returns what it was asked to write.
+        fn step(
+            history: &mut RevertHistory,
+            step: HistoryStep,
+        ) -> Option<(PathBuf, String, String)> {
+            let mut written = None;
+            let result = history.step(step, |path, contents, expected| {
+                let text = |b: &[u8]| String::from_utf8(b.to_vec()).unwrap();
+                written = Some((path.to_path_buf(), text(contents), text(expected)));
+                Ok::<(), ()>(())
+            });
+            match result {
+                None => assert!(written.is_none()),
+                Some((path, result)) => {
+                    assert_eq!(result, Ok(()));
+                    assert_eq!(Some(&path), written.as_ref().map(|w| &w.0));
+                }
+            }
+            written
+        }
+
+        #[test]
+        fn undo_and_redo_walk_the_reverts_in_order() {
+            let mut history = RevertHistory::default();
+            history.record(record("a", "a0", "a1"));
+            history.record(record("b", "b0", "b1"));
+            history.record(record("a", "a1", "a2"));
+
+            assert_eq!(step(&mut history, Undo), write("a", "a1", "a2"));
+            assert_eq!(step(&mut history, Undo), write("b", "b0", "b1"));
+            assert_eq!(step(&mut history, Undo), write("a", "a0", "a1"));
+            assert_eq!(step(&mut history, Undo), None);
+
+            assert_eq!(step(&mut history, Redo), write("a", "a1", "a0"));
+            assert_eq!(step(&mut history, Redo), write("b", "b1", "b0"));
+            assert_eq!(step(&mut history, Redo), write("a", "a2", "a1"));
+            assert_eq!(step(&mut history, Redo), None);
+
+            assert_eq!(step(&mut history, Undo), write("a", "a1", "a2"));
+        }
+
+        #[test]
+        fn a_new_revert_clears_redo() {
+            let mut history = RevertHistory::default();
+            history.record(record("a", "a0", "a1"));
+            history.record(record("a", "a1", "a2"));
+            assert_eq!(step(&mut history, Undo), write("a", "a1", "a2"));
+
+            history.record(record("a", "a1", "x"));
+            assert_eq!(step(&mut history, Redo), None);
+            assert_eq!(step(&mut history, Undo), write("a", "a1", "x"));
+            assert_eq!(step(&mut history, Undo), write("a", "a0", "a1"));
+            assert_eq!(step(&mut history, Undo), None);
+        }
+
+        #[test]
+        fn a_refused_step_keeps_the_record_for_a_retry() {
+            let mut history = RevertHistory::default();
+            history.record(record("a", "a0", "a1"));
+
+            let refused = history.step(Undo, |_, _, _| Err("changed"));
+            assert_eq!(refused, Some((PathBuf::from("a"), Err("changed"))));
+            assert_eq!(step(&mut history, Redo), None);
+            assert_eq!(step(&mut history, Undo), write("a", "a0", "a1"));
+
+            let refused = history.step(Redo, |_, _, _| Err("changed"));
+            assert_eq!(refused, Some((PathBuf::from("a"), Err("changed"))));
+            assert_eq!(step(&mut history, Undo), None);
+            assert_eq!(step(&mut history, Redo), write("a", "a1", "a0"));
+        }
+
+        #[test]
+        fn a_path_change_on_either_side_clears_both_stacks() {
+            let a = UniversalPath::from(PathBuf::from("C:/ws/a.txt"));
+            let b = UniversalPath::from(PathBuf::from("C:/ws/b.txt"));
+            let c = UniversalPath::new("//depot/main/c.txt#2");
+            let with_undo_and_redo = || {
+                let mut history = RevertHistory::default();
+                history.observe_pair(&a, &b);
+                history.record(record("a", "a0", "a1"));
+                history.record(record("a", "a1", "a2"));
+                assert_eq!(step(&mut history, Undo), write("a", "a1", "a2"));
+                history
+            };
+
+            // The same pair, every frame, keeps both stacks.
+            let mut history = with_undo_and_redo();
+            history.observe_pair(&a, &b);
+            history.observe_pair(&a, &b);
+            assert_eq!(step(&mut history, Redo), write("a", "a2", "a1"));
+            assert_eq!(step(&mut history, Undo), write("a", "a1", "a2"));
+            assert_eq!(step(&mut history, Undo), write("a", "a0", "a1"));
+
+            // Another file on either side, or the sides swapped, is a new diff.
+            for (left, right) in [(&a, &c), (&c, &b), (&b, &a)] {
+                let mut history = with_undo_and_redo();
+                history.observe_pair(left, right);
+                assert_eq!(step(&mut history, Undo), None);
+                assert_eq!(step(&mut history, Redo), None);
             }
         }
     }

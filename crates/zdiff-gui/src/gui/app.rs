@@ -24,7 +24,10 @@ use crate::{
     file::{FileProcessor, LoadedFile},
     keybindings::{Keybindings, Shortcut, ui_keybindings},
     p4::{P4Command, get_p4_config, ui_p4config, update_p4_config},
-    revert::{self, PendingP4Edit, RevertRefusal, RevertTarget, RevertWrite, WriteRefusal},
+    revert::{
+        self, HistoryStep, PendingP4Edit, RevertHistory, RevertRecord, RevertRefusal, RevertTarget,
+        RevertWrite, WriteRefusal,
+    },
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},
@@ -60,6 +63,9 @@ pub struct AppStateCtx {
     pub viewer_fallback: Option<String>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub extension_map: ExtensionMap,
+    /// Undo and redo of reverts; in memory only.
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub revert_history: RevertHistory,
 
     pub diff_lexer_mode: u8,
     pub diff_options: DiffBuilderOptions,
@@ -105,6 +111,7 @@ impl Default for AppStateCtx {
             viewer_override: Default::default(),
             viewer_fallback: None,
             extension_map: Default::default(),
+            revert_history: Default::default(),
             scroll_left: Default::default(),
             scroll_right: Default::default(),
             h_scroll_linked: default_h_scroll_linked(),
@@ -274,17 +281,20 @@ impl<'a> ZApp {
         file_2.invalidate_cache_file();
     }
 
-    /// Reloads after a revert write: both sides when written, the target when it was stale.
+    /// Records a written revert for undo and reloads both sides; reloads the target when it was
+    /// stale.
     fn finish_revert_write(
-        result: Result<(), WriteRefusal>,
+        result: Result<RevertRecord, WriteRefusal>,
         path: &Path,
         target: RevertTarget,
+        revert_history: &mut RevertHistory,
         diff_processor: &mut DiffProcessor,
         file_1: &mut FileProcessor,
         file_2: &mut FileProcessor,
     ) {
         match result {
-            Ok(()) => {
+            Ok(record) => {
+                revert_history.record(record);
                 diff_processor.reset_ctx();
                 Self::refresh_file_contents(file_1, file_2);
             }
@@ -300,6 +310,49 @@ impl<'a> ZApp {
                 }
             }
             Err(e) => log::error!("Revert refused for {}: {}", path.display(), e),
+        }
+    }
+
+    /// Undoes or redoes the latest revert in this diff. Both sides reload after a write, and
+    /// after a refusal for a file that changed on disk.
+    fn step_revert_history(app_ctx: &mut AppStateCtx, step: HistoryStep) {
+        // A path picked or set by a Quick Diff since the last frame makes this another diff.
+        let (path_1, path_2) = (
+            app_ctx.file_1.get_full_path(),
+            app_ctx.file_2.get_full_path(),
+        );
+        app_ctx.revert_history.observe_pair(&path_1, &path_2);
+        let (name, since) = match step {
+            HistoryStep::Undo => ("Undo", "the revert"),
+            HistoryStep::Redo => ("Redo", "the undo"),
+        };
+        let stepped = app_ctx
+            .revert_history
+            .step(step, revert::write_history_step(&std::env::temp_dir()));
+        let reload = match stepped {
+            None => {
+                log::info!("{name}: no revert to {}", name.to_lowercase());
+                false
+            }
+            Some((path, Ok(()))) => {
+                log::info!("{name} of a revert written to {}", path.display());
+                true
+            }
+            Some((path, Err(WriteRefusal::Stale))) => {
+                log::error!(
+                    "{name} refused: {} changed on disk since {since}. Reloading it.",
+                    path.display()
+                );
+                true
+            }
+            Some((path, Err(e))) => {
+                log::error!("{name} refused for {}: {}", path.display(), e);
+                false
+            }
+        };
+        if reload {
+            app_ctx.diff_processor.reset_ctx();
+            Self::refresh_file_contents(&mut app_ctx.file_1, &mut app_ctx.file_2);
         }
     }
 
@@ -624,6 +677,7 @@ impl<'a> ZApp {
                 viewer_override,
                 viewer_fallback,
                 extension_map,
+                revert_history,
                 code_language,
                 code_language_custom,
             } = app_ctx;
@@ -832,22 +886,28 @@ impl<'a> ZApp {
                             &std::env::temp_dir(),
                             &P4Command::new(false).for_file(UniversalPath::Local(path.clone())),
                         );
-                        match written {
+                        let result = match written {
                             Ok(RevertWrite::NeedsP4Edit(pending)) => {
                                 log::info!(
                                     "{} is read-only and Perforce-managed, asking to p4 edit it",
                                     path.display()
                                 );
                                 self.pending_p4_edit = Some((revert_request.target, pending));
+                                None
                             }
-                            written => Self::finish_revert_write(
-                                written.map(|_| ()),
+                            Ok(RevertWrite::Written(record)) => Some(Ok(record)),
+                            Err(e) => Some(Err(e)),
+                        };
+                        if let Some(result) = result {
+                            Self::finish_revert_write(
+                                result,
                                 &path,
                                 revert_request.target,
+                                revert_history,
                                 diff_processor,
                                 &mut app_ctx.file_1,
                                 &mut app_ctx.file_2,
-                            ),
+                            );
                         }
                     }
                     Err(refusal) => {
@@ -887,6 +947,7 @@ impl<'a> ZApp {
                             result,
                             &path,
                             target,
+                            revert_history,
                             diff_processor,
                             &mut app_ctx.file_1,
                             &mut app_ctx.file_2,
@@ -960,6 +1021,9 @@ impl<'a> ZApp {
             .expect("State was not valid while processing inputs")
             .ctx_mut();
         let user_quit: bool = false;
+        // Read outside ctx.input: Context methods inside its closure can deadlock.
+        let text_focused = ctx.wants_keyboard_input();
+        let mut history_step = None;
         {
             let _input_ctx = ctx.input(|r| {
                 // Esc
@@ -1091,6 +1155,19 @@ impl<'a> ZApp {
                         }
                     },
                 );
+                // A focused text field (path editors, Find, Goto, a binding being captured) has
+                // its own Ctrl+Z/Ctrl+Y; they must not also rewrite a file on disk.
+                if !text_focused {
+                    handle_kb(&app_state_ctx.keybindings.undo_revert, &mut |_kb| {
+                        history_step = Some(HistoryStep::Undo)
+                    });
+                    handle_kb(&app_state_ctx.keybindings.redo_revert, &mut |_kb| {
+                        history_step = Some(HistoryStep::Redo)
+                    });
+                    handle_kb(&app_state_ctx.keybindings.redo_revert_alt, &mut |_kb| {
+                        history_step = Some(HistoryStep::Redo)
+                    });
+                }
 
                 for (i, (kb, path)) in app_state_ctx
                     .keybindings
@@ -1147,6 +1224,10 @@ impl<'a> ZApp {
                     });
                 }
             });
+        }
+        // After the input closure: this writes to disk.
+        if let Some(step) = history_step {
+            Self::step_revert_history(app_state_ctx, step);
         }
 
         if user_quit {
@@ -1219,6 +1300,7 @@ impl eframe::App for ZApp {
                 let path_1 = state.file_1.get_full_path();
                 let path_2 = state.file_2.get_full_path();
                 state.viewer_override.observe_pair(&path_1, &path_2);
+                state.revert_history.observe_pair(&path_1, &path_2);
                 fn side(f: &LoadedFile) -> LoadedSide<'_> {
                     LoadedSide {
                         path: f.path(),
@@ -1366,5 +1448,36 @@ mod tests {
             .unwrap();
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
         assert!(restored.h_scroll_linked);
+    }
+
+    #[test]
+    fn a_save_without_the_undo_keys_loads_the_defaults() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        let keybindings = json["keybindings"].as_object_mut().unwrap();
+        for key in ["undo_revert", "redo_revert", "redo_revert_alt"] {
+            keybindings.remove(key).unwrap();
+        }
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        let defaults = Keybindings::default();
+        assert!(defaults.undo_revert.is_some());
+        assert!(defaults.redo_revert.is_some());
+        assert!(defaults.redo_revert_alt.is_some());
+        assert_eq!(restored.keybindings.undo_revert, defaults.undo_revert);
+        assert_eq!(restored.keybindings.redo_revert, defaults.redo_revert);
+        assert_eq!(
+            restored.keybindings.redo_revert_alt,
+            defaults.redo_revert_alt
+        );
+    }
+
+    #[test]
+    fn undo_keys_survive_a_restart() {
+        let mut ctx = AppStateCtx::default();
+        ctx.keybindings.undo_revert = None;
+        ctx.keybindings.redo_revert = ctx.keybindings.find;
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.keybindings.undo_revert, None);
+        assert_eq!(restored.keybindings.redo_revert, ctx.keybindings.find);
     }
 }

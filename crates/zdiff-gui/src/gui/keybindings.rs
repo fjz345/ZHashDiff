@@ -58,6 +58,13 @@ pub struct Keybindings {
     pub user_quick_diffs: Vec<(Option<Shortcut>, QuickDiffPaths)>,
     pub revision_graph: Option<Shortcut>,
     pub timelapse_view: Option<Shortcut>,
+    // Saves from before these bindings load the default keys.
+    #[cfg_attr(feature = "serde", serde(default = "default_undo_revert"))]
+    pub undo_revert: Option<Shortcut>,
+    #[cfg_attr(feature = "serde", serde(default = "default_redo_revert"))]
+    pub redo_revert: Option<Shortcut>,
+    #[cfg_attr(feature = "serde", serde(default = "default_redo_revert_alt"))]
+    pub redo_revert_alt: Option<Shortcut>,
 }
 
 const DEFAULT_COMMAND_ENABLE: bool = if cfg!(target_os = "macos")
@@ -240,8 +247,45 @@ impl Default for Keybindings {
                     ..Default::default()
                 },
             }),
+            undo_revert: default_undo_revert(),
+            redo_revert: default_redo_revert(),
+            redo_revert_alt: default_redo_revert_alt(),
         }
     }
+}
+
+fn default_undo_revert() -> Option<Shortcut> {
+    Some(Shortcut {
+        key: Key::Z,
+        modifiers: Modifiers {
+            ctrl: DEFAULT_CONTROL_ENABLE,
+            command: DEFAULT_COMMAND_ENABLE,
+            ..Default::default()
+        },
+    })
+}
+
+fn default_redo_revert() -> Option<Shortcut> {
+    Some(Shortcut {
+        key: Key::Y,
+        modifiers: Modifiers {
+            ctrl: DEFAULT_CONTROL_ENABLE,
+            command: DEFAULT_COMMAND_ENABLE,
+            ..Default::default()
+        },
+    })
+}
+
+fn default_redo_revert_alt() -> Option<Shortcut> {
+    Some(Shortcut {
+        key: Key::Z,
+        modifiers: Modifiers {
+            ctrl: DEFAULT_CONTROL_ENABLE,
+            command: DEFAULT_COMMAND_ENABLE,
+            shift: true,
+            ..Default::default()
+        },
+    })
 }
 
 pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
@@ -403,6 +447,9 @@ pub fn ui_keybindings(ui: &mut egui::Ui, keybindings: &mut Keybindings) {
                 ui_shortcut_row(ui, "Previous Find Result", &mut keybindings.prev_find);
                 ui_shortcut_row(ui, "Revision Graph", &mut keybindings.revision_graph);
                 ui_shortcut_row(ui, "Timelapse View", &mut keybindings.timelapse_view);
+                ui_shortcut_row(ui, "Undo Revert", &mut keybindings.undo_revert);
+                ui_shortcut_row(ui, "Redo Revert", &mut keybindings.redo_revert);
+                ui_shortcut_row(ui, "Redo Revert (Alt)", &mut keybindings.redo_revert_alt);
             });
     });
 }
