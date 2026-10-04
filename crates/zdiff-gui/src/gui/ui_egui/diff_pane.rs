@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::{
     clamped_cursor::ClampedCursor,
     diff_ctx::{DiffStageTimes, MinimalDiffCtx, ScrollSpan},
+    revert::{self, RevertRefusal, RevertRequest, RevertTarget},
     ui_egui::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
         panes::ZAppPane,
@@ -16,7 +17,7 @@ use eframe::egui::{
 use serde::{Deserialize, Serialize};
 use zdiff::{
     cached_file::CachedFile,
-    diff_builder::{DiffBuilderOptions, DiffRow, LineContent},
+    diff_builder::{DiffBuilderOptions, LineContent},
     diff_ir::{DiffOp, DiffResult},
     lexer::RawTokenTrait,
     myers::MyersNumAddDelete,
@@ -56,7 +57,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub set_file_1_root_request: &'a mut Option<UniversalPath>,
     pub set_file_2_root_request: &'a mut Option<UniversalPath>,
     pub pivot: &'a mut (Option<usize>, Option<usize>),
-    pub revert_request: &'a mut Option<DiffResult>,
+    pub revert_request: &'a mut Option<RevertRequest>,
     /// Set when the pair resolved to the Hex viewer; the table then shows hex rows.
     pub hex_view: Option<HexViewCtx<'a>>,
 }
@@ -601,42 +602,31 @@ impl FileDiffPane {
                                                         };
                                                     ui.centered_and_justified(|ui| {
                                                         ui.horizontal(|ui|{
-                                                            let revert_func = |diff_row: &DiffRow|{
-                                                                match &diff_row.left
-                                                                {
-                                                                    LineContent::Code { tokens, line_num, bg } => {
-                                                                        let diff_result = tokens.first().map(|a|a.0.clone());
-                                                                        let diff_result = match diff_result{
-                                                                            Some(diff) => {
-                                                                                match &diff.operation {
-                                                                                    DiffOp::Equal(_) => {None},
-                                                                                    DiffOp::Delete => {Some(diff)},
-                                                                                    DiffOp::Insert => {Some(diff)},
-                                                                                }
-                                                                            },
-                                                                            None => {None},
-                                                                        };
-                                                                        diff_result
-                                                                    },
-                                                                    LineContent::Void => {None},
-                                                                    LineContent::Collapsed => {None},
+                                                            let diff_ctx = ctx.diff_ctx;
+                                                            let hunk = diff_ctx.and_then(|d| {
+                                                                revert::hunk_starting_at(&d.precomputed_diffs, row_index)
+                                                                    .map(|hunk| (d, hunk))
+                                                            });
+                                                            let mut revert_button = |ui: &mut egui::Ui, target: RevertTarget, label: &str, hover: &str| {
+                                                                let Some((diff_ctx, hunk)) = hunk else {
+                                                                    return;
+                                                                };
+                                                                match revert::check_revert(diff_ctx, target) {
+                                                                    Ok(()) => {
+                                                                        if ui.button(label).on_hover_text(hover).clicked() {
+                                                                            *ctx.revert_request = Some(RevertRequest { hunk, target });
+                                                                        }
+                                                                    }
+                                                                    // The pivot is persisted and easy to miss, so say why
+                                                                    // instead of hiding the buttons.
+                                                                    Err(refusal @ RevertRefusal::PivotActive) => {
+                                                                        ui.add_enabled(false, egui::Button::new(label))
+                                                                            .on_disabled_hover_text(format!("Can't revert: {refusal}"));
+                                                                    }
+                                                                    Err(_) => {}
                                                                 }
                                                             };
-                                                            let can_revert_left = match &diff_row.left {
-                                                                LineContent::Code { tokens, line_num, bg } => tokens.iter().any(|a|matches!(a.0.operation, DiffOp::Delete)),
-                                                                LineContent::Void | LineContent::Collapsed => false,
-                                                            };
-                                                            let can_revert_right = match &diff_row.right {
-                                                                LineContent::Code { tokens, line_num, bg } => tokens.iter().any(|a|matches!(a.0.operation, DiffOp::Insert)),
-                                                                LineContent::Void | LineContent::Collapsed => false,
-                                                            };
-                                                            if  can_revert_left && ui.button("<").clicked(){
-                                                                let diff = revert_func(&diff_row);
-                                                                *ctx.revert_request = diff;
-                                                                if let Some(new_diff) = ctx.revert_request{
-                                                                        log::info!("revert_reqeust updated: {:?}", new_diff);
-                                                                }
-                                                            };
+                                                            revert_button(ui, RevertTarget::Left, "<", "Replace this hunk in the left file with the right side");
                                                             ui.add(
                                                                 egui::Label::new(
                                                                     egui::RichText::new(symbol_text)
@@ -644,13 +634,7 @@ impl FileDiffPane {
                                                                 )
                                                                 .selectable(false),
                                                             );
-                                                            if can_revert_right && ui.button(">").clicked(){
-                                                                let diff = revert_func(&diff_row);
-                                                                *ctx.revert_request = diff;
-                                                                if let Some(new_diff) = ctx.revert_request{
-                                                                    log::info!("revert_reqeust updated: {:?}", new_diff);
-                                                                }
-                                                            };
+                                                            revert_button(ui, RevertTarget::Right, ">", "Replace this hunk in the right file with the left side");
                                                         });
                                                     });
                                                 });

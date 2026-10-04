@@ -11,6 +11,7 @@ mod diff_ctx;
 mod file;
 mod keybindings;
 mod p4;
+mod revert;
 pub mod ui_egui;
 mod viewer;
 

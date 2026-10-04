@@ -1,4 +1,5 @@
 use std::{
+    ops::RangeInclusive,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -104,6 +105,11 @@ pub struct DiffSpan {
     start: usize,
     end: usize,
 }
+impl DiffSpan {
+    pub fn rows(&self) -> RangeInclusive<usize> {
+        self.start..=self.end
+    }
+}
 pub type PrecomputedDiffs = Vec<DiffSpan>; // list spans with indicies of diff_rows of DiffOp != Equal from diff_rows
 pub type PrecomputedFileRows = (Vec<usize>, Vec<usize>); // line mapping from DiffRow index to DiffRow line number
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -146,7 +152,7 @@ pub struct DiffIRInput {
 pub struct DiffRowsInput {
     pub file_1: Option<Arc<CachedFile<RawToken>>>,
     pub file_2: Option<Arc<CachedFile<RawToken>>>,
-    pub diff_ir: DiffIR,
+    pub diff_ir: Arc<DiffIR>,
     pub diff_options: DiffBuilderOptions,
 }
 #[derive(Debug)]
@@ -160,7 +166,7 @@ pub struct MyersCtx {
 #[derive(Debug)]
 pub struct DiffIRCtx {
     input: DiffIRInput,
-    diff_ir: DiffIR,
+    diff_ir: Arc<DiffIR>,
     elapsed: Duration,
 }
 #[derive(Debug)]
@@ -200,6 +206,8 @@ pub struct MinimalDiffCtx {
     pub precomputed_diffs: Arc<PrecomputedDiffs>,
     pub precomputed_file_rows: Arc<PrecomputedFileRows>,
     pub diff_rows: Arc<DiffRows>,
+    /// The IR the rows were built from. Revert reads the token alignment from it.
+    pub diff_ir: Arc<DiffIR>,
 }
 
 macro_rules! check_cancel {
@@ -496,7 +504,7 @@ impl DiffCtx {
                     if let Some(diff_ir) = DiffIR::new(&input.myers_path, is_equal_left, cancel) {
                         let _ = tx.send(Some(DiffIRCtx {
                             input,
-                            diff_ir,
+                            diff_ir: Arc::new(diff_ir),
                             elapsed: start.elapsed(),
                         }));
                     } else if !cancel_ref.load(Ordering::Relaxed) {
@@ -547,7 +555,7 @@ impl DiffCtx {
                     let start = Instant::now();
                     let (c1, c2, _) = resolve_files(&input.file_1, &input.file_2);
                     let diff_rows = build_diff_rows(
-                        input.diff_ir.clone(),
+                        (*input.diff_ir).clone(),
                         Some(&c1.tokens),
                         Some(&c2.tokens),
                         &input.diff_options,
@@ -597,6 +605,7 @@ impl DiffCtx {
         let diff_rows = diff_row_ctx.rows.clone();
         let precomputed_diffs = diff_row_ctx.precomputed_diffs.clone();
         let precomputed_file_rows = diff_row_ctx.precomputed_file_rows.clone();
+        let diff_ir = diff_row_ctx.input.diff_ir.clone();
         let diff_rows_elapsed = diff_row_ctx.elapsed;
         // Rows are only returned when they were built from the current IR ctx. Read it here
         // rather than requesting it again, which would clone and compare the Myers path.
@@ -622,6 +631,7 @@ impl DiffCtx {
             precomputed_diffs,
             precomputed_file_rows,
             diff_rows,
+            diff_ir,
         })
     }
 }
@@ -1018,7 +1028,7 @@ fn update_diff_rows_minimal_diff_ctx(
     track_alloc!(reg, "hash_file");
     let start = Instant::now();
     let diff_rows = build_diff_rows(
-        diff_ir,
+        diff_ir.clone(),
         Some(&c1.tokens),
         Some(&c2.tokens),
         &input.options,
@@ -1056,6 +1066,7 @@ fn update_diff_rows_minimal_diff_ctx(
         precomputed_diffs: Arc::new(precomputed_diffs),
         precomputed_file_rows: Arc::new(precomputed_file_rows),
         diff_rows: Arc::new(final_rows),
+        diff_ir: Arc::new(diff_ir),
     })
 }
 

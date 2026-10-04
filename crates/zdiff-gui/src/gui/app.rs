@@ -20,6 +20,7 @@ use crate::{
     file::FileProcessor,
     keybindings::{Keybindings, Shortcut, ui_keybindings},
     p4::{P4Command, get_p4_config, ui_p4config, update_p4_config},
+    revert::{self, RevertRefusal},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},
@@ -705,44 +706,25 @@ impl<'a> ZApp {
                 log::debug!("Set new path from file_1_request: {:?}", file_path);
                 app_ctx.file_2.set_path(file_path);
             }
-            if let Some(revert_request) = behavior.ctx_file_diff.revert_request {
+            if let Some(revert_request) = *behavior.ctx_file_diff.revert_request {
                 log::debug!("new revert request: {:?}", revert_request);
-                let revert_success = match &revert_request.operation {
-                    zdiff::diff_ir::DiffOp::Equal(_) => {
-                        log::debug!("invalid revert request");
+                // Plan against the files the shown rows were built from, not the latest loads.
+                let planned = behavior
+                    .ctx_file_diff
+                    .diff_ctx
+                    .ok_or(RevertRefusal::NoSuchHunk)
+                    .and_then(|diff_ctx| revert::plan_hunk_revert(diff_ctx, revert_request));
+                let revert_success = match planned {
+                    Ok((path, contents)) => match std::fs::write(&path, contents) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            log::error!("Failed to revert {}: {}", path.display(), e);
+                            false
+                        }
+                    },
+                    Err(refusal) => {
+                        log::error!("Revert refused: {} {:?}", refusal, revert_request);
                         false
-                    }
-                    zdiff::diff_ir::DiffOp::Delete => {
-                        let c1 = app_ctx
-                            .file_1
-                            .get_cached_file()
-                            .expect("tried to revert cached file");
-                        let c2 = app_ctx
-                            .file_2
-                            .get_cached_file()
-                            .expect("tried to revert cached file");
-                        if let Err(e) = c2.revert_one_diff(revert_request, &c1, false) {
-                            log::error!("Failed to revert: {} {:?}", e, revert_request);
-                            false
-                        } else {
-                            true
-                        }
-                    }
-                    zdiff::diff_ir::DiffOp::Insert => {
-                        let c1 = app_ctx
-                            .file_1
-                            .get_cached_file()
-                            .expect("tried to revert cached file");
-                        let c2 = app_ctx
-                            .file_2
-                            .get_cached_file()
-                            .expect("tried to revert cached file");
-                        if let Err(e) = c1.revert_one_diff(revert_request, &c2, true) {
-                            log::error!("Failed to revert: {} {:?}", e, revert_request);
-                            false
-                        } else {
-                            true
-                        }
                     }
                 };
                 if revert_success {
