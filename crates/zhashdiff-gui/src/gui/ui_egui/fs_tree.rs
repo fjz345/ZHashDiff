@@ -20,7 +20,7 @@ use zcommon::ui_egui::common::{
     CheckboxSelectState, draw_persistent_hint_text_edit, hash_to_color, ui_custom_checkbox,
 };
 
-use crate::ui_egui::tree_cursor::{CursorRow, TreeCursor};
+use crate::ui_egui::tree_cursor::{CursorRequest, CursorRow, TreeCursor};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FileSystemView {
@@ -346,22 +346,29 @@ fn filtered_out(view: &FileSystemView, filter: &PathFilter) -> Vec<bool> {
 }
 
 /// The two-folder rows as the cursor sees them. A row is hidden when it isn't drawn: the
-/// root row, or an entry inside a folder collapsed on a side the entry exists on.
+/// root row, or an entry inside a folder collapsed on a side the entry exists on. A folder is
+/// collapsed when it is collapsed on a side it exists on.
 pub fn two_folder_cursor_rows<'a>(
     file_system_1_view: Option<&FileSystemView>,
     file_system_2_view: Option<&FileSystemView>,
     rows: &'a [VisibleRowTwoFolderDiff],
 ) -> Vec<CursorRow<'a>> {
-    let collapsed_in = |view: Option<&FileSystemView>, id: Option<FsNodeId>| match (view, id) {
-        (Some(view), Some(id)) => view.is_parent_chain_collapsed(id),
-        _ => false,
+    let on_either_side = |row: &VisibleRowTwoFolderDiff,
+                          test: fn(&FileSystemView, FsNodeId) -> bool| {
+        let test_side = |view: Option<&FileSystemView>, id: Option<FsNodeId>| match (view, id) {
+            (Some(view), Some(id)) => test(view, id),
+            _ => false,
+        };
+        test_side(file_system_1_view, row.diff_state.first())
+            || test_side(file_system_2_view, row.diff_state.second())
     };
     rows.iter()
         .map(|row| CursorRow {
             rel_path: &row.rel_path,
             hidden: row.rel_path.is_empty()
-                || collapsed_in(file_system_1_view, row.diff_state.first())
-                || collapsed_in(file_system_2_view, row.diff_state.second()),
+                || on_either_side(row, FileSystemView::is_parent_chain_collapsed),
+            is_dir: row.is_dir,
+            collapsed: row.is_dir && on_either_side(row, FileSystemView::is_collapsed),
         })
         .collect()
 }
@@ -498,19 +505,45 @@ pub fn draw_ui_two_folder_tree_with_diff(
     }
 
     let visible_rows = visible_rows.as_ref().unwrap();
+
+    // Scroll only when the keys moved the cursor, so manual scrolling isn't fought.
+    let mut scroll_to_cursor = false;
+    if !ui.ctx().wants_keyboard_input() {
+        for key in ui.input(cursor_keys) {
+            // Each key sees the rows the previous key's fold left.
+            let cursor_rows = two_folder_cursor_rows(
+                file_system_1_view.as_ref(),
+                file_system_2_view.as_ref(),
+                visible_rows,
+            );
+            let (moved, request) = match key {
+                egui::Key::ArrowDown => (cursor.down(&cursor_rows), None),
+                egui::Key::ArrowUp => (cursor.up(&cursor_rows), None),
+                egui::Key::ArrowLeft => cursor.left(&cursor_rows),
+                egui::Key::ArrowRight => (cursor.clone(), cursor.right(&cursor_rows)),
+                egui::Key::Enter => (cursor.clone(), cursor.enter(&cursor_rows)),
+                _ => unreachable!("cursor_keys returned {key:?}"),
+            };
+            scroll_to_cursor |= moved != *cursor;
+            *cursor = moved;
+            if let Some(request) = request {
+                apply_cursor_request(
+                    file_system_1_view.as_mut(),
+                    file_system_2_view.as_mut(),
+                    visible_rows,
+                    &request,
+                    diff_tool_config,
+                );
+            }
+        }
+    }
+
+    // After the keys, so a fold they made is drawn this frame.
     let cursor_rows = two_folder_cursor_rows(
         file_system_1_view.as_ref(),
         file_system_2_view.as_ref(),
         visible_rows,
     );
-
-    // Scroll only when the keys moved the cursor, so manual scrolling isn't fought.
-    let mut scroll_to_cursor = false;
-    if !ui.ctx().wants_keyboard_input() {
-        let moved = ui.input(|i| cursor_after_keys(i, cursor, &cursor_rows));
-        scroll_to_cursor = moved != *cursor;
-        *cursor = moved;
-    }
 
     // Only drawn rows go to the table: it places row i at i * row height, both when
     // virtualizing and when scrolling to a row.
@@ -1037,22 +1070,69 @@ fn render_row_folder_tree_diff_column(
     should_select_row || row.response().clicked()
 }
 
-/// Up and Down without modifiers move the cursor. Modified arrows are left to other bindings.
-fn cursor_after_keys(
-    input: &egui::InputState,
-    cursor: &TreeCursor,
-    rows: &[CursorRow],
-) -> TreeCursor {
-    let mut cursor = cursor.clone();
-    if input.modifiers.is_none() {
-        for _ in 0..input.num_presses(egui::Key::ArrowDown) {
-            cursor = cursor.down(rows);
+fn apply_cursor_request(
+    file_system_1_view: Option<&mut FileSystemView>,
+    file_system_2_view: Option<&mut FileSystemView>,
+    rows: &[VisibleRowTwoFolderDiff],
+    request: &CursorRequest,
+    diff_tool_config: &DiffToolConfig,
+) {
+    let Some(entry) = rows.iter().find(|row| row.rel_path == request.rel_path()) else {
+        log::error!("cursor request for a row that isn't there: {request:?}");
+        return;
+    };
+    match request {
+        CursorRequest::Open(_) => {
+            on_row_item_clicked(
+                file_system_1_view.as_deref(),
+                file_system_2_view.as_deref(),
+                entry,
+                diff_tool_config,
+            );
         }
-        for _ in 0..input.num_presses(egui::Key::ArrowUp) {
-            cursor = cursor.up(rows);
+        // Set rather than toggled per side, so the sides end up agreeing.
+        CursorRequest::Expand(_) | CursorRequest::Collapse(_) => {
+            let collapse = matches!(request, CursorRequest::Collapse(_));
+            let sides = [
+                (file_system_1_view, entry.diff_state.first()),
+                (file_system_2_view, entry.diff_state.second()),
+            ];
+            for (view, id) in sides {
+                if let (Some(view), Some(id)) = (view, id) {
+                    if collapse {
+                        view.collapsed.insert(id, true);
+                    } else {
+                        view.collapsed.remove(&id);
+                    }
+                }
+            }
         }
     }
-    cursor
+}
+
+/// The arrows and Enter without modifiers, in press order, key repeats included. Modified
+/// arrows are left to other bindings.
+fn cursor_keys(input: &egui::InputState) -> Vec<egui::Key> {
+    if !input.modifiers.is_none() {
+        return Vec::new();
+    }
+    input
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            egui::Event::Key {
+                key:
+                    key @ (egui::Key::ArrowDown
+                    | egui::Key::ArrowUp
+                    | egui::Key::ArrowLeft
+                    | egui::Key::ArrowRight
+                    | egui::Key::Enter),
+                pressed: true,
+                ..
+            } => Some(*key),
+            _ => None,
+        })
+        .collect()
 }
 
 fn render_row_folder_tree_with_checkbox(
@@ -1232,9 +1312,11 @@ fn get_folder_selection_state(
 #[cfg(test)]
 mod tests {
     use crate::ui_egui::fs_tree::{
-        DiffState, FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff,
+        DiffState, FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff, apply_cursor_request,
         two_folder_cursor_rows,
     };
+    use crate::ui_egui::tree_cursor::CursorRequest;
+    use zhashdiff::external_diff_tool::DiffToolConfig;
 
     use std::cell::Cell;
     use std::collections::HashMap;
@@ -1731,6 +1813,47 @@ mod tests {
                 "sub/left_only_in_sub.txt",
             ]
         );
+    }
+
+    #[test]
+    fn expand_and_collapse_requests_set_both_sides_even_when_they_disagree() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let mut left = load_view(left_dir.path());
+        let mut right = load_view(right_dir.path());
+        let rows = build_counting(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+        );
+        let sub = rows.iter().find(|r| r.rel_path == "sub").unwrap();
+        let (left_sub, right_sub) = (
+            sub.diff_state.first().unwrap(),
+            sub.diff_state.second().unwrap(),
+        );
+        let cursor_sees_collapsed = |left: &FileSystemView, right: &FileSystemView| {
+            two_folder_cursor_rows(Some(left), Some(right), &rows)
+                .iter()
+                .find(|r| r.rel_path == "sub")
+                .unwrap()
+                .collapsed
+        };
+        let config = DiffToolConfig::default();
+
+        left.toggle_collapse(left_sub);
+        assert!(cursor_sees_collapsed(&left, &right), "left side only");
+
+        let expand = CursorRequest::Expand("sub".to_string());
+        apply_cursor_request(Some(&mut left), Some(&mut right), &rows, &expand, &config);
+        assert!(!left.is_collapsed(left_sub) && !right.is_collapsed(right_sub));
+        assert!(!cursor_sees_collapsed(&left, &right));
+
+        right.toggle_collapse(right_sub);
+        assert!(cursor_sees_collapsed(&left, &right), "right side only");
+
+        let collapse = CursorRequest::Collapse("sub".to_string());
+        apply_cursor_request(Some(&mut left), Some(&mut right), &rows, &collapse, &config);
+        assert!(left.is_collapsed(left_sub) && right.is_collapsed(right_sub));
     }
 
     #[test]
