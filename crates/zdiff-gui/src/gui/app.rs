@@ -74,6 +74,9 @@ pub struct AppStateCtx {
     // ### UI TEMP
     pub scroll_left: f32,
     pub scroll_right: f32,
+    // Saves from before the setting load linked, like a fresh state.
+    #[cfg_attr(feature = "serde", serde(default = "default_h_scroll_linked"))]
+    pub h_scroll_linked: bool,
 
     #[cfg_attr(feature = "serde", serde(skip))]
     pub goto_open: bool,
@@ -83,6 +86,10 @@ pub struct AppStateCtx {
     pub find_open: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub find_input: String,
+}
+
+fn default_h_scroll_linked() -> bool {
+    true
 }
 
 impl Default for AppStateCtx {
@@ -100,6 +107,7 @@ impl Default for AppStateCtx {
             extension_map: Default::default(),
             scroll_left: Default::default(),
             scroll_right: Default::default(),
+            h_scroll_linked: default_h_scroll_linked(),
             goto_open: Default::default(),
             find_open: Default::default(),
             goto_input: Default::default(),
@@ -598,6 +606,7 @@ impl<'a> ZApp {
             let AppStateCtx {
                 scroll_left,
                 scroll_right,
+                h_scroll_linked,
                 diff_options,
                 file_1,
                 file_2,
@@ -725,6 +734,7 @@ impl<'a> ZApp {
                     diff_ctx: diff_ctx.as_ref(),
                     scroll_left: scroll_left,
                     scroll_right: scroll_right,
+                    h_scroll_linked,
                     diff_options: diff_options,
                     scroll_to_row_span: &scroll_to_rows,
                     load_file_1_request: &mut None,
@@ -1334,5 +1344,27 @@ mod tests {
             .unwrap();
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
         assert_eq!(restored.extension_map, ExtensionMap::defaults());
+    }
+
+    #[test]
+    fn horizontal_scroll_link_defaults_on_and_survives_a_restart() {
+        assert!(AppStateCtx::default().h_scroll_linked);
+
+        let mut ctx = AppStateCtx::default();
+        ctx.h_scroll_linked = false;
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert!(!restored.h_scroll_linked);
+    }
+
+    #[test]
+    fn a_save_without_the_horizontal_scroll_link_loads_linked() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("h_scroll_linked")
+            .unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert!(restored.h_scroll_linked);
     }
 }

@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use crate::{
     clamped_cursor::ClampedCursor,
-    diff_ctx::{BlockToggle, DiffStageTimes, MinimalDiffCtx, ScrollSpan},
+    diff_ctx::{BlockToggle, DiffRows, DiffStageTimes, MinimalDiffCtx, ScrollSpan},
     revert::{self, RevertRefusal, RevertRequest, RevertTarget},
     ui_egui::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
+        h_scroll,
         panes::ZAppPane,
     },
     viewer::{
@@ -21,7 +22,7 @@ use eframe::egui::{
 use serde::{Deserialize, Serialize};
 use zdiff::{
     cached_file::CachedFile,
-    diff_builder::{DIMMED, DiffBuilderOptions, LineContent},
+    diff_builder::{DIMMED, DiffBuilderOptions, DiffRow, LineContent},
     diff_ir::{DiffOp, DiffResult},
     ignore::IgnorePatterns,
     lexer::RawTokenTrait,
@@ -49,6 +50,8 @@ pub struct FileDiffPaneCtx<'a> {
     pub diff_options: &'a mut DiffBuilderOptions,
     pub scroll_left: &'a mut f32,
     pub scroll_right: &'a mut f32,
+    /// Both sides scroll horizontally together.
+    pub h_scroll_linked: &'a mut bool,
 
     pub code_language: &'a str,
 
@@ -80,6 +83,17 @@ pub struct FileDiffPane {
     pub title: Option<String>,
     #[serde(skip)]
     active_side: ActiveSideState,
+    #[serde(skip)]
+    content_widths: Option<ContentWidths>,
+}
+
+/// Each side's widest row, measured once per rows and font.
+struct ContentWidths {
+    // Kept alive so the pointer comparison can't match a new allocation at the same address.
+    rows: Arc<DiffRows>,
+    font_id: egui::FontId,
+    pixels_per_point: f32,
+    widths: [f32; 2],
 }
 
 impl ZAppPane for FileDiffPane {
@@ -93,23 +107,57 @@ impl FileDiffPane {
         Self {
             title,
             active_side: ActiveSideState::default(),
+            content_widths: None,
         }
+    }
+
+    fn content_widths(&mut self, ui: &egui::Ui, diff_ctx: &MinimalDiffCtx) -> [f32; 2] {
+        let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+        let pixels_per_point = ui.ctx().pixels_per_point();
+        if let Some(cached) = &self.content_widths
+            && Arc::ptr_eq(&cached.rows, &diff_ctx.diff_rows)
+            && cached.font_id == font_id
+            && cached.pixels_per_point == pixels_per_point
+        {
+            return cached.widths;
+        }
+        let widths = ui.fonts_mut(|fonts| {
+            side_content_widths(
+                &diff_ctx.diff_rows,
+                diff_ctx.input.file_1.as_deref(),
+                diff_ctx.input.file_2.as_deref(),
+                |c| fonts.glyph_width(&font_id, c),
+            )
+        });
+        self.content_widths = Some(ContentWidths {
+            rows: diff_ctx.diff_rows.clone(),
+            font_id,
+            pixels_per_point,
+            widths,
+        });
+        widths
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut FileDiffPaneCtx) -> egui_tiles::UiResponse {
         // No-op once registered.
         ui.ctx().add_plugin(CopyMarkerPlugin);
 
-        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.x + i.raw_scroll_delta.x);
-        if scroll_delta != 0.0 {
-            *ctx.scroll_left = (*ctx.scroll_left - scroll_delta).max(0.0);
-            *ctx.scroll_right = (*ctx.scroll_right - scroll_delta).max(0.0);
-        }
+        // egui turns Shift+wheel into horizontal delta. Only text rows over a side scroll; the
+        // footer bars handle the wheel themselves.
+        let (wheel_delta, hover_pos) =
+            ui.input(|i| (i.smooth_scroll_delta.x, i.pointer.hover_pos()));
+        let wheel_side = hover_pos
+            .filter(|_| wheel_delta != 0.0 && ctx.hex_view.is_none() && ctx.image_view.is_none())
+            .and_then(|pos| self.active_side.side_at(pos));
+        let content_widths = match ctx.diff_ctx {
+            Some(diff_ctx) => self.content_widths(ui, diff_ctx),
+            None => [0.0; 2],
+        };
+        // Each side's max offset, set once the text rows are laid out.
+        let mut h_scroll_max = None;
 
         log::trace!("=================================================");
 
-        let sl = *ctx.scroll_left;
-        let sr = *ctx.scroll_right;
         let available_width = ui.available_width();
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
 
@@ -171,6 +219,12 @@ impl FileDiffPane {
                     &mut ctx.diff_options.keyword_highlight,
                     egui::RichText::new("K").strong().into(),
                     "Keyword Highlight",
+                );
+                toggle_btn(
+                    ui,
+                    ctx.h_scroll_linked,
+                    "🔗".into(),
+                    "Link Horizontal Scrolling",
                 );
 
                 let mut active = ctx.diff_options.diff_only_with_extra_rows.is_some();
@@ -531,6 +585,23 @@ impl FileDiffPane {
                                     }
 
                                     let widths = body.widths().to_vec();
+                                    let max = [
+                                        h_scroll::max_offset(content_widths[0], widths[0]),
+                                        h_scroll::max_offset(content_widths[1], widths[2]),
+                                    ];
+                                    let linked = *ctx.h_scroll_linked;
+                                    let mut offsets = h_scroll::clamp(
+                                        [*ctx.scroll_left, *ctx.scroll_right],
+                                        max,
+                                        linked,
+                                    );
+                                    if let Some(side) = wheel_side {
+                                        let offset = offsets[h_scroll::side_index(side)] - wheel_delta;
+                                        offsets = h_scroll::set(offsets, side, offset, max, linked);
+                                    }
+                                    [*ctx.scroll_left, *ctx.scroll_right] = offsets;
+                                    h_scroll_max = Some(max);
+                                    let [sl, sr] = offsets;
                                     body.rows(
                                         row_height,
                                         diff_rows.map(|f| f.len()).unwrap_or_default(),
@@ -543,28 +614,22 @@ impl FileDiffPane {
 
                                                 log::trace!("==LEFT==");
                                                 row.col(|ui| {
-                                                    egui::ScrollArea::horizontal()
-                                                        .id_salt(format!("l{}", row_index))
-                                                        .scroll_bar_visibility(
-                                                            ScrollBarVisibility::AlwaysHidden,
-                                                        )
-                                                        .scroll_offset(egui::vec2(sl, 0.0))
-                                                        .show(ui, |ui| {
-                                                            Self::render_side_row(
-                                                                ui,
-                                                                ctx.diff_ctx
-                                                                    .map(|f| f.input.file_1.clone())
-                                                                    .unwrap_or_default(),
-                                                                ctx.diff_ctx
-                                                                    .map(|f| f.input.file_2.clone())
-                                                                    .unwrap_or_default(),
-                                                                &diff_row.left,
-                                                                widths[0],
-                                                                is_highlighted,
-                                                                active_side == ActiveSide::Left,
-                                                                ctx.code_language,
-                                                            );
-                                                        });
+                                                    show_scrolled(ui, sl, |ui| {
+                                                        Self::render_side_row(
+                                                            ui,
+                                                            ctx.diff_ctx
+                                                                .map(|f| f.input.file_1.clone())
+                                                                .unwrap_or_default(),
+                                                            ctx.diff_ctx
+                                                                .map(|f| f.input.file_2.clone())
+                                                                .unwrap_or_default(),
+                                                            &diff_row.left,
+                                                            widths[0] + sl,
+                                                            is_highlighted,
+                                                            active_side == ActiveSide::Left,
+                                                            ctx.code_language,
+                                                        );
+                                                    });
                                                     left_rect = left_rect.union(ui.max_rect());
                                                 });
 
@@ -708,28 +773,22 @@ impl FileDiffPane {
 
                                                 log::trace!("==RIGHT==");
                                                 row.col(|ui| {
-                                                    egui::ScrollArea::horizontal()
-                                                        .id_salt(format!("r{}", row_index))
-                                                        .scroll_bar_visibility(
-                                                            ScrollBarVisibility::AlwaysHidden,
-                                                        )
-                                                        .scroll_offset(egui::vec2(sr, 0.0))
-                                                        .show(ui, |ui| {
-                                                            Self::render_side_row(
-                                                                ui,
-                                                                ctx.diff_ctx
-                                                                    .map(|f| f.input.file_1.clone())
-                                                                    .unwrap_or_default(),
-                                                                ctx.diff_ctx
-                                                                    .map(|f| f.input.file_2.clone())
-                                                                    .unwrap_or_default(),
-                                                                &diff_row.right,
-                                                                widths[2],
-                                                                is_highlighted,
-                                                                active_side == ActiveSide::Right,
-                                                                ctx.code_language,
-                                                            );
-                                                        });
+                                                    show_scrolled(ui, sr, |ui| {
+                                                        Self::render_side_row(
+                                                            ui,
+                                                            ctx.diff_ctx
+                                                                .map(|f| f.input.file_1.clone())
+                                                                .unwrap_or_default(),
+                                                            ctx.diff_ctx
+                                                                .map(|f| f.input.file_2.clone())
+                                                                .unwrap_or_default(),
+                                                            &diff_row.right,
+                                                            widths[2] + sr,
+                                                            is_highlighted,
+                                                            active_side == ActiveSide::Right,
+                                                            ctx.code_language,
+                                                        );
+                                                    });
                                                     right_rect = right_rect.union(ui.max_rect());
                                                 });
                                             }
@@ -763,19 +822,28 @@ impl FileDiffPane {
                 });
             }
 
-            // The sliders scroll text rows; hex rows have a fixed width, images pan.
-            if !(waiting_for_diff || do_not_render_diff || other_viewer) {
+            // The bars scroll text rows; hex rows have a fixed width, images pan.
+            if let Some(max) = h_scroll_max
+                && !(waiting_for_diff || do_not_render_diff || other_viewer)
+            {
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    let left_w = available_width * 0.48;
-                    ui.allocate_ui(egui::vec2(left_w, 20.0), |ui| {
-                        ui.add(egui::Slider::new(ctx.scroll_left, 0.0..=2000.0).show_value(false));
-                    });
-                    ui.add_space(12.0);
-                    ui.allocate_ui(egui::vec2(ui.available_width(), 20.0), |ui| {
-                        ui.add(egui::Slider::new(ctx.scroll_right, 0.0..=2000.0).show_value(false));
-                    });
-                });
+                let linked = *ctx.h_scroll_linked;
+                let mut offsets = [*ctx.scroll_left, *ctx.scroll_right];
+                let side_rects = [left_rect, right_rect];
+                let ranges = h_scroll::ranges(max, linked);
+                let footer = ui
+                    .allocate_space(egui::vec2(ui.available_width(), footer_height - 4.0))
+                    .1;
+                for side in [ActiveSide::Left, ActiveSide::Right] {
+                    let i = h_scroll::side_index(side);
+                    let rect =
+                        egui::Rect::from_x_y_ranges(side_rects[i].x_range(), footer.y_range());
+                    if let Some(offset) = h_scroll_bar(ui, rect, i, offsets[i], ranges[i]) {
+                        offsets = h_scroll::set(offsets, side, offset, max, linked);
+                        ui.ctx().request_repaint();
+                    }
+                }
+                [*ctx.scroll_left, *ctx.scroll_right] = offsets;
             }
         });
 
@@ -833,7 +901,6 @@ impl FileDiffPane {
                     ui.horizontal_centered(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
 
-                        let gutter_width = 35.0;
                         let line_num_str = if *line_num > 0 {
                             line_num.to_string()
                         } else {
@@ -841,7 +908,7 @@ impl FileDiffPane {
                         };
 
                         ui.add_sized(
-                            [gutter_width, row_h],
+                            [GUTTER_WIDTH, row_h],
                             egui::Label::new(
                                 egui::RichText::new(&line_num_str)
                                     .color(egui::Color32::DARK_GRAY)
@@ -850,7 +917,7 @@ impl FileDiffPane {
                             .selectable(false),
                         );
 
-                        ui.add_space(4.0);
+                        ui.add_space(GUTTER_GAP);
 
                         let row_text = build_row_text(
                             tokens,
@@ -1003,10 +1070,9 @@ impl FileDiffPane {
                 ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                     ui.horizontal_centered(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
-                        let gutter_width = 35.0;
 
                         ui.add_sized(
-                            [gutter_width, row_h],
+                            [GUTTER_WIDTH, row_h],
                             egui::Label::new(
                             egui::RichText::new("|") // Mid-line ellipsis fits a gutter better than "-"
                             .color(egui::Color32::from_gray(100))
@@ -1014,7 +1080,7 @@ impl FileDiffPane {
                             .selectable(false)
                         );
 
-                        ui.add_space(4.0);
+                        ui.add_space(GUTTER_GAP);
 
                         ui.add(
                             egui::Label::new(
@@ -1043,6 +1109,82 @@ impl FileDiffPane {
             }
         }
     }
+}
+
+/// Line number column of a code row, and the gap between it and the row text.
+const GUTTER_WIDTH: f32 = 35.0;
+const GUTTER_GAP: f32 = 4.0;
+
+/// Width of each side's widest row: gutter, text and ghost text. Measured over all rows, since
+/// the table only lays out the visible ones.
+pub(super) fn side_content_widths<T: RawTokenTrait>(
+    rows: &[DiffRow],
+    file_source: Option<&CachedFile<T>>,
+    file_target: Option<&CachedFile<T>>,
+    mut glyph_width: impl FnMut(char) -> f32,
+) -> [f32; 2] {
+    let mut row_width = |content: &LineContent| match content {
+        LineContent::Code { tokens, .. } => {
+            let row_text = build_row_text(tokens, file_source, file_target);
+            let ghosts: f32 = row_text
+                .ghosts
+                .iter()
+                .map(|ghost| h_scroll::text_width(&ghost.text, &mut glyph_width))
+                .sum();
+            GUTTER_WIDTH
+                + GUTTER_GAP
+                + h_scroll::text_width(&row_text.text, &mut glyph_width)
+                + ghosts
+        }
+        LineContent::Void | LineContent::Collapsed => 0.0,
+    };
+    rows.iter().fold([0.0; 2], |[left, right], row| {
+        [
+            left.max(row_width(&row.left)),
+            right.max(row_width(&row.right)),
+        ]
+    })
+}
+
+/// Draws `add_contents` scrolled left by `offset` and clipped to the cell. The child isn't
+/// allocated in the cell, so the unclipped column doesn't grow to the row's text width.
+fn show_scrolled(ui: &mut egui::Ui, offset: f32, add_contents: impl FnOnce(&mut egui::Ui)) {
+    let cell = ui.max_rect();
+    let shifted = egui::Rect::from_min_size(
+        cell.min - egui::vec2(offset, 0.0),
+        cell.size() + egui::vec2(offset, 0.0),
+    );
+    let mut child = ui.new_child(UiBuilder::new().max_rect(shifted));
+    // Clipping also limits hit-testing, so shifted text can't take clicks from the middle column.
+    child.set_clip_rect(cell.intersect(ui.clip_rect()));
+    add_contents(&mut child);
+}
+
+/// One side's horizontal scrollbar in `rect`, scrolling `range` points. Returns the offset when
+/// the bar moved it.
+fn h_scroll_bar(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    side: usize,
+    offset: f32,
+    range: f32,
+) -> Option<f32> {
+    if !rect.is_positive() {
+        return None;
+    }
+    let mut child = ui.new_child(UiBuilder::new().max_rect(rect));
+    // Floating bars take no space and only show on hover.
+    child.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+    let output = egui::ScrollArea::horizontal()
+        .id_salt(("h_scroll_bar", side))
+        .auto_shrink([false, true])
+        .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
+        .scroll_offset(egui::vec2(offset, 0.0))
+        .show(&mut child, |ui| {
+            ui.allocate_space(egui::vec2(rect.width() + range, 0.0));
+        });
+    let moved = output.state.offset.x;
+    (moved != offset).then_some(moved)
 }
 
 /// Toolbar button with a popup editing the ignore patterns. Patterns are recompiled only when the
@@ -1295,8 +1437,8 @@ mod tests {
     };
 
     use super::{
-        COPY_MARKER_BLANK_LINE, COPY_MARKER_NO_LINE, diff_status_text, insert_ghost_gaps,
-        recolor_ranges, strip_copy_markers,
+        COPY_MARKER_BLANK_LINE, COPY_MARKER_NO_LINE, GUTTER_GAP, GUTTER_WIDTH, diff_status_text,
+        insert_ghost_gaps, recolor_ranges, strip_copy_markers,
     };
 
     #[cfg(feature = "serde")]
@@ -1825,6 +1967,33 @@ mod tests {
                 assert!(SIDES_SOURCE.lines().any(|s| s == line), "garbled line {line:?}");
             }
         }
+    }
+
+    // One point per char, so a width is the gutter plus a char count.
+    fn char_count_widths(source: &str, target: &str) -> [f32; 2] {
+        CopyHarness::new(source, target, &DiffBuilderOptions::default()).content_widths(|_| 1.0)
+    }
+
+    #[test]
+    fn content_width_is_the_widest_rows_gutter_and_text_on_each_side() {
+        let text_x = GUTTER_WIDTH + GUTTER_GAP;
+        let text = "short\nthe longest line\nend\n";
+        assert_eq!(char_count_widths(text, text), [text_x + 16.0; 2]);
+        // An inserted line is a ghost on the other side.
+        assert_eq!(
+            char_count_widths("short\n", "short\nadded line\n"),
+            [text_x + 10.0; 2]
+        );
+        // No rows, no extent.
+        assert_eq!(char_count_widths("", ""), [0.0; 2]);
+    }
+
+    #[test]
+    fn content_width_includes_ghost_text() {
+        let text_x = GUTTER_WIDTH + GUTTER_GAP;
+        // Each side shows its own text plus the other side's changed token as a ghost.
+        let widths = char_count_widths("let x = old(1);\n", "let x = brand_new(1);\n");
+        assert_eq!(widths, [text_x + 15.0 + 9.0, text_x + 21.0 + 3.0]);
     }
 
     #[test]

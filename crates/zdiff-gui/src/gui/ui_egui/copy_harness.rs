@@ -21,7 +21,7 @@ use zdiff::{
 
 use crate::ui_egui::{
     active_side::{ActiveSide, ActiveSideState},
-    diff_pane::{CopyMarkerPlugin, FileDiffPane},
+    diff_pane::{CopyMarkerPlugin, FileDiffPane, side_content_widths},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,6 +145,16 @@ impl CopyHarness {
             time: 0.0,
             active_side: ActiveSideState::default(),
         }
+    }
+
+    /// The pane's horizontal extent of each side, measured with `glyph_width`.
+    pub fn content_widths(&self, glyph_width: impl FnMut(char) -> f32) -> [f32; 2] {
+        side_content_widths(
+            &self.rows,
+            Some(&*self.file_source),
+            Some(&*self.file_target),
+            glyph_width,
+        )
     }
 
     pub fn rows(&self) -> &[DiffRow] {
