@@ -24,6 +24,7 @@ pub const FIND_CURRENT_BG: egui::Color32 = egui::Color32::from_rgb(176, 104, 0);
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RowFind<'a> {
     pub needle: &'a str,
+    pub case_sensitive: bool,
     /// Ordinal of the current find hit among this row's matches.
     pub current: Option<usize>,
 }
@@ -32,12 +33,12 @@ pub fn find_ranges(text: &str, find: RowFind) -> (Vec<Range<usize>>, Option<Rang
     if find.needle.is_empty() {
         return (Vec::new(), None);
     }
-    let all = find_occurrences(text, find.needle)
+    let all = find_occurrences(text, find.needle, find.case_sensitive)
         .take(MAX_OCCURRENCES_PER_ROW)
         .collect();
     let current = find
         .current
-        .and_then(|ordinal| find_occurrences(text, find.needle).nth(ordinal));
+        .and_then(|ordinal| find_occurrences(text, find.needle, find.case_sensitive).nth(ordinal));
     (all, current)
 }
 
@@ -196,7 +197,7 @@ impl OccurrenceState {
             .as_ref()
             .filter(|s| s.side == side && s.row == row && s.text == *needle)
             .map(|s| s.range.clone());
-        let ranges = find_occurrences(text, needle)
+        let ranges = find_occurrences(text, needle, true)
             .filter(|range| Some(range) != selected.as_ref())
             .take(MAX_OCCURRENCES_PER_ROW)
             .collect();
@@ -243,16 +244,47 @@ pub fn occurrence_needle(selected: &str) -> Option<&str> {
 pub fn find_occurrences<'t>(
     text: &'t str,
     needle: &'t str,
+    case_sensitive: bool,
 ) -> impl Iterator<Item = Range<usize>> + 't {
     assert!(!needle.is_empty(), "an empty needle matches everywhere");
-    // The next match may start inside this one, but only on a char boundary.
-    let step = needle.chars().next().expect("not empty").len_utf8();
     let mut from = 0;
     std::iter::from_fn(move || {
-        let start = from + text[from..].find(needle)?;
-        from = start + step;
-        Some(start..start + needle.len())
+        let range = if case_sensitive {
+            let start = from + text[from..].find(needle)?;
+            start..start + needle.len()
+        } else {
+            text[from..].char_indices().find_map(|(offset, _)| {
+                let start = from + offset;
+                let len = match_len_ignoring_case(&text[start..], needle)?;
+                Some(start..start + len)
+            })?
+        };
+        // The next match may start inside this one, but only on a char boundary.
+        from = range.start
+            + text[range.start..]
+                .chars()
+                .next()
+                .expect("not empty")
+                .len_utf8();
+        Some(range)
     })
+}
+
+/// Measured in `text`: a char and its other case may differ in byte length (KELVIN SIGN, 'k').
+fn match_len_ignoring_case(text: &str, needle: &str) -> Option<usize> {
+    let mut text_chars = text.char_indices();
+    for n in needle.chars() {
+        let (_, t) = text_chars.next()?;
+        let equal = if t.is_ascii() && n.is_ascii() {
+            t.eq_ignore_ascii_case(&n)
+        } else {
+            t.to_lowercase().eq(n.to_lowercase())
+        };
+        if !equal {
+            return None;
+        }
+    }
+    Some(text_chars.next().map_or(text.len(), |(end, _)| end))
 }
 
 #[cfg(test)]
@@ -260,7 +292,11 @@ mod tests {
     use super::*;
 
     fn find(text: &str, needle: &str) -> Vec<Range<usize>> {
-        find_occurrences(text, needle).collect()
+        find_occurrences(text, needle, true).collect()
+    }
+
+    fn find_any_case(text: &str, needle: &str) -> Vec<Range<usize>> {
+        find_occurrences(text, needle, false).collect()
     }
 
     #[test]
@@ -278,6 +314,31 @@ mod tests {
     fn matching_is_case_sensitive() {
         assert_eq!(find("Value value VALUE", "value"), vec![6..11]);
         assert_eq!(find("Value value VALUE", "Value"), vec![0..5]);
+    }
+
+    #[test]
+    fn ignoring_case_matches_any_casing() {
+        assert_eq!(
+            find_any_case("Value value VALUE vAlUe", "VALUE"),
+            vec![0..5, 6..11, 12..17, 18..23]
+        );
+        assert_eq!(find_any_case("École école", "ÉCOLE"), vec![0..6, 7..13]);
+        assert!(find_any_case("let x = 1;", "value").is_empty());
+        assert!(find_any_case("val", "VALUE").is_empty());
+    }
+
+    #[test]
+    fn ignoring_case_gives_ranges_of_the_text_when_cases_differ_in_byte_length() {
+        let text = "\u{212A}ey key";
+        let ranges = find_any_case(text, "key");
+        assert_eq!(ranges, vec![0..5, 6..9]);
+        assert_eq!(&text[ranges[0].clone()], "\u{212A}ey");
+    }
+
+    #[test]
+    fn ignoring_case_finds_overlapping_matches() {
+        assert_eq!(find_any_case("aAaA", "AA"), vec![0..2, 1..3, 2..4]);
+        assert_eq!(find_any_case("ÉéÉ", "éé"), vec![0..4, 2..6]);
     }
 
     #[test]
@@ -311,7 +372,16 @@ mod tests {
 
     #[test]
     fn find_paints_every_match_in_the_row_and_the_current_one_apart() {
-        let find = |needle, current| find_ranges("ab ab ab", RowFind { needle, current });
+        let find = |needle, current| {
+            find_ranges(
+                "ab ab ab",
+                RowFind {
+                    needle,
+                    case_sensitive: true,
+                    current,
+                },
+            )
+        };
 
         assert_eq!(find("ab", Some(1)), (vec![0..2, 3..5, 6..8], Some(3..5)));
         assert_eq!(find("ab", None), (vec![0..2, 3..5, 6..8], None));
@@ -328,11 +398,29 @@ mod tests {
             &row,
             RowFind {
                 needle: "aa",
+                case_sensitive: true,
                 current: Some(current),
             },
         );
         assert_eq!(all.len(), MAX_OCCURRENCES_PER_ROW);
         assert_eq!(found, Some(current..current + 2));
+    }
+
+    #[test]
+    fn find_ignoring_case_paints_every_casing() {
+        let find = |case_sensitive| {
+            find_ranges(
+                "ab AB Ab",
+                RowFind {
+                    needle: "ab",
+                    case_sensitive,
+                    current: Some(2),
+                },
+            )
+        };
+
+        assert_eq!(find(false), (vec![0..2, 3..5, 6..8], Some(6..8)));
+        assert_eq!(find(true), (vec![0..2], None));
     }
 
     #[test]

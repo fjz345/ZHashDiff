@@ -100,6 +100,8 @@ pub struct AppStateCtx {
     pub find_open: bool,
     #[cfg_attr(feature = "serde", serde(skip))]
     pub find_input: String,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub find_case_sensitive: bool,
 }
 
 fn default_h_scroll_linked() -> bool {
@@ -128,6 +130,7 @@ impl Default for AppStateCtx {
             find_open: Default::default(),
             goto_input: Default::default(),
             find_input: Default::default(),
+            find_case_sensitive: false,
             diff_lexer_mode: LEXER_MODE_DEFAULT,
             keybindings: Default::default(),
             p4_profiles: Default::default(),
@@ -684,6 +687,7 @@ impl<'a> ZApp {
                 find_open,
                 goto_input,
                 find_input,
+                find_case_sensitive,
                 diff_lexer_mode: lexer_mode,
                 keybindings,
                 myers_diff_algorithm,
@@ -762,13 +766,16 @@ impl<'a> ZApp {
                         .hint_text(""),
                 );
                 response.request_focus();
+                let case_toggled = ui.checkbox(find_case_sensitive, "Case sensitive").changed();
+                let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
 
-                if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    if let Some(ctx) = &diff_processor.get_minimal_diff_ctx() {
-                        let find_ctx = FindCtx::new(find_input, ctx);
-                        diff_processor.update_find(find_ctx);
-                    }
-
+                if (response.changed() || case_toggled || enter)
+                    && let Some(ctx) = &diff_processor.get_minimal_diff_ctx()
+                {
+                    let find_ctx = FindCtx::new(find_input, *find_case_sensitive, ctx);
+                    diff_processor.update_find(find_ctx);
+                }
+                if enter {
                     find_input.clear();
                     *find_open = false;
                 }
@@ -796,6 +803,7 @@ impl<'a> ZApp {
             let mut find_cursor = diff_processor.find_cursor.clone();
             let highlight_side = diff_processor.highlight_side;
             let find_needle = diff_processor.find_ctx.needle().to_owned();
+            let searched_case_sensitive = diff_processor.find_ctx.case_sensitive();
             let find_hit = diff_processor.current_find_hit();
             let find_count = diff_processor.find_ctx.hits().len();
             let mut active_side = diff_processor.active_side;
@@ -845,6 +853,7 @@ impl<'a> ZApp {
                     pivot: &mut pivot,
                     find_cursor: &mut find_cursor,
                     find_needle: &find_needle,
+                    find_case_sensitive: searched_case_sensitive,
                     find_hit,
                     find_count,
                     active_side: &mut active_side,

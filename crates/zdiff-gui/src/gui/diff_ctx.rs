@@ -66,11 +66,12 @@ pub struct FindHit {
 #[derive(Debug, Clone, Default)]
 pub struct FindCtx {
     needle: String,
+    case_sensitive: bool,
     /// Sorted by row, then side (left first), then position.
     hits: Vec<FindHit>,
 }
 impl FindCtx {
-    pub fn new(find_input: &str, diff_ctx: &MinimalDiffCtx) -> Self {
+    pub fn new(find_input: &str, case_sensitive: bool, diff_ctx: &MinimalDiffCtx) -> Self {
         let mut hits = Vec::new();
         let files = [
             (ActiveSide::Left, &diff_ctx.input.file_1),
@@ -80,11 +81,12 @@ impl FindCtx {
             if let Some(file) = file
                 && !find_input.is_empty()
             {
-                hits.extend(Self::search(file, find_input, side));
+                hits.extend(Self::search(file, find_input, case_sensitive, side));
             }
         }
         let mut find_ctx = Self {
             needle: find_input.to_owned(),
+            case_sensitive,
             hits,
         };
         find_ctx.map_to_rows(&diff_ctx.precomputed_file_rows);
@@ -96,13 +98,22 @@ impl FindCtx {
         &self.needle
     }
 
+    pub fn case_sensitive(&self) -> bool {
+        self.case_sensitive
+    }
+
     pub fn hits(&self) -> &[FindHit] {
         &self.hits
     }
 
-    fn search(file: &CachedFile<RawToken>, needle: &str, side: ActiveSide) -> Vec<FindHit> {
+    fn search(
+        file: &CachedFile<RawToken>,
+        needle: &str,
+        case_sensitive: bool,
+        side: ActiveSide,
+    ) -> Vec<FindHit> {
         let mut hits: Vec<FindHit> = Vec::new();
-        for range in find_occurrences(&file.contents, needle) {
+        for range in find_occurrences(&file.contents, needle, case_sensitive) {
             let line = file.metadata.get_line_index(range.start);
             let ordinal = match hits.last() {
                 Some(last) if last.line == line => last.ordinal + 1,
@@ -2115,7 +2126,7 @@ mod tests {
                 assert_eq!(collapsed.precomputed_diffs.len(), 2);
                 processor.conflict_cursor.set_max(2);
                 processor.conflict_cursor.set(2);
-                processor.update_find(FindCtx::new("keep_19", &collapsed));
+                processor.update_find(FindCtx::new("keep_19", true, &collapsed));
                 assert!(processor.get_scroll_to_row().is_some());
 
                 processor.set_block_expanded(key, true);
@@ -2263,7 +2274,7 @@ mod tests {
                 let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
                 // Hidden lines have no row of their own, so the hit sits on row 0.
                 assert_eq!(collapsed.precomputed_file_rows.0[9], 0);
-                processor.update_find(FindCtx::new("keep_10", &collapsed));
+                processor.update_find(FindCtx::new("keep_10", true, &collapsed));
                 processor.get_scroll_to_row();
 
                 processor.set_block_expanded(only_block(&collapsed), true);
@@ -2285,7 +2296,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let pair = gap_pair(dir.path());
                 let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
-                processor.update_find(FindCtx::new("keep_1", &collapsed));
+                processor.update_find(FindCtx::new("keep_1", true, &collapsed));
                 let is_left_12 = |hit: &FindHit| hit.side == ActiveSide::Left && hit.line == 11;
                 let before = processor.find_ctx.hits().iter().position(is_left_12);
                 processor
@@ -2341,7 +2352,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let (_, ctx) = foo_pair(dir.path());
 
-                let find = FindCtx::new("foo", &ctx);
+                let find = FindCtx::new("foo", true, &ctx);
 
                 let hits: Vec<_> = find.hits().iter().map(|&h| hit(Some(h)).unwrap()).collect();
                 assert_eq!(
@@ -2360,11 +2371,24 @@ mod tests {
             }
 
             #[test]
+            fn find_ignores_case_unless_asked_not_to() {
+                let dir = tempfile::tempdir().unwrap();
+                let (_, ctx) = foo_pair(dir.path());
+
+                let ignoring_case = FindCtx::new("FOO", false, &ctx);
+                let exact = FindCtx::new("foo", true, &ctx);
+                assert!(!ignoring_case.case_sensitive());
+                assert_eq!(ignoring_case.hits(), exact.hits());
+                assert_eq!(ignoring_case.hits().len(), 7);
+                assert!(FindCtx::new("FOO", true, &ctx).hits().is_empty());
+            }
+
+            #[test]
             fn find_counts_overlapping_matches_like_the_row_highlight() {
                 let dir = tempfile::tempdir().unwrap();
                 let (_, ctx) = opened_pair(dir.path(), "aaa\n", "x\n");
 
-                let find = FindCtx::new("aa", &ctx);
+                let find = FindCtx::new("aa", true, &ctx);
 
                 let ordinals: Vec<_> = find.hits().iter().map(|h| h.ordinal).collect();
                 assert_eq!(ordinals, [0, 1]);
@@ -2376,7 +2400,7 @@ mod tests {
                 let (mut processor, ctx) = foo_pair(dir.path());
 
                 for needle in ["zzz", ""] {
-                    processor.update_find(FindCtx::new(needle, &ctx));
+                    processor.update_find(FindCtx::new(needle, true, &ctx));
                     assert!(processor.find_ctx.hits().is_empty(), "{needle:?}");
                     assert_eq!(processor.current_find_hit(), None, "{needle:?}");
                     assert_eq!(processor.find_scroll_to_row(), None, "{needle:?}");
@@ -2389,7 +2413,7 @@ mod tests {
             fn stepping_find_visits_each_match_and_lights_up_both_sides() {
                 let dir = tempfile::tempdir().unwrap();
                 let (mut processor, ctx) = foo_pair(dir.path());
-                processor.update_find(FindCtx::new("foo", &ctx));
+                processor.update_find(FindCtx::new("foo", true, &ctx));
 
                 assert_eq!(hit(processor.current_find_hit()), Some((Left, 0, 0)));
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(0));
@@ -2409,7 +2433,7 @@ mod tests {
             fn clear_results_drops_find_and_goto() {
                 let dir = tempfile::tempdir().unwrap();
                 let (mut processor, ctx) = foo_pair(dir.path());
-                processor.update_find(FindCtx::new("bar", &ctx));
+                processor.update_find(FindCtx::new("bar", true, &ctx));
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
 
                 processor.clear_results();
@@ -2418,7 +2442,7 @@ mod tests {
                 assert!(processor.active_highlights.is_empty());
                 assert_eq!(processor.get_scroll_to_row(), None);
 
-                processor.update_find(FindCtx::new("bar", &ctx));
+                processor.update_find(FindCtx::new("bar", true, &ctx));
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
 
                 processor.active_side = Right;
@@ -2443,7 +2467,7 @@ mod tests {
                 assert_eq!(processor.get_scroll_to_row(), None);
                 assert_eq!(processor.highlight_side, Some(Right));
 
-                processor.update_find(FindCtx::new("bar", &ctx));
+                processor.update_find(FindCtx::new("bar", true, &ctx));
                 assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
                 assert_eq!(processor.highlight_side, None);
             }

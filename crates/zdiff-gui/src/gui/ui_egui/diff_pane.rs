@@ -66,6 +66,7 @@ pub struct FileDiffPaneCtx<'a> {
     pub conflict_cursor: &'a mut ClampedCursor,
     pub find_cursor: &'a mut ClampedCursor,
     pub find_needle: &'a str,
+    pub find_case_sensitive: bool,
     pub find_hit: Option<FindHit>,
     pub find_count: usize,
     pub active_side: &'a mut ActiveSide,
@@ -709,8 +710,8 @@ impl FileDiffPane {
                                                 let accent_line_num = |side| {
                                                     is_highlighted && highlight_side == Some(side)
                                                 };
-                                                let (find_needle, find_hit) =
-                                                    (ctx.find_needle, ctx.find_hit);
+                                                let (find_needle, find_case_sensitive, find_hit) =
+                                                    (ctx.find_needle, ctx.find_case_sensitive, ctx.find_hit);
 
                                                 log::trace!("==LEFT==");
                                                 row.col(|ui| {
@@ -733,6 +734,7 @@ impl FileDiffPane {
                                                             accent_line_num(ActiveSide::Left),
                                                             row_find(
                                                                 find_needle,
+                                                                find_case_sensitive,
                                                                 find_hit,
                                                                 ActiveSide::Left,
                                                                 row_index,
@@ -904,6 +906,7 @@ impl FileDiffPane {
                                                             accent_line_num(ActiveSide::Right),
                                                             row_find(
                                                                 find_needle,
+                                                                find_case_sensitive,
                                                                 find_hit,
                                                                 ActiveSide::Right,
                                                                 row_index,
@@ -1290,6 +1293,7 @@ const GOTO_LINE_NUM: egui::Color32 = egui::Color32::from_rgb(255, 210, 0);
 /// Lines hidden in a collapsed block share another line's row, hence the line check.
 fn row_find<'a>(
     needle: &'a str,
+    case_sensitive: bool,
     hit: Option<FindHit>,
     side: ActiveSide,
     row: usize,
@@ -1302,7 +1306,11 @@ fn row_find<'a>(
     let current = hit
         .filter(|hit| hit.side == side && hit.row == row && line_num == Some(hit.line + 1))
         .map(|hit| hit.ordinal);
-    RowFind { needle, current }
+    RowFind {
+        needle,
+        case_sensitive,
+        current,
+    }
 }
 
 /// Width a side's text wraps at in a cell `cell_width` wide: what the gutter leaves.
@@ -1881,8 +1889,9 @@ mod tests {
             ordinal: 2,
             row: 4,
         };
-        let current =
-            |side, row, content: &LineContent| row_find("x", Some(hit), side, row, content).current;
+        let current = |side, row, content: &LineContent| {
+            row_find("x", true, Some(hit), side, row, content).current
+        };
 
         assert_eq!(current(ActiveSide::Right, 4, &code(10)), Some(2));
         assert_eq!(current(ActiveSide::Left, 4, &code(10)), None);
@@ -1890,7 +1899,7 @@ mod tests {
         assert_eq!(current(ActiveSide::Right, 4, &code(3)), None);
         assert_eq!(current(ActiveSide::Right, 4, &LineContent::Void), None);
         assert_eq!(
-            row_find("x", None, ActiveSide::Right, 4, &code(10)).current,
+            row_find("x", true, None, ActiveSide::Right, 4, &code(10)).current,
             None
         );
     }
