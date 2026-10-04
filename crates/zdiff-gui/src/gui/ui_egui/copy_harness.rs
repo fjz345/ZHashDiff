@@ -28,7 +28,7 @@ use crate::ui_egui::{
         CopyMarkerPlugin, FileDiffPane, measure_wrapped_rows, show_scrolled, side_content_widths,
         text_rows, wrap_width, wrapped_row_heights,
     },
-    occurrence::OccurrenceState,
+    occurrence::{OccurrenceState, RowFind},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -409,6 +409,8 @@ impl CopyHarness {
                                     false,
                                     false,
                                     false,
+                                    RowFind::default(),
+                                    false,
                                     "rs",
                                 );
                             });
@@ -517,6 +519,8 @@ impl CopyHarness {
                                             side_width + h_offset,
                                             wrap,
                                             false,
+                                            false,
+                                            RowFind::default(),
                                             active_side == active_side_of(side),
                                             "rs",
                                         );

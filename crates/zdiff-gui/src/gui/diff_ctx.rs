@@ -24,7 +24,11 @@ use zdiff::{
     row_text::build_row_text,
 };
 
-use crate::{clamped_cursor::ClampedCursor, scope, ui_egui::active_side::ActiveSide};
+use crate::{
+    clamped_cursor::ClampedCursor,
+    scope,
+    ui_egui::{active_side::ActiveSide, occurrence::find_occurrences},
+};
 
 #[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -49,60 +53,93 @@ impl PartialEq for UpdateDiffRowsInput {
     }
 }
 
+/// One match of the find text. A row shows its line's text, so the match is the row's
+/// `ordinal`th occurrence of the text on `side`, found the same way the pane paints them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FindHit {
+    pub side: ActiveSide,
+    /// 0-based file line. `row` is derived from it, so it can be rebuilt for another layout of
+    /// the rows, e.g. after an expansion.
+    pub line: usize,
+    /// Index of this match among its line's matches.
+    pub ordinal: usize,
+    pub row: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FindCtx {
-    #[allow(unused)] // most likely will use this somehow?
-    found_lines_1: Vec<usize>,
-    #[allow(unused)] // most likely will use this somehow?
-    found_lines_2: Vec<usize>,
-    cached_found_lines: Vec<usize>,
-    /// 0-based file line of each hit, per side. The rows above are derived from these, so they
-    /// can be rebuilt for another layout of the rows, e.g. after an expansion.
-    found_file_lines: (Vec<usize>, Vec<usize>),
+    needle: String,
+    /// Every match on both sides, by row, then side (left first), then position.
+    hits: Vec<FindHit>,
 }
 impl FindCtx {
     pub fn new(find_input: &str, diff_ctx: &MinimalDiffCtx) -> Self {
-        Self::build(find_input, diff_ctx)
-    }
-
-    /// Rebuilds the found rows from the hits' file lines. The count can change: hits on lines
-    /// without a row of their own share one.
-    fn map_to_rows(&mut self, file_rows: &PrecomputedFileRows) {
-        let rows = |lines: &[usize], line_to_row: &[usize]| -> Vec<usize> {
-            lines.iter().map(|&line| line_to_row[line]).collect()
-        };
-        self.found_lines_1 = rows(&self.found_file_lines.0, &file_rows.0);
-        self.found_lines_2 = rows(&self.found_file_lines.1, &file_rows.1);
-        self.cached_found_lines =
-            Self::combine_found_lines(&self.found_lines_1, &self.found_lines_2);
-    }
-
-    fn combine_found_lines(found_lines_1: &Vec<usize>, found_lines_2: &Vec<usize>) -> Vec<usize> {
-        let mut all_found_lines = found_lines_1.clone();
-        all_found_lines.extend(found_lines_2.clone());
-        all_found_lines.sort_unstable();
-        all_found_lines.dedup();
-        all_found_lines
-    }
-
-    fn build(find_input: &str, diff_ctx: &MinimalDiffCtx) -> Self {
-        let search = |file: &Option<Arc<CachedFile<RawToken>>>| {
-            file.as_ref()
-                .map(|file| file.content_search(&find_input))
-                .unwrap_or_default()
-        };
+        let mut hits = Vec::new();
+        let files = [
+            (ActiveSide::Left, &diff_ctx.input.file_1),
+            (ActiveSide::Right, &diff_ctx.input.file_2),
+        ];
+        for (side, file) in files {
+            if let Some(file) = file
+                && !find_input.is_empty()
+            {
+                hits.extend(Self::search(file, find_input, side));
+            }
+        }
         let mut find_ctx = Self {
-            found_file_lines: (
-                search(&diff_ctx.input.file_1),
-                search(&diff_ctx.input.file_2),
-            ),
-            ..Default::default()
+            needle: find_input.to_owned(),
+            hits,
         };
         find_ctx.map_to_rows(&diff_ctx.precomputed_file_rows);
-        log::debug!("Found (in #1): {:?}", find_ctx.found_lines_1);
-        log::debug!("Found (in #2): {:?}", find_ctx.found_lines_2);
         log::debug!("create_find_ctx: {:?}", find_ctx);
         find_ctx
+    }
+
+    pub fn needle(&self) -> &str {
+        &self.needle
+    }
+
+    pub fn hits(&self) -> &[FindHit] {
+        &self.hits
+    }
+
+    /// Matches in the whole file. Overlapping ones count, as they do in the row highlight.
+    fn search(file: &CachedFile<RawToken>, needle: &str, side: ActiveSide) -> Vec<FindHit> {
+        let mut hits: Vec<FindHit> = Vec::new();
+        for range in find_occurrences(&file.contents, needle) {
+            let line = file.metadata.get_line_index(range.start);
+            let ordinal = match hits.last() {
+                Some(last) if last.line == line => last.ordinal + 1,
+                _ => 0,
+            };
+            hits.push(FindHit {
+                side,
+                line,
+                ordinal,
+                row: 0,
+            });
+        }
+        hits
+    }
+
+    /// Rebuilds the hits' rows from their file lines, and reorders the hits to match. Hits on
+    /// lines without a row of their own share one.
+    fn map_to_rows(&mut self, file_rows: &PrecomputedFileRows) {
+        for hit in &mut self.hits {
+            let line_to_row = match hit.side {
+                ActiveSide::Left => &file_rows.0,
+                ActiveSide::Right => &file_rows.1,
+            };
+            hit.row = line_to_row[hit.line];
+        }
+        self.hits.sort_by_key(|hit| {
+            (
+                hit.row,
+                hit.side == ActiveSide::Right,
+                hit.line,
+                hit.ordinal,
+            )
+        });
     }
 }
 
@@ -722,6 +759,8 @@ pub struct DiffProcessor {
     // Active user state
     pub conflict_cursor: ClampedCursor,
     pub active_highlights: Vec<usize>,
+    /// The side `active_highlights` light up: Goto's target side, or `None` for both.
+    pub highlight_side: Option<ActiveSide>,
     pub pivot: (Option<usize>, Option<usize>),
     pub find_cursor: ClampedCursor,
     pub find_ctx: FindCtx,
@@ -740,6 +779,7 @@ impl Default for DiffProcessor {
             ctx: Default::default(),
             conflict_cursor: ClampedCursor::default(),
             active_highlights: Vec::new(),
+            highlight_side: None,
             pivot: (None, None),
             in_progress_input: None,
             cancel_flag: Arc::new(AtomicBool::new(false)),
@@ -765,6 +805,7 @@ impl DiffProcessor {
         self.goto_line_number = None;
         self.pivot = (None, None);
         self.active_highlights.clear();
+        self.highlight_side = None;
         self.last_conflict_scroll_to_row = None;
         self.last_find_scroll_to_row = None;
         self.expansion = None;
@@ -826,8 +867,12 @@ impl DiffProcessor {
     pub fn update_find(&mut self, find_ctx: FindCtx) {
         self.find_ctx = find_ctx;
         self.find_cursor
-            .set_max(self.find_ctx.cached_found_lines.len().saturating_sub(1));
+            .set_max(self.find_ctx.hits.len().saturating_sub(1));
         self.find_cursor.set(0);
+    }
+
+    pub fn current_find_hit(&self) -> Option<FindHit> {
+        self.find_ctx.hits.get(self.find_cursor.get()).copied()
     }
 
     pub fn get_scroll_to_row(&mut self) -> Option<ScrollSpan> {
@@ -845,6 +890,7 @@ impl DiffProcessor {
             &mut self.last_conflict_scroll_to_row,
         );
 
+        let goto_side = self.active_side;
         let goto = self.goto_scroll_to_row();
 
         let find = check_update(self.find_scroll_to_row(), &mut self.last_find_scroll_to_row);
@@ -852,6 +898,8 @@ impl DiffProcessor {
         let scroll_to_row = find.or(goto).or(conflict);
 
         if let Some(ScrollSpan { start, maybe_end }) = &scroll_to_row {
+            // Goto names one side's line; find and conflicts light up the whole row.
+            self.highlight_side = (find.is_none() && goto.is_some()).then_some(goto_side);
             self.active_highlights.clear();
             if let Some(end) = maybe_end {
                 self.active_highlights.extend(*start..=*end);
@@ -900,18 +948,11 @@ impl DiffProcessor {
     pub fn find_scroll_to_row(&self) -> Option<ScrollSpan> {
         assert_eq!(
             self.find_cursor.get_max(),
-            self.find_ctx.cached_found_lines.len().saturating_sub(1)
+            self.find_ctx.hits.len().saturating_sub(1)
         );
 
-        let find_idx_1 = self
-            .find_ctx
-            .cached_found_lines
-            .get(self.find_cursor.get())
-            .cloned();
-
-        // TODO: Improve so that user can decide which 1/2 file search operates on
-        Some(ScrollSpan {
-            start: find_idx_1.unwrap_or_default(),
+        self.current_find_hit().map(|hit| ScrollSpan {
+            start: hit.row,
             maybe_end: None,
         })
     }
@@ -987,18 +1028,17 @@ impl DiffProcessor {
         let new = self.get_minimal_diff_ctx().expect("diff shown above");
 
         let remap = |row| remap_row(&old.row_blocks, &new.row_blocks, row);
-        // The find cursor stays on its hit's row, or moves to the next hit after it.
-        let find_row = self
-            .find_ctx
-            .cached_found_lines
-            .get(self.find_cursor.get())
-            .map(|&row| remap(row));
+        // The same match stays current; the hits are only reordered.
+        let current = self.current_find_hit();
         self.find_ctx.map_to_rows(&new.precomputed_file_rows);
-        let found = &self.find_ctx.cached_found_lines;
-        let find_max = found.len().saturating_sub(1);
-        self.find_cursor.set_max(find_max);
-        let find_index = find_row.map_or(0, |row| found.partition_point(|&r| r < row));
-        self.find_cursor.set(find_index.min(find_max));
+        if let Some(current) = current {
+            let same = |hit: &FindHit| {
+                (hit.side, hit.line, hit.ordinal) == (current.side, current.line, current.ordinal)
+            };
+            let index = self.find_ctx.hits.iter().position(same);
+            self.find_cursor
+                .set(index.expect("a remap keeps every hit"));
+        }
         let mut highlights: Vec<usize> = self.active_highlights.iter().map(|&r| remap(r)).collect();
         highlights.dedup();
         self.active_highlights = highlights;
@@ -2239,6 +2279,154 @@ mod tests {
                     processor.find_scroll_to_row().map(|s| s.start),
                     Some(row_of_left_line(&ctx.diff_rows, 10))
                 );
+            }
+
+            #[test]
+            fn the_current_find_match_stays_current_when_an_expansion_reorders_the_hits() {
+                let dir = tempfile::tempdir().unwrap();
+                let pair = gap_pair(dir.path());
+                let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
+                processor.update_find(FindCtx::new("keep_1", &collapsed));
+                // Left line 12, hidden in the block. The block's row holds all its hidden hits,
+                // the left side's first, so expanding interleaves them with the right side's.
+                let is_left_12 = |hit: &FindHit| hit.side == ActiveSide::Left && hit.line == 11;
+                let before = processor.find_ctx.hits().iter().position(is_left_12);
+                processor
+                    .find_cursor
+                    .set(before.expect("left line 12 is a hit"));
+
+                processor.set_block_expanded(only_block(&collapsed), true);
+
+                let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
+                let current = processor.current_find_hit().expect("a current hit");
+                assert!(is_left_12(&current), "{current:?}");
+                assert_eq!(current.row, row_of_left_line(&ctx.diff_rows, 12));
+                assert_ne!(
+                    processor.find_ctx.hits().iter().position(is_left_12),
+                    before
+                );
+            }
+        }
+
+        mod find_and_goto {
+            use super::*;
+            use ActiveSide::{Left, Right};
+
+            fn opened_pair(dir: &Path, left: &str, right: &str) -> (DiffProcessor, MinimalDiffCtx) {
+                let write = |name: &str, contents: &str| {
+                    let path = dir.join(name);
+                    std::fs::write(&path, contents).unwrap();
+                    load(&UniversalPath::from(path))
+                };
+                let mut processor = DiffProcessor::default();
+                let pair = input(&write("left.rs", left), &write("right.rs", right));
+                open(&mut processor, &pair);
+                let ctx = settle(&mut processor).expect("diff never completed");
+                (processor, ctx)
+            }
+
+            /// Line 2 differs by an inserted " foo"; each line has its own row on both sides.
+            fn foo_pair(dir: &Path) -> (DiffProcessor, MinimalDiffCtx) {
+                let opened = opened_pair(dir, "foo foo\nbar\nfoo\n", "foo foo\nbar foo\nfoo\n");
+                let rows = &opened.1.precomputed_file_rows;
+                assert_eq!(
+                    (&rows.0[..3], &rows.1[..3]),
+                    (&[0, 1, 2][..], &[0, 1, 2][..])
+                );
+                opened
+            }
+
+            fn hit(hit: Option<FindHit>) -> Option<(ActiveSide, usize, usize)> {
+                hit.map(|h| (h.side, h.row, h.ordinal))
+            }
+
+            #[test]
+            fn find_lists_every_match_on_both_sides_by_row_then_side() {
+                let dir = tempfile::tempdir().unwrap();
+                let (_, ctx) = foo_pair(dir.path());
+
+                let find = FindCtx::new("foo", &ctx);
+
+                let hits: Vec<_> = find.hits().iter().map(|&h| hit(Some(h)).unwrap()).collect();
+                assert_eq!(
+                    hits,
+                    [
+                        (Left, 0, 0),
+                        (Left, 0, 1),
+                        (Right, 0, 0),
+                        (Right, 0, 1),
+                        (Right, 1, 0),
+                        (Left, 2, 0),
+                        (Right, 2, 0),
+                    ]
+                );
+                assert_eq!(find.needle(), "foo");
+            }
+
+            #[test]
+            fn find_counts_overlapping_matches_like_the_row_highlight() {
+                let dir = tempfile::tempdir().unwrap();
+                let (_, ctx) = opened_pair(dir.path(), "aaa\n", "x\n");
+
+                let find = FindCtx::new("aa", &ctx);
+
+                let ordinals: Vec<_> = find.hits().iter().map(|h| h.ordinal).collect();
+                assert_eq!(ordinals, [0, 1]);
+            }
+
+            #[test]
+            fn a_find_without_matches_has_no_current_hit_and_does_not_scroll() {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut processor, ctx) = foo_pair(dir.path());
+
+                for needle in ["zzz", ""] {
+                    processor.update_find(FindCtx::new(needle, &ctx));
+                    assert!(processor.find_ctx.hits().is_empty(), "{needle:?}");
+                    assert_eq!(processor.current_find_hit(), None, "{needle:?}");
+                    assert_eq!(processor.find_scroll_to_row(), None, "{needle:?}");
+                    assert_eq!(processor.get_scroll_to_row(), None, "{needle:?}");
+                    assert!(processor.active_highlights.is_empty(), "{needle:?}");
+                }
+            }
+
+            #[test]
+            fn stepping_find_visits_each_match_and_lights_up_both_sides() {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut processor, ctx) = foo_pair(dir.path());
+                processor.update_find(FindCtx::new("foo", &ctx));
+
+                assert_eq!(hit(processor.current_find_hit()), Some((Left, 0, 0)));
+                assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(0));
+                assert_eq!(processor.highlight_side, None);
+
+                processor.find_cursor.inc();
+                processor.find_cursor.inc();
+                assert_eq!(hit(processor.current_find_hit()), Some((Right, 0, 0)));
+                processor.find_cursor.inc();
+                processor.find_cursor.inc();
+                assert_eq!(hit(processor.current_find_hit()), Some((Right, 1, 0)));
+                assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
+                assert_eq!(processor.active_highlights, [1]);
+            }
+
+            #[test]
+            fn goto_lights_up_only_its_side_until_the_next_navigation() {
+                let dir = tempfile::tempdir().unwrap();
+                let (mut processor, ctx) = foo_pair(dir.path());
+                processor.active_side = Right;
+                processor.update_goto(Some(2));
+
+                assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
+                assert_eq!(processor.active_highlights, [1]);
+                assert_eq!(processor.highlight_side, Some(Right));
+
+                // Later frames keep it.
+                assert_eq!(processor.get_scroll_to_row(), None);
+                assert_eq!(processor.highlight_side, Some(Right));
+
+                processor.update_find(FindCtx::new("bar", &ctx));
+                assert_eq!(processor.get_scroll_to_row().map(|s| s.start), Some(1));
+                assert_eq!(processor.highlight_side, None);
             }
         }
     }

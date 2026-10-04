@@ -2,12 +2,14 @@ use std::sync::Arc;
 
 use crate::{
     clamped_cursor::ClampedCursor,
-    diff_ctx::{BlockToggle, DiffRows, DiffStageTimes, MinimalDiffCtx, ScrollSpan},
+    diff_ctx::{BlockToggle, DiffRows, DiffStageTimes, FindHit, MinimalDiffCtx, ScrollSpan},
     revert::{self, RevertRefusal, RevertRequest, RevertTarget},
     ui_egui::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
         h_scroll,
-        occurrence::{OCCURRENCE_BG, OccurrenceState},
+        occurrence::{
+            FIND_BG, FIND_CURRENT_BG, OCCURRENCE_BG, OccurrenceState, RowFind, find_ranges,
+        },
         panes::ZAppPane,
     },
     viewer::{
@@ -60,8 +62,14 @@ pub struct FileDiffPaneCtx<'a> {
 
     pub scroll_to_row_span: &'a Option<ScrollSpan>,
     pub active_highlights: &'a Vec<usize>,
+    /// The side `active_highlights` light up, `None` for both.
+    pub highlight_side: Option<ActiveSide>,
     pub conflict_cursor: &'a mut ClampedCursor,
     pub find_cursor: &'a mut ClampedCursor,
+    /// The find text, painted in every visible row. Empty when nothing is searched for.
+    pub find_needle: &'a str,
+    pub find_hit: Option<FindHit>,
+    pub find_count: usize,
     pub active_side: &'a mut ActiveSide,
     pub load_file_1_request: &'a mut Option<UniversalPath>,
     pub load_file_2_request: &'a mut Option<UniversalPath>,
@@ -284,12 +292,6 @@ impl FileDiffPane {
                 );
                 toggle_btn(
                     ui,
-                    &mut ctx.diff_options.keyword_highlight,
-                    egui::RichText::new("K").strong().into(),
-                    "Keyword Highlight",
-                );
-                toggle_btn(
-                    ui,
                     ctx.h_scroll_linked,
                     "🔗".into(),
                     "Link Horizontal Scrolling",
@@ -345,12 +347,13 @@ impl FileDiffPane {
                 if ui.button("<").clicked() {
                     ctx.find_cursor.dec();
                 }
+                let find_k = if ctx.find_count == 0 {
+                    0
+                } else {
+                    ctx.find_cursor.get() + 1
+                };
                 if ui
-                    .button(format!(
-                        "{}/{}",
-                        ctx.find_cursor.get().to_string(),
-                        ctx.find_cursor.get_max().to_string()
-                    ))
+                    .button(format!("{find_k} of {}", ctx.find_count))
                     .clicked()
                 {}
                 if ui.button(">").clicked() {
@@ -696,6 +699,16 @@ impl FileDiffPane {
                                                 let diff_row = &rows[row.index()];
                                                 let is_highlighted =
                                                     ctx.active_highlights.contains(&row_index);
+                                                let highlight_side = ctx.highlight_side;
+                                                let lit = |side| {
+                                                    is_highlighted
+                                                        && highlight_side.is_none_or(|s| s == side)
+                                                };
+                                                let accent_line_num = |side| {
+                                                    is_highlighted && highlight_side == Some(side)
+                                                };
+                                                let (find_needle, find_hit) =
+                                                    (ctx.find_needle, ctx.find_hit);
 
                                                 log::trace!("==LEFT==");
                                                 row.col(|ui| {
@@ -714,7 +727,15 @@ impl FileDiffPane {
                                                             &diff_row.left,
                                                             widths[0] + sl,
                                                             wrap,
-                                                            is_highlighted,
+                                                            lit(ActiveSide::Left),
+                                                            accent_line_num(ActiveSide::Left),
+                                                            row_find(
+                                                                find_needle,
+                                                                find_hit,
+                                                                ActiveSide::Left,
+                                                                row_index,
+                                                                &diff_row.left,
+                                                            ),
                                                             active_side == ActiveSide::Left,
                                                             ctx.code_language,
                                                         );
@@ -877,7 +898,15 @@ impl FileDiffPane {
                                                             &diff_row.right,
                                                             widths[2] + sr,
                                                             wrap,
-                                                            is_highlighted,
+                                                            lit(ActiveSide::Right),
+                                                            accent_line_num(ActiveSide::Right),
+                                                            row_find(
+                                                                find_needle,
+                                                                find_hit,
+                                                                ActiveSide::Right,
+                                                                row_index,
+                                                                &diff_row.right,
+                                                            ),
                                                             active_side == ActiveSide::Right,
                                                             ctx.code_language,
                                                         );
@@ -927,13 +956,26 @@ impl FileDiffPane {
                 let footer = ui
                     .allocate_space(egui::vec2(ui.available_width(), footer_height - 4.0))
                     .1;
-                for side in [ActiveSide::Left, ActiveSide::Right] {
-                    let i = h_scroll::side_index(side);
-                    let rect =
-                        egui::Rect::from_x_y_ranges(side_rects[i].x_range(), footer.y_range());
-                    if let Some(offset) = h_scroll_bar(ui, rect, i, offsets[i], ranges[i]) {
-                        offsets = h_scroll::set(offsets, side, offset, max, linked);
+                if linked {
+                    // Linked sides share one offset and one range, so one bar spans both.
+                    let rect = egui::Rect::from_x_y_ranges(
+                        left_rect.union(right_rect).x_range(),
+                        footer.y_range(),
+                    );
+                    if let Some(offset) = h_scroll_bar(ui, rect, "linked", offsets[0], ranges[0])
+                    {
+                        offsets = h_scroll::set(offsets, ActiveSide::Left, offset, max, linked);
                         ui.ctx().request_repaint();
+                    }
+                } else {
+                    for side in [ActiveSide::Left, ActiveSide::Right] {
+                        let i = h_scroll::side_index(side);
+                        let rect =
+                            egui::Rect::from_x_y_ranges(side_rects[i].x_range(), footer.y_range());
+                        if let Some(offset) = h_scroll_bar(ui, rect, i, offsets[i], ranges[i]) {
+                            offsets = h_scroll::set(offsets, side, offset, max, linked);
+                            ui.ctx().request_repaint();
+                        }
                     }
                 }
                 [*ctx.scroll_left, *ctx.scroll_right] = offsets;
@@ -980,6 +1022,8 @@ impl FileDiffPane {
         width: f32,
         wrap: bool,
         is_highlighted: bool,
+        accent_line_num: bool,
+        find: RowFind,
         selectable: bool,
         code_language: &str,
     ) {
@@ -1011,14 +1055,15 @@ impl FileDiffPane {
                             String::new()
                         };
 
+                        let line_num_text = egui::RichText::new(&line_num_str).size(10.0);
+                        let line_num_text = if accent_line_num {
+                            line_num_text.color(GOTO_LINE_NUM).strong()
+                        } else {
+                            line_num_text.color(egui::Color32::DARK_GRAY)
+                        };
                         ui.add_sized(
                             [GUTTER_WIDTH, row_h],
-                            egui::Label::new(
-                                egui::RichText::new(&line_num_str)
-                                    .color(egui::Color32::DARK_GRAY)
-                                    .size(10.0),
-                            )
-                            .selectable(false),
+                            egui::Label::new(line_num_text).selectable(false),
                         );
 
                         ui.add_space(GUTTER_GAP);
@@ -1052,6 +1097,12 @@ impl FileDiffPane {
                         recolor_ranges(&mut layout_job, &dimmed, dim);
                         let found = occurrences.ranges(side, row_index, &row_text.text);
                         highlight_ranges(&mut layout_job, &found, OCCURRENCE_BG);
+                        // After the occurrences, so a find match shows over one.
+                        let (find_all, find_current) = find_ranges(&row_text.text, find);
+                        highlight_ranges(&mut layout_job, &find_all, FIND_BG);
+                        if let Some(current) = find_current {
+                            highlight_ranges(&mut layout_job, &[current], FIND_CURRENT_BG);
+                        }
 
                         let font_id = egui::TextStyle::Monospace.resolve(ui.style());
                         let wrap_at = if wrap {
@@ -1232,6 +1283,29 @@ impl FileDiffPane {
 /// Line number column of a code row, and the gap between it and the row text.
 const GUTTER_WIDTH: f32 = 35.0;
 const GUTTER_GAP: f32 = 4.0;
+
+/// Line number of the line Goto jumped to.
+const GOTO_LINE_NUM: egui::Color32 = egui::Color32::from_rgb(255, 210, 0);
+
+/// What `side`'s row `row`, showing `content`, paints for the find bar. The current hit must be
+/// on the row's line too: lines without a row of their own (hidden in a collapsed block) share
+/// another line's row.
+fn row_find<'a>(
+    needle: &'a str,
+    hit: Option<FindHit>,
+    side: ActiveSide,
+    row: usize,
+    content: &LineContent,
+) -> RowFind<'a> {
+    let line_num = match content {
+        LineContent::Code { line_num, .. } => usize::try_from(*line_num).ok(),
+        _ => None,
+    };
+    let current = hit
+        .filter(|hit| hit.side == side && hit.row == row && line_num == Some(hit.line + 1))
+        .map(|hit| hit.ordinal);
+    RowFind { needle, current }
+}
 
 /// Width a side's text wraps at in a cell `cell_width` wide: what the gutter leaves.
 pub(super) fn wrap_width(cell_width: f32) -> f32 {
@@ -1437,12 +1511,12 @@ pub(super) fn show_scrolled(
     ui.advance_cursor_after_rect(cell);
 }
 
-/// One side's horizontal scrollbar in `rect`, scrolling `range` points. Returns the offset when
-/// the bar moved it.
+/// A horizontal scrollbar in `rect` (one side's, or both linked sides'), scrolling `range`
+/// points. Returns the offset when the bar moved it.
 fn h_scroll_bar(
     ui: &mut egui::Ui,
     rect: egui::Rect,
-    side: usize,
+    id_salt: impl std::hash::Hash,
     offset: f32,
     range: f32,
 ) -> Option<f32> {
@@ -1453,7 +1527,7 @@ fn h_scroll_bar(
     // Floating bars take no space and only show on hover.
     child.spacing_mut().scroll = egui::style::ScrollStyle::solid();
     let output = egui::ScrollArea::horizontal()
-        .id_salt(("h_scroll_bar", side))
+        .id_salt(("h_scroll_bar", id_salt))
         .auto_shrink([false, true])
         .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
         .scroll_offset(egui::vec2(offset, 0.0))
@@ -1792,8 +1866,37 @@ mod tests {
     use super::{
         COPY_MARKER_BLANK_LINE, COPY_MARKER_NO_LINE, GUTTER_GAP, GUTTER_WIDTH, GhostInsertion,
         diff_status_text, highlight_ranges, insert_ghost_gaps, layout_side_text, recolor_ranges,
-        strip_copy_markers,
+        row_find, strip_copy_markers,
     };
+
+    #[test]
+    fn the_current_find_hit_paints_only_on_its_own_side_row_and_line() {
+        use crate::{diff_ctx::FindHit, ui_egui::active_side::ActiveSide};
+        let code = |line_num| LineContent::Code {
+            tokens: Vec::new(),
+            line_num,
+            bg: zdiff::diff_builder::Color32::TRANSPARENT,
+        };
+        let hit = FindHit {
+            side: ActiveSide::Right,
+            line: 9,
+            ordinal: 2,
+            row: 4,
+        };
+        let current =
+            |side, row, content: &LineContent| row_find("x", Some(hit), side, row, content).current;
+
+        assert_eq!(current(ActiveSide::Right, 4, &code(10)), Some(2));
+        assert_eq!(current(ActiveSide::Left, 4, &code(10)), None);
+        assert_eq!(current(ActiveSide::Right, 5, &code(10)), None);
+        // A hit hidden in a collapsed block shares another line's row.
+        assert_eq!(current(ActiveSide::Right, 4, &code(3)), None);
+        assert_eq!(current(ActiveSide::Right, 4, &LineContent::Void), None);
+        assert_eq!(
+            row_find("x", None, ActiveSide::Right, 4, &code(10)).current,
+            None
+        );
+    }
 
     #[cfg(feature = "serde")]
     #[test]

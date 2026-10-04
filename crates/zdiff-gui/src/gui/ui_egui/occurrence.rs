@@ -14,9 +14,39 @@ use eframe::egui::{
 
 use crate::ui_egui::active_side::ActiveSide;
 
-/// Background of a highlighted occurrence. Purple, to stay apart from the row-wide yellow of find
-/// results, the red and green of changes, and egui's blue selection.
+/// Background of a highlighted occurrence. Purple, to stay apart from the amber of find matches,
+/// the red and green of changes, and egui's blue selection.
 pub const OCCURRENCE_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(66, 40, 96, 110);
+
+/// Background of every match of the find text in the visible rows.
+pub const FIND_BG: egui::Color32 = egui::Color32::from_rgba_premultiplied(90, 66, 0, 140);
+
+/// Background of the current find match, stronger than `FIND_BG`.
+pub const FIND_CURRENT_BG: egui::Color32 = egui::Color32::from_rgb(176, 104, 0);
+
+/// What the find bar paints in one side of one row.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RowFind<'a> {
+    /// Empty when nothing is searched for.
+    pub needle: &'a str,
+    /// Which of the row's matches is the current find hit, when it is on this row and side.
+    pub current: Option<usize>,
+}
+
+/// Byte ranges in `text` of every match of the find text, at most `MAX_OCCURRENCES_PER_ROW`,
+/// and of the current one.
+pub fn find_ranges(text: &str, find: RowFind) -> (Vec<Range<usize>>, Option<Range<usize>>) {
+    if find.needle.is_empty() {
+        return (Vec::new(), None);
+    }
+    let all = find_occurrences(text, find.needle)
+        .take(MAX_OCCURRENCES_PER_ROW)
+        .collect();
+    let current = find
+        .current
+        .and_then(|ordinal| find_occurrences(text, find.needle).nth(ordinal));
+    (all, current)
+}
 
 /// The selection inside one row's text.
 struct RowSelection {
@@ -284,6 +314,34 @@ mod tests {
             state.ranges(ActiveSide::Left, 0, &row).len(),
             MAX_OCCURRENCES_PER_ROW
         );
+    }
+
+    #[test]
+    fn find_paints_every_match_in_the_row_and_the_current_one_apart() {
+        let find = |needle, current| find_ranges("ab ab ab", RowFind { needle, current });
+
+        assert_eq!(find("ab", Some(1)), (vec![0..2, 3..5, 6..8], Some(3..5)));
+        assert_eq!(find("ab", None), (vec![0..2, 3..5, 6..8], None));
+        // The current match is on another row or side, or past this row's matches.
+        assert_eq!(find("ab", Some(3)), (vec![0..2, 3..5, 6..8], None));
+        assert_eq!(find("zz", Some(0)), (vec![], None));
+        // No find, or one cleared.
+        assert_eq!(find("", Some(0)), (vec![], None));
+    }
+
+    #[test]
+    fn find_paints_at_most_the_cap_per_row_but_finds_the_current_one_past_it() {
+        let row = "a".repeat(1000);
+        let current = MAX_OCCURRENCES_PER_ROW + 10;
+        let (all, found) = find_ranges(
+            &row,
+            RowFind {
+                needle: "aa",
+                current: Some(current),
+            },
+        );
+        assert_eq!(all.len(), MAX_OCCURRENCES_PER_ROW);
+        assert_eq!(found, Some(current..current + 2));
     }
 
     #[test]

@@ -22,7 +22,6 @@ GUI for zdiff crate
         + Ignore whitespace
         + Highlight rows that differ
         + Inline ghost tokens
-        + Syntax highlight (only hardcoded keywords for now)
         + Diff only
     - Occurrence highlight: selecting text in a row highlights its other occurrences in the visible rows, on both sides
 

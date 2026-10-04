@@ -791,6 +791,10 @@ impl<'a> ZApp {
             let mut conflict_cursor = diff_processor.conflict_cursor.clone();
             let mut pivot: (Option<usize>, Option<usize>) = diff_processor.pivot;
             let mut find_cursor = diff_processor.find_cursor.clone();
+            let highlight_side = diff_processor.highlight_side;
+            let find_needle = diff_processor.find_ctx.needle().to_owned();
+            let find_hit = diff_processor.current_find_hit();
+            let find_count = diff_processor.find_ctx.hits().len();
             let mut active_side = diff_processor.active_side;
 
             let diff_ctx = if is_hex || is_image {
@@ -833,9 +837,13 @@ impl<'a> ZApp {
                     file_source_loading: file_1.get_loading_path().is_some(),
                     file_target_loading: file_2.get_loading_path().is_some(),
                     active_highlights: &active_highlights,
+                    highlight_side,
                     conflict_cursor: &mut conflict_cursor,
                     pivot: &mut pivot,
                     find_cursor: &mut find_cursor,
+                    find_needle: &find_needle,
+                    find_hit,
+                    find_count,
                     active_side: &mut active_side,
                     diff_loading: diff_processor.is_in_progress(),
                     code_language,

@@ -56,7 +56,6 @@ pub struct DiffBuilderOptions {
     pub ignore: IgnoreOptions,
     pub highlight_rows: bool,
     pub ghost_rows: bool,
-    pub keyword_highlight: bool,
     pub pivot_lines: Option<PivotLines>,
     pub diff_only_with_extra_rows: Option<usize>,
 }
@@ -66,7 +65,6 @@ impl Default for DiffBuilderOptions {
             ignore: IgnoreOptions::default(),
             highlight_rows: true,
             ghost_rows: true,
-            keyword_highlight: true,
             pivot_lines: None,
             diff_only_with_extra_rows: None,
         }
@@ -77,8 +75,7 @@ impl DiffBuilderOptions {
     pub fn need_invalidation(old: &Self, new: &Self) -> bool {
         let mut ret = old.ghost_rows != new.ghost_rows
             || old.highlight_rows != new.highlight_rows
-            || old.ignore != new.ignore
-            || old.keyword_highlight != new.keyword_highlight;
+            || old.ignore != new.ignore;
         if !ret {
             ret = matches!(new.pivot_lines, Some(PivotLines{left: p1, right: p2 }) if p1 > 0 && p2 > 0)
                 && old.pivot_lines != new.pivot_lines;
@@ -94,7 +91,6 @@ pub const DIMMED: Color32 = Color32([128, 128, 128, 110]);
 
 struct DiffTheme {
     ghost: Color32,
-    kw: Color32,
     del: Color32,
     ins: Color32,
     del_bg: Color32,
@@ -106,7 +102,6 @@ impl Default for DiffTheme {
     fn default() -> Self {
         Self {
             ghost: [150, 150, 150, 80].into(),
-            kw: [86, 156, 214, 255].into(),
             del: [255, 100, 100, 255].into(),
             ins: [100, 255, 100, 255].into(),
             del_bg: [255, 0, 0, 20].into(),
@@ -195,14 +190,6 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
         Self::with_capacity(tokens_source, tokens_target, options, capacity)
     }
 
-    fn get_color(&self, is_keyword: bool) -> Color32 {
-        if self.options.keyword_highlight && is_keyword {
-            self.theme.kw
-        } else {
-            Color32::GRAY
-        }
-    }
-
     /// `color`, or the dimmed color when an ignore pattern matched the token.
     fn dim(&self, dimmed: &[bool], token_idx: Option<u32>, color: Color32) -> Color32 {
         match token_idx {
@@ -219,7 +206,7 @@ impl<'a, 'b, T: RawTokenTrait> DiffBuilder<'a, 'b, T> {
             .expect("Equal op must have source index");
         let token = &self.tokens_source.expect("Source was None")[token_idx as usize];
 
-        let color = self.get_color(token.as_ref().kind.is_keyword());
+        let color = Color32::GRAY;
         let is_newline = token.as_ref().kind == TokenKind::Newline;
         // A pattern match depends on the line around the token, so each side has its own flag.
         let left_color = self.dim(self.dimmed.0, diff_result.token_source_idx, color);
