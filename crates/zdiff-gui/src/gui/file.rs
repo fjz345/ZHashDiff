@@ -82,7 +82,8 @@ pub fn load_file(
         // text-encoding-eol decoder replaces it.
         ViewerKind::Text => CachedFile::new(display_path, physical_path, lexer_mode)
             .map(|file| LoadedFile::Text(Arc::new(file))),
-        ViewerKind::Hex => Ok(LoadedFile::Binary(Arc::new(BinaryFile {
+        // Sniffing never picks Image; image content is binary, and the Image viewer reads bytes.
+        ViewerKind::Hex | ViewerKind::Image => Ok(LoadedFile::Binary(Arc::new(BinaryFile {
             path: display_path,
             bytes,
         }))),

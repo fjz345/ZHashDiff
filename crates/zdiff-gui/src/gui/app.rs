@@ -32,7 +32,8 @@ use crate::{
     viewer::{
         ExtensionMap, LoadedSide, ViewerKind, ViewerOverride, conflict_count,
         hex::{HexDiffProcessor, parse_hex_offset},
-        resolve_viewer, ui_extension_map,
+        image::ImageDiffProcessor,
+        image_decode_fallback, resolve_viewer, ui_extension_map,
     },
 };
 
@@ -46,6 +47,8 @@ pub struct AppStateCtx {
     pub diff_processor: DiffProcessor,
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub hex_processor: HexDiffProcessor,
+    #[cfg_attr(feature = "serde", serde(skip), serde(default))]
+    pub image_processor: ImageDiffProcessor,
     /// Resolved each frame from the loaded files; `None` while neither side is loaded.
     #[cfg_attr(feature = "serde", serde(skip), serde(default))]
     pub viewer_kind: Option<ViewerKind>,
@@ -90,6 +93,7 @@ impl Default for AppStateCtx {
             diff_options: Default::default(),
             diff_processor: Default::default(),
             hex_processor: Default::default(),
+            image_processor: Default::default(),
             viewer_kind: None,
             viewer_override: Default::default(),
             viewer_fallback: None,
@@ -606,6 +610,7 @@ impl<'a> ZApp {
                 myers_diff_algorithm,
                 diff_processor,
                 hex_processor,
+                image_processor,
                 viewer_kind,
                 viewer_override,
                 viewer_fallback,
@@ -614,6 +619,7 @@ impl<'a> ZApp {
                 code_language_custom,
             } = app_ctx;
             let is_hex = *viewer_kind == Some(ViewerKind::Hex);
+            let is_image = *viewer_kind == Some(ViewerKind::Image);
             self.show_menu(
                 ui,
                 file_1,
@@ -690,9 +696,11 @@ impl<'a> ZApp {
                 *find_open = find_window_open;
             }
 
-            // The text diff's state is stale while the hex viewer shows the pair.
+            // The text diff's state is stale while another viewer shows the pair.
             let scroll_to_rows = &if is_hex {
                 hex_processor.scroll_to_row(diff_processor.conflict_cursor.get())
+            } else if is_image {
+                None
             } else {
                 diff_processor.get_scroll_to_row()
             };
@@ -706,7 +714,7 @@ impl<'a> ZApp {
             let mut find_cursor = diff_processor.find_cursor.clone();
             let mut active_side = diff_processor.active_side;
 
-            let diff_ctx = if is_hex {
+            let diff_ctx = if is_hex || is_image {
                 None
             } else {
                 diff_processor.get_minimal_diff_ctx()
@@ -753,6 +761,7 @@ impl<'a> ZApp {
                     revert_request: &mut None,
                     block_toggle_request: &mut block_toggle_request,
                     hex_view: is_hex.then(|| hex_processor.view_ctx()),
+                    image_view: is_image.then_some(image_processor),
                     viewer_override: &mut viewer_override.kind,
                     viewer_fallback: viewer_fallback.as_deref(),
                 },
@@ -912,6 +921,8 @@ impl<'a> ZApp {
                         .1;
                     let counts = if is_hex {
                         "hex".to_string()
+                    } else if is_image {
+                        "image".to_string()
                     } else {
                         format!("+{}/-{}", total_adds, total_deletes)
                     };
@@ -1152,7 +1163,10 @@ impl eframe::App for ZApp {
                 .as_mut()
                 .expect("State was not valid while processing inputs")
                 .ctx_mut();
-            let text_conflicts = if app_ctx.viewer_kind == Some(ViewerKind::Hex) {
+            let text_conflicts = if matches!(
+                app_ctx.viewer_kind,
+                Some(ViewerKind::Hex | ViewerKind::Image)
+            ) {
                 0
             } else {
                 app_ctx
@@ -1207,6 +1221,21 @@ impl eframe::App for ZApp {
                     loaded_1.as_ref().map(side),
                     loaded_2.as_ref().map(side),
                 );
+                // Decoding follows the first resolution, so a failed decode stays cached (and
+                // the pair stays in Hex) instead of being retried every frame.
+                if resolution.as_ref().map(|r| r.kind) == Some(ViewerKind::Image) {
+                    state
+                        .image_processor
+                        .request(loaded_1.clone(), loaded_2.clone());
+                } else {
+                    // Drops the old pair's pixels and textures.
+                    state.image_processor.request(None, None);
+                }
+                state
+                    .image_processor
+                    .poll(ctx.input(|i| i.max_texture_side));
+                let resolution =
+                    resolution.map(|r| image_decode_fallback(r, &state.image_processor.failures()));
                 // Resolved every frame, so only a changed reason is logged.
                 let fallback = resolution.as_ref().and_then(|r| r.fallback.clone());
                 if fallback != state.viewer_fallback {
@@ -1217,6 +1246,7 @@ impl eframe::App for ZApp {
                 }
                 state.viewer_kind = resolution.map(|r| r.kind);
                 let is_hex = state.viewer_kind == Some(ViewerKind::Hex);
+                let is_text = matches!(state.viewer_kind, Some(ViewerKind::Text) | None);
                 if is_hex {
                     // The cursor may hold the text diff's or the previous pair's stop.
                     if state.hex_processor.request(loaded_1, loaded_2) {
@@ -1253,7 +1283,7 @@ impl eframe::App for ZApp {
                 };
 
                 if diff_ctx_invalidated
-                    && !is_hex
+                    && is_text
                     && (state.file_1.get_cached_file().is_some()
                         || state.file_2.get_cached_file().is_some())
                 {

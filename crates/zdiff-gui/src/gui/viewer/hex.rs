@@ -181,7 +181,7 @@ impl Default for HexDiffProcessor {
     }
 }
 
-fn is_same_side(a: &Option<LoadedFile>, b: &Option<LoadedFile>) -> bool {
+pub(super) fn is_same_side(a: &Option<LoadedFile>, b: &Option<LoadedFile>) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(a), Some(b)) => a.is_same_load(b),

@@ -8,21 +8,24 @@ use eframe::egui;
 use zdiff::universal_path::UniversalPath;
 
 pub mod hex;
+pub mod image;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ViewerKind {
     Text,
     Hex,
+    Image,
 }
 
 impl ViewerKind {
-    pub const ALL: [ViewerKind; 2] = [ViewerKind::Text, ViewerKind::Hex];
+    pub const ALL: [ViewerKind; 3] = [ViewerKind::Text, ViewerKind::Hex, ViewerKind::Image];
 
     pub fn name(self) -> &'static str {
         match self {
             ViewerKind::Text => "Text",
             ViewerKind::Hex => "Hex",
+            ViewerKind::Image => "Image",
         }
     }
 }
@@ -95,8 +98,12 @@ impl From<ExtensionMap> for BTreeMap<String, ViewerKind> {
 impl ExtensionMap {
     /// Unknown extensions are sniffed, so the defaults only hold viewers sniffing can't pick.
     pub fn defaults() -> Self {
+        let image = ["png", "jpg", "jpeg", "bmp", "gif", "webp", "tga"];
         Self {
-            entries: BTreeMap::new(),
+            entries: image
+                .into_iter()
+                .map(|extension| (extension.to_string(), ViewerKind::Image))
+                .collect(),
         }
     }
 
@@ -221,6 +228,24 @@ pub fn resolve_viewer(
     }
 }
 
+/// An Image resolution with a side that failed to decode (`failures`, one reason per side) is
+/// shown as Hex. Decoding happens after resolving, so this is a second step.
+pub fn image_decode_fallback(
+    resolution: ViewerResolution,
+    failures: &[String],
+) -> ViewerResolution {
+    if resolution.kind != ViewerKind::Image || failures.is_empty() {
+        return resolution;
+    }
+    let mut reasons: Vec<String> = resolution.fallback.into_iter().collect();
+    reasons.extend(failures.iter().cloned());
+    reasons.push("showing Hex".to_string());
+    ViewerResolution {
+        kind: ViewerKind::Hex,
+        fallback: Some(reasons.join("; ")),
+    }
+}
+
 /// Settings editor for the extension map. The extension being added lives in egui's temp memory.
 pub fn ui_extension_map(ui: &mut egui::Ui, map: &mut ExtensionMap) {
     if ui.button("Reset to defaults").clicked() {
@@ -288,6 +313,7 @@ pub fn ui_extension_map(ui: &mut egui::Ui, map: &mut ExtensionMap) {
 pub fn conflict_count(kind: Option<ViewerKind>, text: usize, hex: usize) -> usize {
     match kind {
         Some(ViewerKind::Hex) => hex,
+        Some(ViewerKind::Image) => 0,
         Some(ViewerKind::Text) | None => text,
     }
 }
@@ -303,6 +329,7 @@ mod tests {
         assert_eq!(conflict_count(Some(ViewerKind::Text), 7, 3), 7);
         assert_eq!(conflict_count(Some(ViewerKind::Hex), 7, 3), 3);
         assert_eq!(conflict_count(None, 7, 3), 7);
+        assert_eq!(conflict_count(Some(ViewerKind::Image), 7, 3), 0);
     }
 
     fn side(path: &UniversalPath, sniffed: ViewerKind) -> Option<LoadedSide<'_>> {
@@ -394,7 +421,7 @@ mod tests {
             assert_eq!(normalize_extension(spelling), "png", "{spelling}");
         }
 
-        let mut map = ExtensionMap::defaults();
+        let mut map = ExtensionMap::from(BTreeMap::new());
         assert!(map.insert("PNG", ViewerKind::Hex));
         assert!(map.insert(".png", ViewerKind::Hex));
         assert_eq!(map.iter().count(), 1, "one entry for all spellings");
@@ -511,6 +538,73 @@ mod tests {
     }
 
     #[test]
+    fn default_map_sends_common_image_extensions_to_image() {
+        let map = ExtensionMap::defaults();
+        for extension in ["png", "jpg", "jpeg", "bmp", "gif", "webp", "tga"] {
+            assert_eq!(map.get(extension), Some(ViewerKind::Image), "{extension}");
+        }
+
+        // Image content sniffs as binary; the map still picks Image, in any case.
+        let png = UniversalPath::from(r"C:\x\a.png");
+        let jpg = UniversalPath::from(r"C:\x\b.JPG");
+        assert_eq!(
+            kind(resolve_viewer(
+                None,
+                &map,
+                side(&png, ViewerKind::Hex),
+                side(&jpg, ViewerKind::Hex)
+            )),
+            Some(ViewerKind::Image)
+        );
+    }
+
+    #[test]
+    fn a_user_mapped_extension_opens_as_image() {
+        let a = UniversalPath::from("a.zpng");
+        let b = UniversalPath::from("b.zpng");
+        let mut map = ExtensionMap::defaults();
+        let resolve = |map: &ExtensionMap| {
+            kind(resolve_viewer(
+                None,
+                map,
+                side(&a, ViewerKind::Hex),
+                side(&b, ViewerKind::Hex),
+            ))
+        };
+        assert_eq!(resolve(&map), Some(ViewerKind::Hex), "unmapped: sniffed");
+        assert!(map.insert(".ZPNG", ViewerKind::Image));
+        assert_eq!(resolve(&map), Some(ViewerKind::Image));
+    }
+
+    #[test]
+    fn a_failed_image_decode_falls_back_to_hex_with_a_reason() {
+        let image = ViewerResolution {
+            kind: ViewerKind::Image,
+            fallback: None,
+        };
+        assert_eq!(image_decode_fallback(image.clone(), &[]), image);
+
+        let resolution = image_decode_fallback(image, &["a.png can't be decoded: bad".to_string()]);
+        assert_eq!(resolution.kind, ViewerKind::Hex);
+        assert!(
+            resolution
+                .fallback
+                .unwrap()
+                .contains("a.png can't be decoded: bad")
+        );
+
+        // Only an Image resolution looks at decode results.
+        let hex = ViewerResolution {
+            kind: ViewerKind::Hex,
+            fallback: None,
+        };
+        assert_eq!(
+            image_decode_fallback(hex.clone(), &["stale".to_string()]),
+            hex
+        );
+    }
+
+    #[test]
     fn reset_restores_the_defaults() {
         let mut map = ExtensionMap::defaults();
         map.insert("zbin", ViewerKind::Hex);
@@ -528,9 +622,12 @@ mod tests {
         let json = serde_json::to_string(&map).unwrap();
         assert_eq!(serde_json::from_str::<ExtensionMap>(&json).unwrap(), map);
 
-        // A hand-edited save still finds its entries.
+        // A hand-edited save still finds its entries, and holds only them.
         let edited: ExtensionMap = serde_json::from_str(r#"{".ZBIN":"Hex"}"#).unwrap();
-        assert_eq!(edited, map);
+        assert_eq!(
+            edited,
+            ExtensionMap::from(BTreeMap::from([("zbin".to_string(), ViewerKind::Hex)]))
+        );
     }
 
     #[test]

@@ -11,6 +11,7 @@ use crate::{
     viewer::{
         ViewerKind,
         hex::{self, HexViewCtx},
+        image::{self, ImageDiffProcessor},
     },
 };
 use eframe::egui::{
@@ -66,6 +67,8 @@ pub struct FileDiffPaneCtx<'a> {
     pub block_toggle_request: &'a mut Option<(usize, BlockToggle)>,
     /// Set when the pair resolved to the Hex viewer; the table then shows hex rows.
     pub hex_view: Option<HexViewCtx<'a>>,
+    /// Set when the pair resolved to the Image viewer; the images replace the table rows.
+    pub image_view: Option<&'a mut ImageDiffProcessor>,
     /// The toolbar's viewer switch for the current pair; `None` is Auto.
     pub viewer_override: &'a mut Option<ViewerKind>,
     /// Why the pair isn't in the viewer it asked for, if it isn't.
@@ -280,6 +283,15 @@ impl FileDiffPane {
                 ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add(egui::Label::new(hex_view.status_text()).selectable(false));
                 });
+            } else if let Some(image_view) = &ctx.image_view {
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    let (text, size_mismatch) = image_view.status_text();
+                    let mut text = egui::RichText::new(text);
+                    if size_mismatch {
+                        text = text.color(ui.visuals().warn_fg_color);
+                    }
+                    ui.add(egui::Label::new(text).selectable(false));
+                });
             }
         });
 
@@ -318,8 +330,9 @@ impl FileDiffPane {
         };
         waiting_for_diff |= ctx.diff_loading;
         do_not_render_diff |= waiting_for_diff;
-        // The hex viewer draws the loaded bytes and needs no text diff.
-        if ctx.hex_view.is_some() {
+        // The hex and image viewers draw the loaded bytes and need no text diff.
+        let other_viewer = ctx.hex_view.is_some() || ctx.image_view.is_some();
+        if other_viewer {
             waiting_for_diff = false;
             do_not_render_diff = false;
         }
@@ -338,7 +351,7 @@ impl FileDiffPane {
         ui.vertical(|ui| {
             ui.set_min_width(available_width);
 
-            if table_height > 0.0 && (diff_rows_len > 0 || ctx.hex_view.is_some()) {
+            if table_height > 0.0 && (diff_rows_len > 0 || other_viewer) {
                 table_rect = ui.allocate_ui(egui::vec2(ui.available_width(), table_height), |ui| {
                     egui::Frame::default()
                         .fill(egui::Color32::from_gray(15))
@@ -346,6 +359,9 @@ impl FileDiffPane {
                             use egui_extras::{Column, TableBuilder};
 
                             let mut table_builder = TableBuilder::new(ui);
+                            // Images are drawn below the header (the path editors), in the
+                            // table's columns, outside its scroll area so the wheel zooms.
+                            let mut image_left_width = None;
 
                             if let Some(ScrollSpan { start, maybe_end }) = &ctx.scroll_to_row_span {
                                 log::trace!("scroll_to_row_span: ({:?}, {:?})", start, maybe_end);
@@ -496,6 +512,10 @@ impl FileDiffPane {
                                     });
                                 })
                                 .body(|body| {
+                                    if ctx.image_view.is_some() {
+                                        image_left_width = Some(body.widths()[0]);
+                                        return;
+                                    }
                                     if let Some(hex_view) = &ctx.hex_view {
                                         hex::table_body(
                                             body,
@@ -716,6 +736,11 @@ impl FileDiffPane {
                                         },
                                     );
                                 });
+                            if let (Some(image_view), Some(left_width)) =
+                                (ctx.image_view.as_deref_mut(), image_left_width)
+                            {
+                                image::show(ui, image_view, left_width);
+                            }
                         });
                 })
                 .response
@@ -738,8 +763,8 @@ impl FileDiffPane {
                 });
             }
 
-            // The sliders scroll text rows; hex rows have a fixed width.
-            if !(waiting_for_diff || do_not_render_diff) && ctx.hex_view.is_none() {
+            // The sliders scroll text rows; hex rows have a fixed width, images pan.
+            if !(waiting_for_diff || do_not_render_diff || other_viewer) {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     let left_w = available_width * 0.48;
