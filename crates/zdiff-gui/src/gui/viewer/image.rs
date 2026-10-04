@@ -1,15 +1,21 @@
 //! Image viewer: both sides decoded off the UI thread, uploaded once as textures and drawn side
-//! by side with one zoom and pan shared by both.
+//! by side with one zoom and pan shared by both. A decoded pair is compared pixel by pixel off
+//! the UI thread too, for the statistics and the difference map.
 
 use std::{
     io::Cursor,
-    sync::{Arc, mpsc},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
 };
 
 use eframe::egui::{
     self, Color32, ColorImage, Rect, Sense, Stroke, StrokeKind, TextureFilter, TextureHandle,
     TextureOptions, Vec2, pos2, vec2,
 };
+use zdiff::pixel::{PixelDiff, PixelStats, RgbaBuffer, pixel_diff};
 
 use super::{hex::is_same_side, path_extension};
 use crate::file::LoadedFile;
@@ -32,6 +38,16 @@ impl std::fmt::Debug for DecodedImage {
             .field("height", &self.height)
             .field("format", &self.format)
             .finish()
+    }
+}
+
+impl DecodedImage {
+    fn buffer(&self) -> RgbaBuffer<'_> {
+        RgbaBuffer {
+            width: self.width,
+            height: self.height,
+            rgba: &self.rgba,
+        }
     }
 }
 
@@ -138,7 +154,71 @@ impl std::fmt::Debug for SideState {
     }
 }
 
+/// How the decoded sides are drawn. Kept across pairs, not persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImageMode {
+    #[default]
+    SideBySide,
+    /// Both sides dimmed, with the changed pixels of the union canvas drawn over them.
+    Difference,
+}
+
+/// Changed pixels in the difference map.
+const DIFF_COLOR: Color32 = Color32::from_rgb(255, 0, 255);
+
+fn mask_image(diff: &PixelDiff) -> ColorImage {
+    let pixels = diff
+        .mask
+        .iter()
+        .map(|&changed| {
+            if changed {
+                DIFF_COLOR
+            } else {
+                Color32::TRANSPARENT
+            }
+        })
+        .collect();
+    ColorImage::new([diff.width as usize, diff.height as usize], pixels)
+}
+
+/// The changed-pixel count and share, never rounded down to 0% while a pixel is changed.
+pub fn stats_text(stats: &PixelStats) -> String {
+    let percent = stats.changed_percent();
+    let percent = if percent < 0.01 {
+        "<0.01%".to_string()
+    } else {
+        format!("{percent:.2}%")
+    };
+    match stats.changed {
+        0 => "No changed pixels".to_string(),
+        1 => format!("1 changed pixel ({percent})"),
+        changed => format!("{changed} changed pixels ({percent})"),
+    }
+}
+
+/// A finished comparison of the current pair.
+struct DiffMap {
+    tolerance: u8,
+    stats: PixelStats,
+    /// The union canvas, in image pixels.
+    size: Vec2,
+    /// Uploaded (and dropped) on the first frame the difference map is drawn.
+    mask: Option<ColorImage>,
+    texture: Option<TextureHandle>,
+}
+
+impl std::fmt::Debug for DiffMap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiffMap")
+            .field("tolerance", &self.tolerance)
+            .field("stats", &self.stats)
+            .field("uploaded", &self.texture.is_some())
+            .finish()
+    }
+}
+
 type DecodeResult = (usize, u64, Result<DecodedImage, String>);
+type CompareResult = (u64, u8, PixelStats, ColorImage);
 
 /// Decodes each side on a worker thread when its load changes. A result for an older load of the
 /// side is dropped. Decoding can't be interrupted; a stale decode just runs to its end.
@@ -151,6 +231,17 @@ pub struct ImageDiffProcessor {
     view: ImageView,
     /// Fit once both sides are done decoding, so the second side arriving doesn't move the view.
     fit_pending: bool,
+    mode: ImageMode,
+    /// The largest per-channel difference that still counts as unchanged.
+    tolerance: u8,
+    /// What the current pair was last sent to compare with; `None` until both sides decode.
+    compared_tolerance: Option<u8>,
+    compare_generation: u64,
+    /// Set when the pair or the tolerance changes, so a superseded comparison stops early.
+    compare_cancel: Arc<AtomicBool>,
+    compare_channel: (mpsc::Sender<CompareResult>, mpsc::Receiver<CompareResult>),
+    /// Kept while another tolerance is compared, so dragging the slider doesn't blank the map.
+    diff_map: Option<DiffMap>,
 }
 
 impl Default for ImageDiffProcessor {
@@ -162,6 +253,13 @@ impl Default for ImageDiffProcessor {
             channel: mpsc::channel(),
             view: ImageView::default(),
             fit_pending: false,
+            mode: ImageMode::default(),
+            tolerance: 0,
+            compared_tolerance: None,
+            compare_generation: 0,
+            compare_cancel: Arc::new(AtomicBool::new(false)),
+            compare_channel: mpsc::channel(),
+            diff_map: None,
         }
     }
 }
@@ -193,7 +291,60 @@ impl ImageDiffProcessor {
                 }
             };
             self.files[index] = file;
+            self.reset_comparison();
         }
+    }
+
+    fn reset_comparison(&mut self) {
+        self.compare_cancel.store(true, Ordering::Release);
+        self.compare_cancel = Arc::new(AtomicBool::new(false));
+        self.compare_generation += 1;
+        self.compared_tolerance = None;
+        self.diff_map = None;
+    }
+
+    /// Takes a finished comparison, and compares the pair again once both sides are decoded or
+    /// the tolerance changed.
+    fn compare(&mut self) {
+        while let Ok((generation, tolerance, stats, mask)) = self.compare_channel.1.try_recv() {
+            if generation != self.compare_generation {
+                continue;
+            }
+            self.diff_map = Some(DiffMap {
+                tolerance,
+                stats,
+                size: vec2(mask.size[0] as f32, mask.size[1] as f32),
+                mask: Some(mask),
+                texture: None,
+            });
+        }
+
+        let decoded = |side: &SideState| match side {
+            SideState::Decoded { image, .. } => Some(image.clone()),
+            _ => None,
+        };
+        let (Some(first), Some(second)) = (decoded(&self.sides[0]), decoded(&self.sides[1])) else {
+            return;
+        };
+        if self.compared_tolerance == Some(self.tolerance) {
+            return;
+        }
+        // Keeps the shown map; only a result for this tolerance replaces it.
+        let diff_map = self.diff_map.take();
+        self.reset_comparison();
+        self.diff_map = diff_map;
+        self.compared_tolerance = Some(self.tolerance);
+
+        let (tolerance, generation) = (self.tolerance, self.compare_generation);
+        let (cancel_flag, tx) = (self.compare_cancel.clone(), self.compare_channel.0.clone());
+        std::thread::spawn(move || {
+            let Some(diff) = pixel_diff(first.buffer(), second.buffer(), tolerance, &cancel_flag)
+            else {
+                return;
+            };
+            let mask = mask_image(&diff);
+            let _ = tx.send((generation, tolerance, diff.stats, mask));
+        });
     }
 
     /// `max_texture_side` is the renderer's limit; a larger image can't be uploaded and fails
@@ -224,6 +375,7 @@ impl ImageDiffProcessor {
                 Err(reason) => SideState::Failed(reason),
             };
         }
+        self.compare();
     }
 
     /// One reason per side that can't be shown as an image.
@@ -262,6 +414,22 @@ impl ImageDiffProcessor {
             (None, None) => (String::new(), false),
         }
     }
+
+    /// Both sides are decoded and the shown comparison isn't for the current tolerance yet.
+    fn comparing(&self) -> bool {
+        self.decoded(0).is_some()
+            && self.decoded(1).is_some()
+            && self.diff_map.as_ref().map(|map| map.tolerance) != Some(self.tolerance)
+    }
+
+    fn compare_status(&self) -> String {
+        match (&self.diff_map, self.comparing()) {
+            (Some(map), false) => stats_text(&map.stats),
+            (Some(map), true) => format!("{} (comparing...)", stats_text(&map.stats)),
+            (None, true) => "Comparing...".to_string(),
+            (None, false) => String::new(),
+        }
+    }
 }
 
 /// Both sides, left one `left_width` wide like the table's left column, in the rest of `ui`.
@@ -273,7 +441,17 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
         fit = ui.button("Fit").clicked();
         actual_size = ui.button("1:1").clicked();
         ui.label(format!("{:.0}%", processor.view.zoom * 100.0));
+        ui.separator();
+        ui.selectable_value(&mut processor.mode, ImageMode::SideBySide, "Side by side");
+        ui.selectable_value(&mut processor.mode, ImageMode::Difference, "Difference");
+        ui.add(egui::Slider::new(&mut processor.tolerance, 0..=255).text("Tolerance"))
+            .on_hover_text("The largest per-channel difference that still counts as unchanged");
+        ui.label(processor.compare_status());
     });
+    if processor.comparing() {
+        // The result arrives from a worker; keep frames coming until it is polled.
+        ui.ctx().request_repaint();
+    }
 
     let area = ui.available_rect_before_wrap();
     let info_height = ui.text_style_height(&egui::TextStyle::Monospace) + 4.0;
@@ -328,6 +506,22 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
     }
 
     let view = processor.view;
+    let diff_overlay = match &mut processor.diff_map {
+        Some(map) if processor.mode == ImageMode::Difference => {
+            if let Some(mask) = map.mask.take() {
+                // Nearest without mipmaps: a lone changed pixel must not be averaged away.
+                map.texture = Some(ui.ctx().load_texture(
+                    "image_diff_mask",
+                    mask,
+                    TextureOptions::NEAREST,
+                ));
+            }
+            map.texture
+                .as_ref()
+                .map(|texture| (texture.id(), map.size, map.stats.bounds.clone()))
+        }
+        _ => None,
+    };
     let text_color = ui.visuals().text_color();
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     for (index, side) in processor.sides.iter_mut().enumerate() {
@@ -378,18 +572,49 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
                     vec2(image.width as f32, image.height as f32) * view.zoom,
                 );
                 let painter = ui.painter_at(image_rect);
-                painter.image(
-                    texture.id(),
-                    drawn,
-                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                    Color32::WHITE,
-                );
+                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                // Dimmed under the difference map, so the highlight stands out.
+                let tint = match diff_overlay {
+                    Some(_) => Color32::from_gray(80),
+                    None => Color32::WHITE,
+                };
+                painter.image(texture.id(), drawn, uv, tint);
                 painter.rect_stroke(
                     drawn,
                     0.0,
                     Stroke::new(1.0, Color32::from_gray(80)),
                     StrokeKind::Outside,
                 );
+
+                if let Some((mask, canvas, bounds)) = &diff_overlay {
+                    // The canvas is aligned top-left like both images, so the map lines up on
+                    // either side.
+                    let origin = image_rect.min + view.pan;
+                    painter.image(
+                        *mask,
+                        Rect::from_min_size(origin, *canvas * view.zoom),
+                        uv,
+                        Color32::WHITE,
+                    );
+                    if let Some(bounds) = bounds {
+                        let corner = |x: u32, y: u32| origin + vec2(x as f32, y as f32) * view.zoom;
+                        let changed = Rect::from_min_max(
+                            corner(bounds.x.start, bounds.y.start),
+                            corner(bounds.x.end, bounds.y.end),
+                        );
+                        // A few points across at any zoom, so a one-pixel edit can be found.
+                        let changed = Rect::from_center_size(
+                            changed.center(),
+                            changed.size().max(Vec2::splat(9.0)),
+                        );
+                        painter.rect_stroke(
+                            changed.expand(2.0),
+                            0.0,
+                            Stroke::new(1.5, DIFF_COLOR),
+                            StrokeKind::Outside,
+                        );
+                    }
+                }
             }
         }
     }
@@ -397,9 +622,13 @@ pub fn show(ui: &mut egui::Ui, processor: &mut ImageDiffProcessor, left_width: f
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use image::{ImageFormat, RgbaImage};
+    use zdiff::universal_path::UniversalPath;
 
     use super::*;
+    use crate::file::BinaryFile;
     use crate::viewer::{ViewerKind, ViewerResolution, image_decode_fallback};
 
     fn pixel_under(view: ImageView, point: Vec2) -> Vec2 {
@@ -510,6 +739,110 @@ mod tests {
         let resolution = image_decode_fallback(image, &[error]);
         assert_eq!(resolution.kind, ViewerKind::Hex);
         assert!(resolution.fallback.is_some());
+    }
+
+    fn png_file(name: &str, image: &RgbaImage) -> LoadedFile {
+        LoadedFile::Binary(Arc::new(BinaryFile {
+            path: UniversalPath::from(name),
+            bytes: encode(image, ImageFormat::Png),
+        }))
+    }
+
+    /// Decoding and comparing are threaded, so poll like the app's frames do.
+    fn poll_until(processor: &mut ImageDiffProcessor, done: impl Fn(&ImageDiffProcessor) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done(processor) {
+            assert!(Instant::now() < deadline, "timed out: {processor:?}");
+            processor.poll(usize::MAX);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn changed(processor: &ImageDiffProcessor) -> Option<(u8, u64, u64)> {
+        let map = processor.diff_map.as_ref()?;
+        Some((map.tolerance, map.stats.changed, map.stats.total))
+    }
+
+    #[test]
+    fn a_decoded_pair_is_compared_again_when_the_tolerance_changes() {
+        let first = RgbaImage::from_raw(2, 1, vec![0, 0, 0, 255, 0, 0, 0, 255]).unwrap();
+        let second = RgbaImage::from_raw(2, 1, vec![0, 0, 0, 255, 10, 0, 0, 255]).unwrap();
+        let mut processor = ImageDiffProcessor::default();
+        processor.request(
+            Some(png_file("a.png", &first)),
+            Some(png_file("b.png", &second)),
+        );
+        poll_until(&mut processor, |p| p.diff_map.is_some());
+        assert_eq!(changed(&processor), Some((0, 1, 2)));
+        assert!(!processor.comparing());
+        assert_eq!(processor.compare_status(), "1 changed pixel (50.00%)");
+
+        processor.tolerance = 10;
+        assert!(processor.comparing());
+        // The last result stays shown while the new tolerance is compared.
+        assert!(processor.compare_status().starts_with("1 changed pixel"));
+        poll_until(&mut processor, |p| !p.comparing());
+        assert_eq!(changed(&processor), Some((10, 0, 2)));
+        assert_eq!(processor.compare_status(), "No changed pixels");
+    }
+
+    #[test]
+    fn a_one_sided_or_changed_pair_has_no_comparison() {
+        let image = two_pixels();
+        let mut processor = ImageDiffProcessor::default();
+        processor.request(Some(png_file("a.png", &image)), None);
+        poll_until(&mut processor, |p| p.decoded(0).is_some());
+        for _ in 0..20 {
+            processor.poll(usize::MAX);
+        }
+        assert!(processor.diff_map.is_none());
+        assert!(!processor.comparing());
+        assert_eq!(processor.compare_status(), "");
+
+        // The pair completes, is compared, then a new side drops the old pair's result at once.
+        processor.request(
+            Some(png_file("a.png", &image)),
+            Some(png_file("b.png", &image)),
+        );
+        poll_until(&mut processor, |p| p.diff_map.is_some());
+        assert_eq!(changed(&processor), Some((0, 0, 2)));
+        processor.request(
+            Some(png_file("a.png", &image)),
+            Some(png_file("c.png", &image)),
+        );
+        assert!(processor.diff_map.is_none());
+        poll_until(&mut processor, |p| p.diff_map.is_some());
+        assert_eq!(changed(&processor), Some((0, 0, 2)));
+    }
+
+    #[test]
+    fn stats_never_round_a_changed_pixel_down_to_zero_percent() {
+        let stats = |changed, total| PixelStats {
+            changed,
+            total,
+            bounds: None,
+        };
+        assert_eq!(stats_text(&stats(0, 100)), "No changed pixels");
+        assert_eq!(stats_text(&stats(1, 4)), "1 changed pixel (25.00%)");
+        assert_eq!(stats_text(&stats(3, 3)), "3 changed pixels (100.00%)");
+        // One pixel of a 4K image.
+        assert_eq!(
+            stats_text(&stats(1, 3840 * 2160)),
+            "1 changed pixel (<0.01%)"
+        );
+    }
+
+    #[test]
+    fn the_mask_marks_changed_pixels_on_a_transparent_canvas() {
+        let diff = PixelDiff {
+            width: 2,
+            height: 1,
+            mask: vec![false, true],
+            stats: PixelStats::default(),
+        };
+        let mask = mask_image(&diff);
+        assert_eq!(mask.size, [2, 1]);
+        assert_eq!(mask.pixels, vec![Color32::TRANSPARENT, DIFF_COLOR]);
     }
 
     #[test]

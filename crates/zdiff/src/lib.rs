@@ -7,6 +7,7 @@ pub mod hex;
 pub mod ignore;
 pub mod lexer;
 pub mod myers;
+pub mod pixel;
 pub mod row_text;
 #[cfg(test)]
 pub mod test_harness;
