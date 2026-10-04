@@ -12,6 +12,7 @@ use zcommon::hash::HashService;
 use zhashdiff::{
     comparison::PathComparisonResult,
     external_diff_tool::{DiffToolConfig, open_diff_tool},
+    filter::PathFilter,
     fs::{FileSystemModel, FsNode, FsNodeDepth, FsNodeId, TreeIter},
 };
 
@@ -178,6 +179,7 @@ impl FileSystemView {
     pub fn build_two_folder_diff_rows(
         file_system_1: Option<&FileSystemView>,
         file_system_2: Option<&FileSystemView>,
+        filter: &PathFilter,
         compare_cache: &mut FileCompareCache,
         mut compare: impl FnMut(&Path, &Path) -> io::Result<PathComparisonResult>,
     ) -> io::Result<Vec<VisibleRowTwoFolderDiff>> {
@@ -211,14 +213,23 @@ impl FileSystemView {
                 .join("/")
         };
 
+        // Filtered entries never enter the map, so folder states only see visible entries.
         if let Some(view) = file_system_1 {
+            let hidden = filtered_out(view, filter);
             for (id, node, depth) in view.file_system.iter_tree() {
+                if hidden[id] {
+                    continue;
+                }
                 let rel = get_rel_path(view, id, node);
                 entries_map.insert(rel, (Some((id, node, depth)), None));
             }
         }
         if let Some(view) = file_system_2 {
+            let hidden = filtered_out(view, filter);
             for (id, node, depth) in view.file_system.iter_tree() {
+                if hidden[id] {
+                    continue;
+                }
                 let rel = get_rel_path(view, id, node);
                 entries_map
                     .entry(rel)
@@ -310,6 +321,28 @@ impl FileSystemView {
         }
         out
     }
+}
+
+/// Per node id of the view's model, true when the filter hides the node: blacklisted, or inside
+/// a blacklisted folder. The root is never hidden.
+fn filtered_out(view: &FileSystemView, filter: &PathFilter) -> Vec<bool> {
+    let model = &view.file_system;
+    let mut hidden = vec![false; model.total_files_and_folders()];
+    if !filter.is_active() {
+        return hidden;
+    }
+    // Pre-order, so a parent is decided before its children.
+    for (id, node, _) in model.iter_tree() {
+        let Some(parent) = node.parent else {
+            continue;
+        };
+        hidden[id] = hidden[parent] || {
+            let path = node.as_path();
+            let name = path.as_ref().file_name().unwrap_or_default();
+            filter.is_blacklisted(&name.to_string_lossy(), node.is_dir())
+        };
+    }
+    hidden
 }
 
 /// The two-folder rows as the cursor sees them. A row is hidden when it isn't drawn: the
@@ -1210,6 +1243,7 @@ mod tests {
     use std::sync::Arc;
     use tempfile::{TempDir, tempdir};
     use zhashdiff::comparison::compare_crc;
+    use zhashdiff::filter::{PathFilter, PatternList};
     use zhashdiff::fs::{FileSystemModel, FsIsDir, FsNodeDepth, FsNodeId};
 
     struct CollapsedTestCase {
@@ -1419,11 +1453,165 @@ mod tests {
         cache: &mut FileCompareCache,
         comparisons: &Cell<usize>,
     ) -> Vec<VisibleRowTwoFolderDiff> {
-        FileSystemView::build_two_folder_diff_rows(Some(left), Some(right), cache, |a, b| {
-            comparisons.set(comparisons.get() + 1);
-            compare_crc(a, b)
-        })
+        build_filtered(left, right, cache, comparisons, &PathFilter::default())
+    }
+
+    fn build_filtered(
+        left: &FileSystemView,
+        right: &FileSystemView,
+        cache: &mut FileCompareCache,
+        comparisons: &Cell<usize>,
+        filter: &PathFilter,
+    ) -> Vec<VisibleRowTwoFolderDiff> {
+        FileSystemView::build_two_folder_diff_rows(
+            Some(left),
+            Some(right),
+            filter,
+            cache,
+            |a, b| {
+                comparisons.set(comparisons.get() + 1);
+                compare_crc(a, b)
+            },
+        )
         .unwrap()
+    }
+
+    fn blacklist(text: &str) -> PathFilter {
+        PathFilter {
+            blacklist: PatternList::new(text),
+            ..Default::default()
+        }
+    }
+
+    fn rows_with_kinds(rows: &[VisibleRowTwoFolderDiff]) -> Vec<(&str, &'static str)> {
+        rows.iter()
+            .map(|r| (r.rel_path.as_str(), state_kind(&r.diff_state)))
+            .collect()
+    }
+
+    #[test]
+    fn blacklisted_entries_are_absent_on_both_sides() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+
+        let rows = build_filtered(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+            &blacklist("B.TXT, *_only.txt"),
+        );
+
+        // b.txt is on both sides, left_only.txt and right_only.txt on one. With every
+        // difference hidden, the root reads as Same.
+        assert_eq!(
+            rows_with_kinds(&rows),
+            [
+                ("", "Same"),
+                ("a.txt", "Same"),
+                ("sub", "Same"),
+                ("sub/c.txt", "Same"),
+                ("sub/deep", "Same"),
+                ("sub/deep/d.txt", "Same"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_blacklisted_folder_hides_its_whole_subtree() {
+        let (left_dir, right_dir) = two_folder_trees();
+        write_files(left_dir.path(), &[("sub/deep/more/e.txt", "l")]);
+        // A file of the same name: the trailing slash spares it.
+        write_files(right_dir.path(), &[("deep", "a file")]);
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+
+        let rows = build_filtered(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+            &blacklist("deep/"),
+        );
+
+        let paths: Vec<&str> = rows.iter().map(|r| r.rel_path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "",
+                "a.txt",
+                "b.txt",
+                "deep",
+                "left_only.txt",
+                "right_only.txt",
+                "sub",
+                "sub/c.txt",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_folder_whose_only_difference_is_blacklisted_reads_as_same() {
+        let (left_dir, right_dir) = two_folder_trees();
+        write_files(left_dir.path(), &[("sub/build.log", "left")]);
+        write_files(right_dir.path(), &[("sub/build.log", "right")]);
+        write_files(left_dir.path(), &[("sub/deep/left.obj", "only left")]);
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let mut cache = FileCompareCache::default();
+        let comparisons = Cell::new(0);
+
+        let rows = build_counting(&left, &right, &mut cache, &comparisons);
+        assert_eq!(kind_at(&rows, "sub"), "Different");
+        assert_eq!(kind_at(&rows, "sub/deep"), "Different");
+
+        let rows = build_filtered(
+            &left,
+            &right,
+            &mut cache,
+            &comparisons,
+            &blacklist("*.log\n*.obj"),
+        );
+        assert_eq!(kind_at(&rows, "sub"), "Same");
+        assert_eq!(kind_at(&rows, "sub/deep"), "Same");
+        assert_eq!(kind_at(&rows, ""), "Different", "b.txt still differs");
+    }
+
+    #[test]
+    fn the_root_is_never_filtered() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+
+        // Matches the roots' own names too (tempdirs are named .tmpXXXX).
+        let rows = build_filtered(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+            &blacklist("*, *.tmp*/"),
+        );
+
+        assert_eq!(rows_with_kinds(&rows), [("", "Same")]);
+    }
+
+    #[test]
+    fn changing_the_filter_rebuilds_without_comparing_files_again() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let comparisons = Cell::new(0);
+        let mut cache = FileCompareCache::default();
+
+        let unfiltered = build_counting(&left, &right, &mut cache, &comparisons);
+        assert_eq!(comparisons.get(), 4);
+
+        let filtered = build_filtered(&left, &right, &mut cache, &comparisons, &blacklist("sub"));
+        assert!(filtered.iter().all(|r| !r.rel_path.starts_with("sub")));
+        let cleared = build_counting(&left, &right, &mut cache, &comparisons);
+        assert_eq!(comparisons.get(), 4);
+        assert_eq!(cleared, unfiltered);
     }
 
     fn kind_at(rows: &[VisibleRowTwoFolderDiff], rel_path: &str) -> &'static str {

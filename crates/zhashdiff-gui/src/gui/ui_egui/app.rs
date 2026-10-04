@@ -9,6 +9,7 @@ use zcommon::{hash::HashService, ui_egui::common::show_custom_popup};
 use zhashdiff::{
     comparison::{PathComparissonMethod, compare_paths},
     external_diff_tool::{DiffToolConfig, DiffToolDefaultArgs},
+    filter::PathFilter,
     fs::FileSystemModel,
 };
 
@@ -38,6 +39,12 @@ pub struct AppStateCtx {
     two_folder_diff_visible_rows: Option<Vec<VisibleRowTwoFolderDiff>>,
     #[serde(skip)]
     two_folder_diff_compare_cache: FileCompareCache,
+    /// The filter `two_folder_diff_visible_rows` were built with.
+    #[serde(skip)]
+    two_folder_diff_rows_filter: PathFilter,
+    /// Applies to the two-folder diff rows.
+    #[serde(default)]
+    pub path_filter: PathFilter,
 
     #[serde(skip)]
     pub active_conflict_hash: Option<String>,
@@ -48,6 +55,29 @@ pub struct AppStateCtx {
     conflict_map_resolved: HashMap<String, PathBuf>,
 
     diff_config: DiffToolConfig,
+}
+
+impl AppStateCtx {
+    /// Rebuilds the two-folder rows when they were dropped or the filter changed since they
+    /// were built. Here rather than at the edit, so the rows are never missing mid-frame.
+    fn build_two_folder_diff_rows_if_stale(&mut self) {
+        if self.two_folder_diff_rows_filter != self.path_filter {
+            self.two_folder_diff_visible_rows = None;
+        }
+        if self.two_folder_diff_visible_rows.is_none()
+            && (self.file_system_model_1_view.is_some() || self.file_system_model_2_view.is_some())
+        {
+            self.two_folder_diff_visible_rows = FileSystemView::build_two_folder_diff_rows(
+                self.file_system_model_1_view.as_ref(),
+                self.file_system_model_2_view.as_ref(),
+                &self.path_filter,
+                &mut self.two_folder_diff_compare_cache,
+                |path_1, path_2| compare_paths(path_1, path_2, &PathComparissonMethod::CrC),
+            )
+            .ok();
+            self.two_folder_diff_rows_filter = self.path_filter.clone();
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -277,6 +307,7 @@ impl ZApp {
                     diff_action_pressed: &mut diff_action_triggered,
 
                     diff_tool_config: &app_ctx.diff_config,
+                    path_filter: &mut app_ctx.path_filter,
                     path_diff_view: &mut path_diff_view,
                 };
 
@@ -494,21 +525,7 @@ impl eframe::App for ZApp {
                     state.file_system_model_2_view = None;
                     state.two_folder_diff_visible_rows = None;
                 }
-                if state.two_folder_diff_visible_rows.is_none()
-                    && (state.file_system_model_1_view.is_some()
-                        || state.file_system_model_2_view.is_some())
-                {
-                    state.two_folder_diff_visible_rows =
-                        FileSystemView::build_two_folder_diff_rows(
-                            state.file_system_model_1_view.as_ref(),
-                            state.file_system_model_2_view.as_ref(),
-                            &mut state.two_folder_diff_compare_cache,
-                            |path_1, path_2| {
-                                compare_paths(path_1, path_2, &PathComparissonMethod::CrC)
-                            },
-                        )
-                        .ok();
-                }
+                state.build_two_folder_diff_rows_if_stale();
 
                 self.ui(ctx, frame, &mut state);
 
@@ -528,5 +545,81 @@ impl eframe::App for ZApp {
             }
         };
         self.state = Some(app_state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppStateCtx;
+    use crate::ui_egui::fs_tree::FileSystemView;
+    use std::{fs, path::Path, sync::Arc};
+    use tempfile::tempdir;
+    use zhashdiff::{
+        filter::{PathFilter, PatternList},
+        fs::FileSystemModel,
+    };
+
+    fn blacklist(text: &str) -> PathFilter {
+        PathFilter {
+            blacklist: PatternList::new(text),
+            ..Default::default()
+        }
+    }
+
+    fn load_view(root: &Path) -> Option<FileSystemView> {
+        Some(FileSystemView::new(Arc::new(
+            FileSystemModel::new(root).unwrap(),
+        )))
+    }
+
+    fn row_paths(state: &AppStateCtx) -> Vec<&str> {
+        let rows = state.two_folder_diff_visible_rows.as_ref().unwrap();
+        rows.iter().map(|r| r.rel_path.as_str()).collect()
+    }
+
+    #[test]
+    fn the_filter_survives_a_restart() {
+        let mut state = AppStateCtx::default();
+        state.path_filter = blacklist("*.obj, target/");
+
+        let json = serde_json::to_string(&state).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.path_filter, state.path_filter);
+        assert!(restored.path_filter.is_blacklisted("a.OBJ", false));
+        assert!(restored.path_filter.is_blacklisted("target", true));
+    }
+
+    #[test]
+    fn a_state_saved_before_the_filter_existed_loads_with_an_empty_filter() {
+        let mut json: serde_json::Value = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut().unwrap().remove("path_filter").unwrap();
+
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+
+        assert_eq!(restored.path_filter, PathFilter::default());
+    }
+
+    #[test]
+    fn editing_the_filter_rebuilds_the_rows_on_the_next_update() {
+        let (left, right) = (tempdir().unwrap(), tempdir().unwrap());
+        for root in [left.path(), right.path()] {
+            fs::write(root.join("a.txt"), "a").unwrap();
+            fs::write(root.join("b.obj"), "b").unwrap();
+        }
+        let mut state = AppStateCtx::default();
+        state.file_system_model_1_view = load_view(left.path());
+        state.file_system_model_2_view = load_view(right.path());
+
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "a.txt", "b.obj"]);
+
+        state.path_filter = blacklist("*.obj");
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "a.txt"]);
+
+        state.path_filter = PathFilter::default();
+        state.build_two_folder_diff_rows_if_stale();
+        assert_eq!(row_paths(&state), ["", "a.txt", "b.obj"]);
     }
 }

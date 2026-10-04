@@ -7,7 +7,7 @@ use std::{
 use eframe::egui::{self};
 use serde::{Deserialize, Serialize};
 use zcommon::{hash::HashService, logger::ui_log_window};
-use zhashdiff::external_diff_tool::DiffToolConfig;
+use zhashdiff::{external_diff_tool::DiffToolConfig, filter::PathFilter};
 
 use crate::ui_egui::{
     duplicate_files_pane::{DuplicateFilesPane, DuplicateFilesPaneCtx},
@@ -35,12 +35,14 @@ pub struct TreeBehavior<'a, 'b> {
     pub conflict_map_resolved: &'a mut HashMap<String, PathBuf>,
     pub diff_action_pressed: &'a mut bool,
     pub diff_tool_config: &'a DiffToolConfig,
+    pub path_filter: &'a mut PathFilter,
 }
 
 impl<'a, 'b> TreeBehavior<'a, 'b> {
     pub fn create_path_diff_ctx<'c>(&'c mut self) -> PathDiffPaneCtx<'c, 'b> {
         PathDiffPaneCtx {
             diff_tool_config: self.diff_tool_config,
+            path_filter: self.path_filter,
             path_diff_view: self.path_diff_view,
         }
     }

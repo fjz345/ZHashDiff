@@ -1,8 +1,11 @@
 use std::path::PathBuf;
 
-use eframe::egui::{self, ScrollArea};
+use eframe::egui::{self, RichText, ScrollArea};
 use serde::{Deserialize, Serialize};
-use zhashdiff::external_diff_tool::DiffToolConfig;
+use zhashdiff::{
+    external_diff_tool::DiffToolConfig,
+    filter::{PathFilter, PatternList},
+};
 
 use crate::ui_egui::{
     fs_tree::{DiffState, FileSystemView, draw_ui_two_folder_tree_with_diff},
@@ -15,6 +18,7 @@ pub struct PathDiffPaneCtx<'a, 'b> {
 
     // User Interaction State
     pub diff_tool_config: &'a DiffToolConfig,
+    pub path_filter: &'a mut PathFilter,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -126,6 +130,8 @@ impl PathDiffPane {
             }
         });
 
+        ui.horizontal(|ui| draw_filter_bar(ui, ctx.path_filter));
+
         ui.separator();
 
         // Table scroll area
@@ -159,6 +165,31 @@ impl PathDiffPane {
         }
 
         egui_tiles::UiResponse::None
+    }
+}
+
+/// Only edits the filter: the app rebuilds the rows on the next update when it changed, so the
+/// table drawn below still has this frame's rows.
+fn draw_filter_bar(ui: &mut egui::Ui, filter: &mut PathFilter) {
+    ui.label("Blacklist:");
+    let mut text = filter.blacklist.text().to_owned();
+    let edit = egui::TextEdit::singleline(&mut text)
+        .hint_text("*.obj, target/, .git")
+        .desired_width(300.0);
+    if ui.add(edit).changed() {
+        filter.blacklist = PatternList::new(text);
+        ui.ctx().request_repaint();
+    }
+    let has_text = *filter != PathFilter::default();
+    if ui
+        .add_enabled(has_text, egui::Button::new("Clear"))
+        .clicked()
+    {
+        *filter = PathFilter::default();
+        ui.ctx().request_repaint();
+    }
+    if filter.is_active() {
+        ui.label(RichText::new("Filter active").color(ui.visuals().warn_fg_color));
     }
 }
 
