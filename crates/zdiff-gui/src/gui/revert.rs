@@ -16,7 +16,10 @@ use zdiff::{
     lexer::RawToken,
 };
 
-use crate::diff_ctx::{DiffSpan, MinimalDiffCtx};
+use crate::{
+    diff_ctx::{DiffSpan, MinimalDiffCtx},
+    p4::{P4Runner, escape_local_path},
+};
 
 /// The file a revert writes into. It receives the other file's text for the hunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,6 +207,10 @@ pub enum WriteRefusal {
     /// The bytes on disk are not the ones the revert was planned from.
     Stale,
     ReadOnly,
+    /// Read-only, and p4 doesn't manage it (or couldn't be asked), so `p4 edit` can't help.
+    ReadOnlyNotP4Managed,
+    /// `p4 edit` failed or left the file read-only. Holds p4's output.
+    P4Edit(String),
     Io(io::Error),
 }
 
@@ -213,6 +220,10 @@ impl std::fmt::Display for WriteRefusal {
             WriteRefusal::TempTarget => f.write_str("the target is a temporary file"),
             WriteRefusal::Stale => f.write_str("the file changed on disk since it was loaded"),
             WriteRefusal::ReadOnly => f.write_str("the file is read-only"),
+            WriteRefusal::ReadOnlyNotP4Managed => {
+                f.write_str("the file is read-only and not Perforce-managed")
+            }
+            WriteRefusal::P4Edit(e) => write!(f, "p4 edit failed: {}", e.trim()),
             WriteRefusal::Io(e) => write!(f, "{e}"),
         }
     }
@@ -263,6 +274,82 @@ pub fn write_guarded(
     std::fs::set_permissions(temp.path(), permissions).map_err(WriteRefusal::Io)?;
     temp.persist(path).map_err(|e| WriteRefusal::Io(e.error))?;
     Ok(())
+}
+
+#[derive(Debug)]
+pub enum RevertWrite {
+    Written,
+    /// The target is read-only and Perforce-managed: ask the user before `p4 edit`.
+    NeedsP4Edit(PendingP4Edit),
+}
+
+/// A revert waiting for the user to allow `p4 edit` on its target. Dropping it declines.
+#[derive(Debug)]
+pub struct PendingP4Edit {
+    planned: PlannedRevert,
+}
+
+impl PendingP4Edit {
+    pub fn path(&self) -> &Path {
+        &self.planned.path
+    }
+
+    /// Runs `p4 edit` on the target, then writes. A failed edit writes nothing.
+    pub fn confirm(self, temp_root: &Path, p4: &impl P4Runner) -> Result<(), WriteRefusal> {
+        let planned = self.planned;
+        let edited = p4
+            .run(&["edit", &p4_file_arg(&planned.path)])
+            .map_err(WriteRefusal::P4Edit)?;
+        // The exit code alone isn't trusted: an edit that left the file read-only failed. The
+        // guarded write also catches changes made while the prompt was open.
+        match write_guarded(
+            &planned.path,
+            planned.contents.as_bytes(),
+            &planned.loaded_hash,
+            temp_root,
+        ) {
+            Err(WriteRefusal::ReadOnly) => Err(WriteRefusal::P4Edit(edited)),
+            result => result,
+        }
+    }
+}
+
+fn p4_file_arg(path: &Path) -> String {
+    escape_local_path(&path.to_string_lossy())
+}
+
+/// Asks p4 whether it tracks `path`. An error answer (not in the client view, no server, no p4)
+/// counts as not managed and is logged.
+fn is_p4_managed(path: &Path, p4: &impl P4Runner) -> bool {
+    match p4.run(&["fstat", &p4_file_arg(path)]) {
+        Ok(out) => out.lines().any(|l| l.starts_with("... depotFile ")),
+        Err(e) => {
+            log::warn!("p4 fstat {}: {}", path.display(), e.trim());
+            false
+        }
+    }
+}
+
+/// Guarded write of a planned revert. A read-only target that p4 manages asks for `p4 edit`
+/// instead of being refused.
+pub fn write_revert(
+    planned: PlannedRevert,
+    temp_root: &Path,
+    p4: &impl P4Runner,
+) -> Result<RevertWrite, WriteRefusal> {
+    match write_guarded(
+        &planned.path,
+        planned.contents.as_bytes(),
+        &planned.loaded_hash,
+        temp_root,
+    ) {
+        Ok(()) => Ok(RevertWrite::Written),
+        Err(WriteRefusal::ReadOnly) if is_p4_managed(&planned.path, p4) => {
+            Ok(RevertWrite::NeedsP4Edit(PendingP4Edit { planned }))
+        }
+        Err(WriteRefusal::ReadOnly) => Err(WriteRefusal::ReadOnlyNotP4Managed),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]
@@ -778,6 +865,201 @@ mod tests {
             assert!(matches!(result, Err(WriteRefusal::Io(_))), "{result:?}");
             assert_eq!(target.read(), b"loaded\n");
             target.assert_no_leftovers();
+        }
+
+        mod p4_edit {
+            use super::*;
+            use crate::p4::FakeP4;
+
+            const FSTAT_MANAGED: &str = "... depotFile //depot/main/target.txt\n\
+                ... clientFile C:\\ws\\target.txt\n... headRev 3\n... haveRev 3\n";
+
+            fn set_readonly(path: &Path, readonly: bool) {
+                let mut permissions = std::fs::metadata(path).unwrap().permissions();
+                permissions.set_readonly(readonly);
+                std::fs::set_permissions(path, permissions).unwrap();
+            }
+
+            impl Target {
+                fn planned(&self, contents: &str) -> PlannedRevert {
+                    PlannedRevert {
+                        path: self.path.clone(),
+                        contents: contents.to_string(),
+                        loaded_hash: self.loaded_hash.clone(),
+                    }
+                }
+
+                fn p4_path(&self) -> String {
+                    self.path.to_string_lossy().into_owned()
+                }
+
+                fn revert(&self, p4: &impl P4Runner) -> Result<RevertWrite, WriteRefusal> {
+                    write_revert(self.planned("reverted\n"), self.temp_root.path(), p4)
+                }
+            }
+
+            fn pending(result: Result<RevertWrite, WriteRefusal>) -> PendingP4Edit {
+                match result {
+                    Ok(RevertWrite::NeedsP4Edit(pending)) => pending,
+                    Ok(RevertWrite::Written) => panic!("written without p4 edit"),
+                    Err(e) => panic!("refused: {e:?}"),
+                }
+            }
+
+            /// Answers fstat as managed and edit with `edit`, after running `on_edit`.
+            fn managed(
+                on_edit: impl Fn(),
+                edit: Result<&'static str, &'static str>,
+            ) -> FakeP4<impl Fn(&[&str]) -> Result<String, String>> {
+                FakeP4::new(move |args: &[&str]| match args[0] {
+                    "fstat" => Ok(FSTAT_MANAGED.to_string()),
+                    "edit" => {
+                        on_edit();
+                        edit.map(str::to_string).map_err(str::to_string)
+                    }
+                    other => panic!("unexpected p4 {other}"),
+                })
+            }
+
+            #[test]
+            fn writable_target_is_written_without_asking_p4() {
+                let target = Target::new(b"loaded\n");
+                let p4 = FakeP4::new(|_: &[&str]| panic!("p4 must not run"));
+                let result = target.revert(&p4);
+                assert!(matches!(result, Ok(RevertWrite::Written)), "{result:?}");
+                assert_eq!(target.read(), b"reverted\n");
+                assert!(p4.calls().is_empty());
+            }
+
+            #[test]
+            fn managed_read_only_target_asks_for_p4_edit_and_writes_nothing() {
+                let target = Target::new(b"loaded\n");
+                target.set_readonly(true);
+                let p4 = managed(|| panic!("edit before the prompt"), Ok(""));
+                let result = target.revert(&p4);
+                target.set_readonly(false);
+
+                let pending = pending(result);
+                assert_eq!(pending.path(), target.path);
+                assert_eq!(target.read(), b"loaded\n");
+                assert_eq!(p4.calls(), [["fstat".to_string(), target.p4_path()]]);
+                target.assert_no_leftovers();
+            }
+
+            /// Managed is p4's answer for this path, not a guess from the path.
+            #[test]
+            fn read_only_target_p4_does_not_manage_is_refused() {
+                let target = Target::new(b"loaded\n");
+                target.set_readonly(true);
+                let not_in_view: Vec<Box<dyn Fn() -> Result<String, String>>> = vec![
+                    Box::new(|| Err("target.txt - file(s) not in client view.\n".to_string())),
+                    // Some p4 warnings exit 0 with no tagged output.
+                    Box::new(|| Ok(String::new())),
+                ];
+                let mut results = Vec::new();
+                for answer in not_in_view {
+                    let p4 = FakeP4::new(move |args: &[&str]| {
+                        assert_eq!(args[0], "fstat");
+                        answer()
+                    });
+                    results.push((target.revert(&p4), p4.calls()));
+                }
+                target.set_readonly(false);
+
+                for (result, calls) in results {
+                    assert!(
+                        matches!(result, Err(WriteRefusal::ReadOnlyNotP4Managed)),
+                        "{result:?}"
+                    );
+                    assert_eq!(calls, [["fstat".to_string(), target.p4_path()]]);
+                }
+                assert_eq!(target.read(), b"loaded\n");
+                target.assert_no_leftovers();
+            }
+
+            #[test]
+            fn confirmed_edit_checks_out_then_writes() {
+                let target = Target::new(b"loaded\r\n");
+                target.set_readonly(true);
+                // Like p4 edit, a successful edit makes the file writable.
+                let path = target.path.clone();
+                let p4 = managed(
+                    move || set_readonly(&path, false),
+                    Ok("//depot/main/target.txt#3 - opened for edit\n"),
+                );
+                let pending = pending(target.revert(&p4));
+                let result = pending.confirm(target.temp_root.path(), &p4);
+                target.set_readonly(false);
+
+                assert!(result.is_ok(), "{result:?}");
+                assert_eq!(target.read(), b"reverted\n");
+                assert_eq!(
+                    p4.calls(),
+                    [
+                        ["fstat".to_string(), target.p4_path()],
+                        ["edit".to_string(), target.p4_path()]
+                    ]
+                );
+                target.assert_no_leftovers();
+            }
+
+            #[test]
+            fn failed_edit_writes_nothing_and_surfaces_the_p4_error() {
+                let target = Target::new(b"loaded\n");
+                target.set_readonly(true);
+                let p4 = managed(
+                    || {},
+                    Err("//depot/main/target.txt - can't edit exclusive file already opened\n"),
+                );
+                let pending = pending(target.revert(&p4));
+                let result = pending.confirm(target.temp_root.path(), &p4);
+                target.set_readonly(false);
+
+                let Err(refusal @ WriteRefusal::P4Edit(_)) = result else {
+                    panic!("{result:?}");
+                };
+                assert!(
+                    refusal
+                        .to_string()
+                        .contains("can't edit exclusive file already opened"),
+                    "{refusal}"
+                );
+                assert_eq!(target.read(), b"loaded\n");
+                target.assert_no_leftovers();
+            }
+
+            /// p4 reported success but the file is still read-only: report p4's output, not a
+            /// bare read-only refusal.
+            #[test]
+            fn edit_that_leaves_the_file_read_only_is_a_failed_edit() {
+                let target = Target::new(b"loaded\n");
+                target.set_readonly(true);
+                let p4 = managed(|| {}, Ok("target.txt - file(s) not on client.\n"));
+                let pending = pending(target.revert(&p4));
+                let result = pending.confirm(target.temp_root.path(), &p4);
+                target.set_readonly(false);
+
+                let Err(refusal @ WriteRefusal::P4Edit(_)) = result else {
+                    panic!("{result:?}");
+                };
+                assert!(refusal.to_string().contains("not on client"), "{refusal}");
+                assert_eq!(target.read(), b"loaded\n");
+                target.assert_no_leftovers();
+            }
+
+            #[test]
+            fn declined_prompt_writes_nothing_and_runs_no_edit() {
+                let target = Target::new(b"loaded\n");
+                target.set_readonly(true);
+                let p4 = managed(|| panic!("edit after decline"), Ok(""));
+                let pending = pending(target.revert(&p4));
+                drop(pending);
+                target.set_readonly(false);
+
+                assert_eq!(target.read(), b"loaded\n");
+                assert_eq!(p4.calls(), [["fstat".to_string(), target.p4_path()]]);
+                target.assert_no_leftovers();
+            }
         }
     }
 }

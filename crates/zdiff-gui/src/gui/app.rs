@@ -1,6 +1,10 @@
 use eframe::egui::{self, Layout, PointerButton, containers::menu::MenuConfig};
 use serde::{Deserialize, Serialize};
-use std::{env, path::PathBuf, sync::mpsc};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    sync::mpsc,
+};
 use zcommon::ui_egui::common::show_custom_popup;
 use zdiff::{
     diff_builder::{DiffBuilderOptions, PivotLines},
@@ -20,7 +24,7 @@ use crate::{
     file::{FileProcessor, LoadedFile},
     keybindings::{Keybindings, Shortcut, ui_keybindings},
     p4::{P4Command, get_p4_config, ui_p4config, update_p4_config},
-    revert::{self, RevertRefusal, RevertTarget, WriteRefusal},
+    revert::{self, PendingP4Edit, RevertRefusal, RevertTarget, RevertWrite, WriteRefusal},
     ui_egui::{
         diff_pane::{FileDiffPane, FileDiffPaneCtx},
         panes::{Pane, TreeBehavior},
@@ -158,6 +162,9 @@ pub struct ZApp {
     open_universal_path_window: bool,
     #[serde(skip)]
     open_viewers_window: bool,
+    /// A revert waiting on the p4 edit prompt.
+    #[serde(skip)]
+    pending_p4_edit: Option<(RevertTarget, PendingP4Edit)>,
 }
 
 const HARDCODED_MONITOR_SIZE: Vec2 = Vec2::new(2560.0, 1440.0);
@@ -207,6 +214,7 @@ impl<'a> ZApp {
             open_shortcuts_window: false,
             open_universal_path_window: false,
             open_viewers_window: false,
+            pending_p4_edit: None,
         }
     }
 
@@ -252,6 +260,35 @@ impl<'a> ZApp {
     fn refresh_file_contents(file_1: &mut FileProcessor, file_2: &mut FileProcessor) {
         file_1.invalidate_cache_file();
         file_2.invalidate_cache_file();
+    }
+
+    /// Reloads after a revert write: both sides when written, the target when it was stale.
+    fn finish_revert_write(
+        result: Result<(), WriteRefusal>,
+        path: &Path,
+        target: RevertTarget,
+        diff_processor: &mut DiffProcessor,
+        file_1: &mut FileProcessor,
+        file_2: &mut FileProcessor,
+    ) {
+        match result {
+            Ok(()) => {
+                diff_processor.reset_ctx();
+                Self::refresh_file_contents(file_1, file_2);
+            }
+            Err(WriteRefusal::Stale) => {
+                log::error!(
+                    "Revert refused: {} changed on disk since it was loaded. Reloading it.",
+                    path.display()
+                );
+                diff_processor.reset_ctx();
+                match target {
+                    RevertTarget::Left => file_1.invalidate_cache_file(),
+                    RevertTarget::Right => file_2.invalidate_cache_file(),
+                }
+            }
+            Err(e) => log::error!("Revert refused for {}: {}", path.display(), e),
+        }
     }
 
     fn show_menu(
@@ -768,39 +805,80 @@ impl<'a> ZApp {
                     .diff_ctx
                     .ok_or(RevertRefusal::NoSuchHunk)
                     .and_then(|diff_ctx| revert::plan_hunk_revert(diff_ctx, revert_request));
-                let revert_success = match planned {
-                    Ok(planned) => match revert::write_guarded(
-                        &planned.path,
-                        planned.contents.as_bytes(),
-                        &planned.loaded_hash,
-                        &std::env::temp_dir(),
-                    ) {
-                        Ok(()) => true,
-                        Err(WriteRefusal::Stale) => {
-                            log::error!(
-                                "Revert refused: {} changed on disk since it was loaded. Reloading it.",
-                                planned.path.display()
-                            );
-                            diff_processor.reset_ctx();
-                            match revert_request.target {
-                                RevertTarget::Left => app_ctx.file_1.invalidate_cache_file(),
-                                RevertTarget::Right => app_ctx.file_2.invalidate_cache_file(),
+                match planned {
+                    Ok(planned) => {
+                        let path = planned.path.clone();
+                        let written = revert::write_revert(
+                            planned,
+                            &std::env::temp_dir(),
+                            &P4Command::new(false),
+                        );
+                        match written {
+                            Ok(RevertWrite::NeedsP4Edit(pending)) => {
+                                log::info!(
+                                    "{} is read-only and Perforce-managed, asking to p4 edit it",
+                                    path.display()
+                                );
+                                self.pending_p4_edit = Some((revert_request.target, pending));
                             }
-                            false
+                            written => Self::finish_revert_write(
+                                written.map(|_| ()),
+                                &path,
+                                revert_request.target,
+                                diff_processor,
+                                &mut app_ctx.file_1,
+                                &mut app_ctx.file_2,
+                            ),
                         }
-                        Err(e) => {
-                            log::error!("Revert refused for {}: {}", planned.path.display(), e);
-                            false
-                        }
-                    },
+                    }
                     Err(refusal) => {
                         log::error!("Revert refused: {} {:?}", refusal, revert_request);
-                        false
                     }
-                };
-                if revert_success {
-                    diff_processor.reset_ctx();
-                    Self::refresh_file_contents(&mut app_ctx.file_1, &mut app_ctx.file_2);
+                }
+            }
+
+            if let Some((target, pending)) = self.pending_p4_edit.take() {
+                let mut confirmed = None;
+                let modal = egui::Modal::new(egui::Id::new("p4_edit_prompt")).show(ctx, |ui| {
+                    ui.heading("Check out for edit?");
+                    ui.label(format!(
+                        "{} is read-only and managed by Perforce.",
+                        pending.path().display()
+                    ));
+                    ui.label("Run p4 edit on it and apply the revert?");
+                    ui.horizontal(|ui| {
+                        if ui.button("p4 edit and revert").clicked() {
+                            confirmed = Some(true);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            confirmed = Some(false);
+                        }
+                    });
+                });
+                // Escape or a click outside the prompt declines.
+                if modal.should_close() {
+                    confirmed.get_or_insert(false);
+                }
+                match confirmed {
+                    Some(true) => {
+                        let path = pending.path().to_path_buf();
+                        let result = pending.confirm(&std::env::temp_dir(), &P4Command::new(false));
+                        Self::finish_revert_write(
+                            result,
+                            &path,
+                            target,
+                            diff_processor,
+                            &mut app_ctx.file_1,
+                            &mut app_ctx.file_2,
+                        );
+                    }
+                    Some(false) => {
+                        log::info!(
+                            "Revert cancelled: p4 edit declined for {}",
+                            pending.path().display()
+                        );
+                    }
+                    None => self.pending_p4_edit = Some((target, pending)),
                 }
             }
 

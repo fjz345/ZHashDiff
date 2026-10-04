@@ -71,6 +71,34 @@ pub fn ui_p4config(ui: &mut egui::Ui, config: &mut P4Config) {
     });
 }
 
+/// Runs a p4 command: stdout on success, the error text on failure. A trait so logic that asks
+/// p4 can be tested with a fake.
+pub trait P4Runner {
+    fn run(&self, args: &[&str]) -> Result<String, String>;
+}
+
+impl P4Runner for P4Command {
+    fn run(&self, args: &[&str]) -> Result<String, String> {
+        self.output(args)
+    }
+}
+
+/// A local path as a p4 file argument. p4 reads `@ # *` as revision and wildcard syntax and `%`
+/// as its escape, so `p4 edit a*.txt` would open every match.
+pub fn escape_local_path(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len());
+    for c in path.chars() {
+        match c {
+            '%' => escaped.push_str("%25"),
+            '@' => escaped.push_str("%40"),
+            '#' => escaped.push_str("%23"),
+            '*' => escaped.push_str("%2A"),
+            _ => escaped.push(c),
+        }
+    }
+    escaped
+}
+
 pub struct P4Command {
     exe_path: String,
     _is_gui: bool,
@@ -154,4 +182,49 @@ pub struct P4Revision {
     pub change: u32,
     pub action: String,
     pub date: String,
+}
+
+/// A p4 runner for tests: answers through a closure and records every call.
+#[cfg(test)]
+pub(crate) struct FakeP4<F: Fn(&[&str]) -> Result<String, String>> {
+    respond: F,
+    calls: std::cell::RefCell<Vec<Vec<String>>>,
+}
+
+#[cfg(test)]
+impl<F: Fn(&[&str]) -> Result<String, String>> FakeP4<F> {
+    pub(crate) fn new(respond: F) -> Self {
+        Self {
+            respond,
+            calls: Default::default(),
+        }
+    }
+
+    pub(crate) fn calls(&self) -> Vec<Vec<String>> {
+        self.calls.borrow().clone()
+    }
+}
+
+#[cfg(test)]
+impl<F: Fn(&[&str]) -> Result<String, String>> P4Runner for FakeP4<F> {
+    fn run(&self, args: &[&str]) -> Result<String, String> {
+        self.calls
+            .borrow_mut()
+            .push(args.iter().map(|a| a.to_string()).collect());
+        (self.respond)(args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_path_escapes_p4_revision_and_wildcard_characters() {
+        assert_eq!(
+            escape_local_path(r"C:\ws\a@b #1 50%*.txt"),
+            r"C:\ws\a%40b %231 50%25%2A.txt"
+        );
+        assert_eq!(escape_local_path(r"C:\ws\plain.txt"), r"C:\ws\plain.txt");
+    }
 }
