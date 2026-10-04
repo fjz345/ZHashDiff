@@ -15,13 +15,16 @@ use zdiff::{
     diff_ir::DiffIR,
     lexer::{LEXER_MODE_DEFAULT, LexerDefault, RawToken},
     myers::{MyersDiffAlgorithm, myers_diff_path},
-    row_text::build_row_text,
+    row_text::{RowText, build_row_text},
     universal_path::UniversalPath,
 };
 
 use crate::ui_egui::{
     active_side::{ActiveSide, ActiveSideState},
-    diff_pane::{CopyMarkerPlugin, FileDiffPane, show_scrolled, side_content_widths},
+    diff_pane::{
+        CopyMarkerPlugin, FileDiffPane, measure_wrapped_rows, show_scrolled, side_content_widths,
+        wrap_width, wrapped_row_heights,
+    },
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,14 +49,16 @@ pub struct CopyHarness {
     active_side: ActiveSideState,
     /// Horizontal scroll offset of both sides.
     h_offset: f32,
+    side_widths: [f32; 2],
+    wrap: bool,
 }
 
 struct FrameLayout {
     row_rects: [Vec<Rect>; 2],
-    /// Per side and row: x of each real-text column plus the end of the text, read from the
-    /// painted galley so gaps left for ghost text are accounted for. Empty if the row paints no
-    /// real text.
-    col_xs: [Vec<Vec<f32>>; 2],
+    /// Per side and row: position of each real-text column plus the end of the text, read from
+    /// the painted galley so gaps left for ghost text and wrapped rows are accounted for. Empty
+    /// if the row paints no real text.
+    col_pos: [Vec<Vec<Pos2>>; 2],
     char_width: f32,
 }
 
@@ -85,12 +90,14 @@ fn side_index(side: Side) -> usize {
 fn pos_of(layout: &FrameLayout, (side, (row, col)): (Side, RowCol)) -> Pos2 {
     let i = side_index(side);
     let rect = layout.row_rects[i][row];
-    let xs = &layout.col_xs[i][row];
-    let x = match xs.last() {
-        Some(end) => xs.get(col).copied().unwrap_or(*end),
-        None => rect.left() + FALLBACK_TEXT_OFFSET + col as f32 * layout.char_width,
-    };
-    Pos2::new(x, rect.center().y)
+    let cols = &layout.col_pos[i][row];
+    match cols.last() {
+        Some(end) => cols.get(col).copied().unwrap_or(*end),
+        None => Pos2::new(
+            rect.left() + FALLBACK_TEXT_OFFSET + col as f32 * layout.char_width,
+            rect.center().y,
+        ),
+    }
 }
 
 fn collect_text_shapes(shape: &Shape, out: &mut Vec<(Pos2, Arc<Galley>)>) {
@@ -147,11 +154,20 @@ impl CopyHarness {
             time: 0.0,
             active_side: ActiveSideState::default(),
             h_offset: 0.0,
+            side_widths: [SIDE_WIDTH; 2],
+            wrap: false,
         }
     }
 
     pub fn set_h_offset(&mut self, offset: f32) {
         self.h_offset = offset;
+    }
+
+    /// Turns wrap on with each side's column `side_widths` wide. Rows then take the pane's
+    /// wrapped heights.
+    pub fn set_wrap(&mut self, side_widths: [f32; 2]) {
+        self.wrap = true;
+        self.side_widths = side_widths;
     }
 
     /// The pane's horizontal extent of each side, measured with `glyph_width`.
@@ -162,6 +178,37 @@ impl CopyHarness {
             Some(&*self.file_target),
             glyph_width,
         )
+    }
+
+    /// The pane's row heights with wrap on, each side measured with `side_height`.
+    pub fn wrapped_row_heights(
+        &self,
+        line_height: f32,
+        side_height: impl FnMut(usize, &RowText) -> f32,
+    ) -> Vec<f32> {
+        wrapped_row_heights(
+            &self.rows,
+            Some(&*self.file_source),
+            Some(&*self.file_target),
+            line_height,
+            side_height,
+        )
+    }
+
+    /// The pane's row heights with wrap on, measured with egui's monospace layout at
+    /// `text_widths`. Returns them with the line height.
+    pub fn measured_row_heights(&self, text_widths: [f32; 2]) -> (Vec<f32>, f32) {
+        measure_in_fresh_context(|fonts, font_id| {
+            let heights = measure_wrapped_rows(
+                fonts,
+                font_id,
+                &self.rows,
+                Some(&*self.file_source),
+                Some(&*self.file_target),
+                text_widths,
+            );
+            (heights, fonts.row_height(font_id))
+        })
     }
 
     pub fn rows(&self) -> &[DiffRow] {
@@ -278,11 +325,11 @@ impl CopyHarness {
 
         let mut layout = FrameLayout {
             row_rects: [vec![], vec![]],
-            col_xs: [vec![], vec![]],
+            col_pos: [vec![], vec![]],
             char_width: 0.0,
         };
         let (file_source, file_target, rows) = (&self.file_source, &self.file_target, &self.rows);
-        let h_offset = self.h_offset;
+        let (h_offset, side_widths, wrap) = (self.h_offset, self.side_widths, self.wrap);
 
         let output = self.ctx.run(raw, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -291,11 +338,28 @@ impl CopyHarness {
 
                 let font_id = egui::TextStyle::Monospace.resolve(ui.style());
                 layout.char_width = ui.fonts_mut(|f| f.glyph_width(&font_id, 'M'));
+                let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
+                // Mirrors the table's heterogeneous rows with wrap on.
+                let row_heights = if wrap {
+                    ui.fonts_mut(|fonts| {
+                        measure_wrapped_rows(
+                            fonts,
+                            &font_id,
+                            rows,
+                            Some(&**file_source),
+                            Some(&**file_target),
+                            side_widths.map(wrap_width),
+                        )
+                    })
+                } else {
+                    vec![row_h; rows.len()]
+                };
 
                 ui.horizontal_top(|ui| {
                     for side in [Side::Left, Side::Right] {
                         ui.vertical(|ui| {
-                            ui.set_width(SIDE_WIDTH);
+                            let side_width = side_widths[side_index(side)];
+                            ui.set_width(side_width);
                             for (row_index, row) in rows.iter().enumerate() {
                                 let content = match side {
                                     Side::Left => &row.left,
@@ -303,9 +367,8 @@ impl CopyHarness {
                                 };
                                 // Mirrors the real table: a fixed-size cell per row and side, with
                                 // its own id salt, and the side drawn scrolled inside it.
-                                let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
                                 let (rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(SIDE_WIDTH, row_h),
+                                    egui::vec2(side_width, row_heights[row_index]),
                                     egui::Sense::hover(),
                                 );
                                 let cell = egui::UiBuilder::new()
@@ -318,7 +381,8 @@ impl CopyHarness {
                                             Some(file_source.clone()),
                                             Some(file_target.clone()),
                                             content,
-                                            SIDE_WIDTH + h_offset,
+                                            side_width + h_offset,
+                                            wrap,
                                             false,
                                             active_side == active_side_of(side),
                                             "rs",
@@ -335,7 +399,7 @@ impl CopyHarness {
 
         for side in [Side::Left, Side::Right] {
             let i = side_index(side);
-            layout.col_xs[i] = layout.row_rects[i]
+            layout.col_pos[i] = layout.row_rects[i]
                 .iter()
                 .zip(rows.iter())
                 .map(|(rect, row)| {
@@ -349,7 +413,7 @@ impl CopyHarness {
                         }
                         _ => String::new(),
                     };
-                    col_xs(&output, *rect, h_offset, &real_text)
+                    col_pos(&output, *rect, h_offset, &real_text)
                 })
                 .collect();
         }
@@ -364,12 +428,28 @@ impl CopyHarness {
     }
 }
 
-/// X of every column of `real_text` as painted in `rect`, plus the end of the text. Found from
-/// the painted shapes so the harness does not depend on how the renderer lays out its gutter or
-/// widget margins. The shape is identified by its text; the rightmost match is the code text
-/// (the gutter is left of it). Scrolled text starts `h_offset` left of `rect`, so the other
-/// side's identical text is out of range. Empty if the row paints no such text.
-fn col_xs(output: &egui::FullOutput, rect: Rect, h_offset: f32, real_text: &str) -> Vec<f32> {
+/// Runs `measure` with the fonts and monospace font of a fresh context, as the pane sees them.
+pub fn measure_in_fresh_context<R>(
+    measure: impl FnOnce(&mut egui::epaint::FontsView<'_>, &egui::FontId) -> R,
+) -> R {
+    let ctx = egui::Context::default();
+    let mut measure = Some(measure);
+    let mut result = None;
+    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+        let font_id = egui::TextStyle::Monospace.resolve(&ctx.style());
+        let measure = measure.take().expect("one pass");
+        result = Some(ctx.fonts_mut(|fonts| measure(fonts, &font_id)));
+    });
+    result.expect("the frame ran")
+}
+
+/// Position of every column of `real_text` as painted in `rect`, plus the end of the text, each
+/// at the vertical center of its galley row. Found from the painted shapes so the harness does
+/// not depend on how the renderer lays out its gutter or widget margins. The shape is identified
+/// by its text; the rightmost match is the code text (the gutter is left of it). Scrolled text
+/// starts `h_offset` left of `rect`, so the other side's identical text is out of range. Empty
+/// if the row paints no such text.
+fn col_pos(output: &egui::FullOutput, rect: Rect, h_offset: f32, real_text: &str) -> Vec<Pos2> {
     if real_text.is_empty() {
         return Vec::new();
     }
@@ -389,8 +469,19 @@ fn col_xs(output: &egui::FullOutput, rect: Rect, h_offset: f32, real_text: &str)
     else {
         return Vec::new();
     };
-    let glyphs = &galley.rows[0].glyphs;
-    let mut xs: Vec<f32> = glyphs.iter().map(|g| pos.x + g.pos.x).collect();
-    xs.push(pos.x + glyphs.last().map_or(0.0, |g| g.max_x()));
-    xs
+    let row_center = |row: &egui::epaint::text::PlacedRow| pos.y + row.pos.y + row.height() / 2.0;
+    let mut cols: Vec<Pos2> = galley
+        .rows
+        .iter()
+        .flat_map(|row| {
+            let y = row_center(row);
+            row.glyphs
+                .iter()
+                .map(move |g| Pos2::new(pos.x + g.pos.x, y))
+        })
+        .collect();
+    let last = galley.rows.last().expect("a galley has at least one row");
+    let end_x = last.glyphs.last().map_or(0.0, |g| g.max_x());
+    cols.push(Pos2::new(pos.x + end_x, row_center(last)));
+    cols
 }

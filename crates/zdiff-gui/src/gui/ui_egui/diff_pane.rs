@@ -27,7 +27,7 @@ use zdiff::{
     ignore::IgnorePatterns,
     lexer::RawTokenTrait,
     myers::MyersNumAddDelete,
-    row_text::build_row_text,
+    row_text::{GhostInsertion, RowText, build_row_text},
     universal_path::UniversalPath,
 };
 
@@ -52,6 +52,8 @@ pub struct FileDiffPaneCtx<'a> {
     pub scroll_right: &'a mut f32,
     /// Both sides scroll horizontally together.
     pub h_scroll_linked: &'a mut bool,
+    /// Long lines wrap; rows then grow to the taller side.
+    pub word_wrap: &'a mut bool,
 
     pub code_language: &'a str,
 
@@ -85,6 +87,8 @@ pub struct FileDiffPane {
     active_side: ActiveSideState,
     #[serde(skip)]
     content_widths: Option<ContentWidths>,
+    #[serde(skip)]
+    row_heights: Option<RowHeights>,
 }
 
 /// Each side's widest row, measured once per rows and font.
@@ -94,6 +98,56 @@ struct ContentWidths {
     font_id: egui::FontId,
     pixels_per_point: f32,
     widths: [f32; 2],
+}
+
+/// Row heights with wrap on, measured once per rows, font and wrap widths. Dropped while wrap
+/// is off.
+struct RowHeights {
+    // Kept alive so the pointer comparison can't match a new allocation at the same address.
+    rows: Arc<DiffRows>,
+    font_id: egui::FontId,
+    pixels_per_point: f32,
+    text_widths: [f32; 2],
+    heights: Vec<f32>,
+}
+
+/// The cached wrapped row heights, measured again when the rows, font or `text_widths` changed.
+/// Measuring lays out every row that doesn't fit on one line, so a column resize on a large file
+/// costs a full pass each frame it moves.
+fn wrapped_heights<'c>(
+    cache: &'c mut Option<RowHeights>,
+    egui_ctx: &egui::Context,
+    font_id: &egui::FontId,
+    diff_ctx: &MinimalDiffCtx,
+    text_widths: [f32; 2],
+) -> &'c [f32] {
+    let pixels_per_point = egui_ctx.pixels_per_point();
+    let hit = cache.as_ref().is_some_and(|cached| {
+        Arc::ptr_eq(&cached.rows, &diff_ctx.diff_rows)
+            && cached.font_id == *font_id
+            && cached.pixels_per_point == pixels_per_point
+            && cached.text_widths == text_widths
+    });
+    if !hit {
+        let heights = egui_ctx.fonts_mut(|fonts| {
+            measure_wrapped_rows(
+                fonts,
+                font_id,
+                &diff_ctx.diff_rows,
+                diff_ctx.input.file_1.as_deref(),
+                diff_ctx.input.file_2.as_deref(),
+                text_widths,
+            )
+        });
+        *cache = Some(RowHeights {
+            rows: diff_ctx.diff_rows.clone(),
+            font_id: font_id.clone(),
+            pixels_per_point,
+            text_widths,
+            heights,
+        });
+    }
+    &cache.as_ref().expect("filled above").heights
 }
 
 impl ZAppPane for FileDiffPane {
@@ -108,6 +162,7 @@ impl FileDiffPane {
             title,
             active_side: ActiveSideState::default(),
             content_widths: None,
+            row_heights: None,
         }
     }
 
@@ -160,6 +215,13 @@ impl FileDiffPane {
 
         let available_width = ui.available_width();
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+        let wrap = *ctx.word_wrap;
+        if !wrap {
+            self.row_heights = None;
+        }
+        let row_heights = &mut self.row_heights;
+        let mono_font = egui::TextStyle::Monospace.resolve(ui.style());
+        let egui_ctx = ui.ctx().clone();
 
         ui.horizontal(|ui| {
             ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
@@ -226,6 +288,7 @@ impl FileDiffPane {
                     "🔗".into(),
                     "Link Horizontal Scrolling",
                 );
+                toggle_btn(ui, ctx.word_wrap, "↩".into(), "Word Wrap");
 
                 let mut active = ctx.diff_options.diff_only_with_extra_rows.is_some();
                 if toggle_btn(
@@ -585,27 +648,41 @@ impl FileDiffPane {
                                     }
 
                                     let widths = body.widths().to_vec();
-                                    let max = [
-                                        h_scroll::max_offset(content_widths[0], widths[0]),
-                                        h_scroll::max_offset(content_widths[1], widths[2]),
-                                    ];
-                                    let linked = *ctx.h_scroll_linked;
-                                    let mut offsets = h_scroll::clamp(
-                                        [*ctx.scroll_left, *ctx.scroll_right],
-                                        max,
-                                        linked,
-                                    );
-                                    if let Some(side) = wheel_side {
-                                        let offset = offsets[h_scroll::side_index(side)] - wheel_delta;
-                                        offsets = h_scroll::set(offsets, side, offset, max, linked);
-                                    }
-                                    [*ctx.scroll_left, *ctx.scroll_right] = offsets;
-                                    h_scroll_max = Some(max);
-                                    let [sl, sr] = offsets;
-                                    body.rows(
-                                        row_height,
-                                        diff_rows.map(|f| f.len()).unwrap_or_default(),
-                                        |mut row| {
+                                    // Wrapped text fits its column, so nothing scrolls sideways.
+                                    let [sl, sr] = if wrap {
+                                        [0.0; 2]
+                                    } else {
+                                        let max = [
+                                            h_scroll::max_offset(content_widths[0], widths[0]),
+                                            h_scroll::max_offset(content_widths[1], widths[2]),
+                                        ];
+                                        let linked = *ctx.h_scroll_linked;
+                                        let mut offsets = h_scroll::clamp(
+                                            [*ctx.scroll_left, *ctx.scroll_right],
+                                            max,
+                                            linked,
+                                        );
+                                        if let Some(side) = wheel_side {
+                                            let offset =
+                                                offsets[h_scroll::side_index(side)] - wheel_delta;
+                                            offsets =
+                                                h_scroll::set(offsets, side, offset, max, linked);
+                                        }
+                                        [*ctx.scroll_left, *ctx.scroll_right] = offsets;
+                                        h_scroll_max = Some(max);
+                                        offsets
+                                    };
+                                    let heights = match ctx.diff_ctx {
+                                        Some(diff_ctx) if wrap => Some(wrapped_heights(
+                                            row_heights,
+                                            &egui_ctx,
+                                            &mono_font,
+                                            diff_ctx,
+                                            [wrap_width(widths[0]), wrap_width(widths[2])],
+                                        )),
+                                        _ => None,
+                                    };
+                                    let add_row = |mut row: egui_extras::TableRow| {
                                             if let Some(rows) = diff_rows {
                                                 let row_index = row.index();
                                                 let diff_row = &rows[row.index()];
@@ -625,6 +702,7 @@ impl FileDiffPane {
                                                                 .unwrap_or_default(),
                                                             &diff_row.left,
                                                             widths[0] + sl,
+                                                            wrap,
                                                             is_highlighted,
                                                             active_side == ActiveSide::Left,
                                                             ctx.code_language,
@@ -784,6 +862,7 @@ impl FileDiffPane {
                                                                 .unwrap_or_default(),
                                                             &diff_row.right,
                                                             widths[2] + sr,
+                                                            wrap,
                                                             is_highlighted,
                                                             active_side == ActiveSide::Right,
                                                             ctx.code_language,
@@ -792,8 +871,8 @@ impl FileDiffPane {
                                                     right_rect = right_rect.union(ui.max_rect());
                                                 });
                                             }
-                                        },
-                                    );
+                                        };
+                                    text_rows(body, heights, row_height, diff_rows_len, add_row);
                                 });
                             if let (Some(image_view), Some(left_width)) =
                                 (ctx.image_view.as_deref_mut(), image_left_width)
@@ -881,13 +960,20 @@ impl FileDiffPane {
         file_target: Option<Arc<CachedFile<T>>>,
         content: &LineContent,
         width: f32,
+        wrap: bool,
         is_highlighted: bool,
         selectable: bool,
         code_language: &str,
     ) {
         let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
+        // Wrapped rows fill their cell, which is as tall as the row's taller side.
+        let cell_h = if wrap {
+            ui.max_rect().height().max(row_h)
+        } else {
+            row_h
+        };
 
-        let (rect, _) = ui.allocate_at_least(egui::vec2(width, row_h), egui::Sense::hover());
+        let (rect, _) = ui.allocate_at_least(egui::vec2(width, cell_h), egui::Sense::hover());
         let mut extended_rect = rect.clone();
         extended_rect.extend_with_x(9999999.0);
 
@@ -898,7 +984,7 @@ impl FileDiffPane {
                 bg,
             } => {
                 ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
-                    ui.horizontal_centered(|ui| {
+                    let add_contents = |ui: &mut egui::Ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
 
                         let line_num_str = if *line_num > 0 {
@@ -948,37 +1034,22 @@ impl FileDiffPane {
                         recolor_ranges(&mut layout_job, &dimmed, dim);
 
                         let font_id = egui::TextStyle::Monospace.resolve(ui.style());
-                        let ghost_galleys: Vec<(usize, Arc<egui::Galley>)> = row_text
-                            .ghosts
-                            .iter()
-                            .map(|ghost| {
-                                let [r, g, b, a] = ghost.color.0;
-                                let galley = ui.fonts_mut(|fonts| {
-                                    fonts.layout_no_wrap(
-                                        ghost.text.clone(),
-                                        font_id.clone(),
-                                        egui::Color32::from_rgba_unmultiplied(r, g, b, a),
-                                    )
-                                });
-                                (ghost.byte_offset, galley)
-                            })
-                            .collect();
-                        let ghost_widths: Vec<(usize, f32)> = ghost_galleys
-                            .iter()
-                            .map(|(offset, galley)| (*offset, galley.size().x))
-                            .collect();
-                        insert_ghost_gaps(&mut layout_job, &ghost_widths);
-
-                        layout_job.wrap.max_width = f32::INFINITY;
-                        let galley = ui.fonts_mut(|fonts| fonts.layout_job(layout_job));
-                        let ghost_xs = ghost_x_offsets(&galley, &row_text.text, &ghost_widths);
+                        let wrap_at = if wrap {
+                            wrap_width(width)
+                        } else {
+                            f32::INFINITY
+                        };
+                        let side_text = ui.fonts_mut(|fonts| {
+                            layout_side_text(fonts, layout_job, &row_text.ghosts, &font_id, wrap_at)
+                        });
+                        let galley = side_text.galley.clone();
                         // The hit area spans the rest of the row, not just the text, so a press
                         // anywhere in the block starts a selection. Drag sense on both sides:
                         // egui hit-tests against the previous frame, so the side that becomes
                         // selectable on a press needs it already, or that press is lost.
                         let hit_size = egui::vec2(
                             galley.size().x.max(ui.available_width()),
-                            galley.size().y.max(row_h),
+                            side_text.height().max(cell_h),
                         );
                         let (hit_rect, response) =
                             ui.allocate_exact_size(hit_size, egui::Sense::click_and_drag());
@@ -995,6 +1066,11 @@ impl FileDiffPane {
                                 Some(marker) => copy_marker_galley(ui, marker),
                                 None => galley,
                             };
+                            let galley = if wrap {
+                                reach_down_to(galley, hit_rect.height())
+                            } else {
+                                galley
+                            };
                             LabelSelectionState::label_text_selection(
                                 ui,
                                 &response,
@@ -1010,9 +1086,9 @@ impl FileDiffPane {
                                 text_color,
                             ));
                         }
-                        for ((_, ghost_galley), x) in ghost_galleys.into_iter().zip(ghost_xs) {
+                        for (pos, ghost_galley) in side_text.ghosts {
                             ui.painter().add(egui::epaint::TextShape::new(
-                                hit_rect.left_top() + egui::vec2(x, 0.0),
+                                hit_rect.left_top() + pos,
                                 ghost_galley,
                                 text_color,
                             ));
@@ -1032,7 +1108,13 @@ impl FileDiffPane {
                                 egui::Color32::from_rgba_unmultiplied(255, 255, 0, 40), // Faint yellow
                             );
                         }
-                    });
+                    };
+                    // A wrapped row's line number stays on its first line.
+                    if wrap {
+                        ui.horizontal_top(add_contents);
+                    } else {
+                        ui.horizontal_centered(add_contents);
+                    }
                 });
             }
             LineContent::Void => {
@@ -1048,11 +1130,17 @@ impl FileDiffPane {
                     ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
                         let (hit_rect, response) =
                             ui.allocate_exact_size(rect.size(), egui::Sense::click_and_drag());
+                        let marker = copy_marker_galley(ui, COPY_MARKER_NO_LINE);
+                        let marker = if wrap {
+                            reach_down_to(marker, hit_rect.height())
+                        } else {
+                            marker
+                        };
                         LabelSelectionState::label_text_selection(
                             ui,
                             &response,
                             hit_rect.left_top(),
-                            copy_marker_galley(ui, COPY_MARKER_NO_LINE),
+                            marker,
                             egui::Color32::TRANSPARENT,
                             egui::Stroke::NONE,
                         );
@@ -1115,6 +1203,11 @@ impl FileDiffPane {
 const GUTTER_WIDTH: f32 = 35.0;
 const GUTTER_GAP: f32 = 4.0;
 
+/// Width a side's text wraps at in a cell `cell_width` wide: what the gutter leaves.
+pub(super) fn wrap_width(cell_width: f32) -> f32 {
+    cell_width - GUTTER_WIDTH - GUTTER_GAP
+}
+
 /// Width of each side's widest row: gutter, text and ghost text. Measured over all rows, since
 /// the table only lays out the visible ones.
 pub(super) fn side_content_widths<T: RawTokenTrait>(
@@ -1144,6 +1237,155 @@ pub(super) fn side_content_widths<T: RawTokenTrait>(
             right.max(row_width(&row.right)),
         ]
     })
+}
+
+/// Each row's height with wrap on: the taller of its two sides, and never less than one line.
+/// `side_height(side, text)` measures one side's code row, side 0 being the left.
+pub(super) fn wrapped_row_heights<T: RawTokenTrait>(
+    rows: &[DiffRow],
+    file_source: Option<&CachedFile<T>>,
+    file_target: Option<&CachedFile<T>>,
+    line_height: f32,
+    mut side_height: impl FnMut(usize, &RowText) -> f32,
+) -> Vec<f32> {
+    rows.iter()
+        .map(|row| {
+            [&row.left, &row.right].into_iter().enumerate().fold(
+                line_height,
+                |height, (side, content)| match content {
+                    LineContent::Code { tokens, .. } => {
+                        let row_text = build_row_text(tokens, file_source, file_target);
+                        height.max(side_height(side, &row_text))
+                    }
+                    LineContent::Void | LineContent::Collapsed => height,
+                },
+            )
+        })
+        .collect()
+}
+
+/// `wrapped_row_heights` measured with egui's layout, each side's text wrapped at its
+/// `text_widths` entry (the column width without the gutter).
+pub(super) fn measure_wrapped_rows<T: RawTokenTrait>(
+    fonts: &mut egui::epaint::FontsView<'_>,
+    font_id: &egui::FontId,
+    rows: &[DiffRow],
+    file_source: Option<&CachedFile<T>>,
+    file_target: Option<&CachedFile<T>>,
+    text_widths: [f32; 2],
+) -> Vec<f32> {
+    let line_height = fonts.row_height(font_id);
+    let side_height = |side: usize, row_text: &RowText| {
+        let width = text_widths[side];
+        // The glyph sum is never short of the one-line layout (see `side_content_widths`), so a
+        // row that fits by it needs no layout. The margin covers pixel rounding.
+        let mut glyph_width = |c| fonts.glyph_width(font_id, c);
+        let one_line: f32 = std::iter::once(&row_text.text)
+            .chain(row_text.ghosts.iter().map(|ghost| &ghost.text))
+            .map(|text| h_scroll::text_width(text, &mut glyph_width))
+            .sum();
+        if one_line + 1.0 < width {
+            return line_height;
+        }
+        let job = egui::text::LayoutJob::single_section(
+            row_text.text.clone(),
+            egui::TextFormat::simple(font_id.clone(), egui::Color32::PLACEHOLDER),
+        );
+        layout_side_text(fonts, job, &row_text.ghosts, font_id, width).height()
+    };
+    wrapped_row_heights(rows, file_source, file_target, line_height, side_height)
+}
+
+/// A code row's text as drawn. `galley` holds only the real text, so only that can be selected
+/// and copied; inline ghosts sit in gaps left in it. Ghost positions are relative to the galley.
+struct SideText {
+    galley: Arc<egui::Galley>,
+    ghosts: Vec<(Vec2, Arc<egui::Galley>)>,
+}
+
+impl SideText {
+    fn height(&self) -> f32 {
+        self.ghosts
+            .iter()
+            .fold(self.galley.size().y, |height, (pos, ghost)| {
+                height.max(pos.y + ghost.size().y)
+            })
+    }
+}
+
+/// Lays out a code row's text `job` and its ghosts, wrapped at `wrap_width` (infinite for one
+/// line). Drawing and the wrapped row heights both go through here, so a row is exactly as tall
+/// as what is drawn in it. Syntax colors don't move monospace glyphs, so `job` may be plain.
+fn layout_side_text(
+    fonts: &mut egui::epaint::FontsView<'_>,
+    mut job: egui::text::LayoutJob,
+    ghosts: &[GhostInsertion],
+    font_id: &egui::FontId,
+    wrap_width: f32,
+) -> SideText {
+    let color = |ghost: &GhostInsertion| {
+        let [r, g, b, a] = ghost.color.0;
+        egui::Color32::from_rgba_unmultiplied(r, g, b, a)
+    };
+    let text_len = job.text.len();
+    let (inline, trailing): (Vec<_>, Vec<_>) = ghosts
+        .iter()
+        .partition(|ghost| ghost.byte_offset < text_len);
+
+    let inline_galleys: Vec<Arc<egui::Galley>> = inline
+        .iter()
+        .map(|ghost| fonts.layout_no_wrap(ghost.text.clone(), font_id.clone(), color(ghost)))
+        .collect();
+    let gaps: Vec<(usize, f32)> = inline
+        .iter()
+        .zip(&inline_galleys)
+        .map(|(ghost, galley)| (ghost.byte_offset, galley.size().x))
+        .collect();
+    insert_ghost_gaps(&mut job, &gaps);
+    let text = job.text.clone();
+    job.wrap.max_width = wrap_width;
+    let galley = fonts.layout_job(job);
+
+    let mut placed: Vec<_> = ghost_positions(&galley, &text, &gaps)
+        .into_iter()
+        .zip(inline_galleys)
+        .collect();
+    if !trailing.is_empty() {
+        let last_row = galley.rows.last().expect("a galley has at least one row");
+        // One job continuing the last row, wrapping like the text. The minimum height keeps an
+        // empty first row (nothing fits after the text) from collapsing onto the text.
+        let mut tail = egui::text::LayoutJob::default();
+        for (i, ghost) in trailing.iter().enumerate() {
+            let leading_space = if i == 0 { last_row.size.x } else { 0.0 };
+            tail.append(
+                &ghost.text,
+                leading_space,
+                egui::TextFormat::simple(font_id.clone(), color(ghost)),
+            );
+        }
+        tail.first_row_min_height = last_row.height();
+        tail.wrap.max_width = wrap_width;
+        placed.push((egui::vec2(0.0, last_row.pos.y), fonts.layout_job(tail)));
+    }
+    SideText {
+        galley,
+        ghosts: placed,
+    }
+}
+
+/// Lays out the text rows: one line each, or each its wrapped height. A `scroll_to_row` on the
+/// table goes by the same heights.
+fn text_rows(
+    body: egui_extras::TableBody<'_>,
+    wrapped_heights: Option<&[f32]>,
+    row_height: f32,
+    num_rows: usize,
+    add_row: impl FnMut(egui_extras::TableRow<'_, '_>),
+) {
+    match wrapped_heights {
+        Some(heights) => body.heterogeneous_rows(heights.iter().copied(), add_row),
+        None => body.rows(row_height, num_rows, add_row),
+    }
 }
 
 /// Draws `add_contents` scrolled left by `offset` and clipped to the cell. The cell counts as
@@ -1305,6 +1547,18 @@ fn copy_marker_galley(ui: &egui::Ui, marker: char) -> Arc<egui::Galley> {
     })
 }
 
+/// `galley` with its rect stretched down to `height`, for selection. egui's cross-label copy adds
+/// a blank line when the gap between two copied galleys is over half a row, so a side shorter
+/// than its wrapped row has to reach the bottom of its cell. The text itself doesn't move.
+fn reach_down_to(galley: Arc<egui::Galley>, height: f32) -> Arc<egui::Galley> {
+    if galley.rect.height() >= height {
+        return galley;
+    }
+    let mut galley = Arc::unwrap_or_clone(galley);
+    galley.rect.max.y = galley.rect.min.y + height;
+    Arc::new(galley)
+}
+
 /// Ghost text is visual-only: it is kept out of the label text so egui can neither select nor
 /// copy it, and each ghost is a blank gap in the layout job instead. `ghosts` is (byte offset
 /// into the real text, ghost width) in row order. Ghosts at the end of the text need no gap
@@ -1364,10 +1618,12 @@ fn recolor_ranges(
     }
 }
 
-/// X of each ghost relative to the galley origin: inside its gap, or past the end of the text for
-/// trailing ghosts. Ghosts sharing an offset sit side by side in one gap.
-fn ghost_x_offsets(galley: &egui::Galley, text: &str, ghosts: &[(usize, f32)]) -> Vec<f32> {
-    let glyphs = galley.rows.first().map_or(&[][..], |row| &row.glyphs[..]);
+/// Position of each inline ghost relative to the galley origin: inside its gap, which is just
+/// before the glyph at its offset (`ghosts` as for `insert_ghost_gaps`, all inside the text).
+/// Ghosts sharing an offset sit side by side in one gap. When the text wraps right at a gap, the
+/// new row starts at the glyph and the gap is gone, so the ghost goes at the end of the row
+/// before, where the gap would have been.
+fn ghost_positions(galley: &egui::Galley, text: &str, ghosts: &[(usize, f32)]) -> Vec<Vec2> {
     ghosts
         .iter()
         .enumerate()
@@ -1375,11 +1631,26 @@ fn ghost_x_offsets(galley: &egui::Galley, text: &str, ghosts: &[(usize, f32)]) -
             let same_offset = |(o, _): &&(usize, f32)| *o == offset;
             let gap_width: f32 = ghosts.iter().filter(same_offset).map(|g| g.1).sum();
             let before_in_gap: f32 = ghosts[..i].iter().filter(same_offset).map(|g| g.1).sum();
-            let gap_start = match glyphs.get(text[..offset].chars().count()) {
-                Some(glyph) => glyph.pos.x - gap_width,
-                None => glyphs.last().map_or(0.0, |glyph| glyph.max_x()),
+            let mut char_index = text[..offset].chars().count();
+            let (row_index, row) = galley
+                .rows
+                .iter()
+                .enumerate()
+                .find(|(_, row)| {
+                    let found = char_index < row.glyphs.len();
+                    if !found {
+                        char_index -= row.glyphs.len();
+                    }
+                    found
+                })
+                .expect("an inline ghost's offset is inside the text");
+            let gap_start = if char_index == 0 && row_index > 0 {
+                let before = &galley.rows[row_index - 1];
+                egui::vec2(before.size.x, before.pos.y)
+            } else {
+                egui::vec2(row.glyphs[char_index].pos.x - gap_width, row.pos.y)
             };
-            gap_start + before_in_gap
+            gap_start + egui::vec2(before_in_gap, 0.0)
         })
         .collect()
 }
@@ -1438,12 +1709,12 @@ mod tests {
 
     use crate::{
         diff_ctx::DiffStageTimes,
-        ui_egui::copy_harness::{CopyHarness, Side},
+        ui_egui::copy_harness::{CopyHarness, Side, measure_in_fresh_context},
     };
 
     use super::{
-        COPY_MARKER_BLANK_LINE, COPY_MARKER_NO_LINE, GUTTER_GAP, GUTTER_WIDTH, diff_status_text,
-        insert_ghost_gaps, recolor_ranges, strip_copy_markers,
+        COPY_MARKER_BLANK_LINE, COPY_MARKER_NO_LINE, GUTTER_GAP, GUTTER_WIDTH, GhostInsertion,
+        diff_status_text, insert_ghost_gaps, layout_side_text, recolor_ranges, strip_copy_markers,
     };
 
     #[cfg(feature = "serde")]
@@ -2020,6 +2291,286 @@ mod tests {
         // Each side shows its own text plus the other side's changed token as a ghost.
         let widths = char_count_widths("let x = old(1);\n", "let x = brand_new(1);\n");
         assert_eq!(widths, [text_x + 15.0 + 9.0, text_x + 21.0 + 3.0]);
+    }
+
+    // Ten points per line, wrapping every `per_line` chars of a side's text.
+    fn char_wrapped_heights(harness: &CopyHarness, per_line: [usize; 2]) -> Vec<f32> {
+        harness.wrapped_row_heights(10.0, |side, row_text| {
+            row_text.text.chars().count().div_ceil(per_line[side]) as f32 * 10.0
+        })
+    }
+
+    #[test]
+    fn a_wrapped_row_is_as_tall_as_its_taller_side() {
+        let text = format!("short\n{}\n", "x".repeat(25));
+        let harness = CopyHarness::new(&text, &text, &DiffBuilderOptions::default());
+
+        assert_eq!(char_wrapped_heights(&harness, [10, 5]), [10.0, 50.0]);
+        assert_eq!(char_wrapped_heights(&harness, [5, 10]), [10.0, 50.0]);
+        assert_eq!(char_wrapped_heights(&harness, [30, 30]), [10.0, 10.0]);
+    }
+
+    #[test]
+    fn a_wrapped_row_is_never_less_than_one_line() {
+        // Ghost rows off, so the inserted line is a Void row on the left.
+        let options = DiffBuilderOptions {
+            ghost_rows: false,
+            ..Default::default()
+        };
+        let target = format!("a\n\n{}\nb\n", "y".repeat(25));
+        let mut harness = CopyHarness::new("a\n\nb\n", &target, &options);
+        assert!(matches!(harness.rows()[2].left, LineContent::Void));
+
+        // A blank line has no text and still takes a line; a Void side takes the other side's.
+        assert_eq!(
+            char_wrapped_heights(&harness, [10, 10]),
+            [10.0, 10.0, 30.0, 10.0]
+        );
+
+        let collapsed = collapsed_row_between(&harness.rows()[2]);
+        harness.set_row(2, collapsed);
+        assert_eq!(char_wrapped_heights(&harness, [10, 10])[2], 10.0);
+    }
+
+    /// Height of `text` laid out by egui on its own, wrapped at `width`.
+    fn egui_wrapped_height(text: &str, width: f32) -> f32 {
+        measure_in_fresh_context(|fonts, font_id| {
+            let job = eframe::egui::text::LayoutJob::simple(
+                text.to_owned(),
+                font_id.clone(),
+                eframe::egui::Color32::WHITE,
+                width,
+            );
+            fonts.layout_job(job).size().y
+        })
+    }
+
+    fn char_width() -> f32 {
+        measure_in_fresh_context(|fonts, font_id| fonts.glyph_width(font_id, 'x'))
+    }
+
+    #[test]
+    fn measured_rows_wrap_where_egui_wraps_the_text() {
+        let line = "let words = [alpha, beta, gamma, delta, epsilon, zeta, eta, theta];";
+        let text = format!("{line}\nshort\n");
+        let harness = CopyHarness::new(&text, &text, &DiffBuilderOptions::default());
+        let width = 20.0 * char_width();
+
+        let (heights, line_height) = harness.measured_row_heights([width, 1000.0]);
+
+        assert_eq!(heights[0], egui_wrapped_height(line, width));
+        assert!(heights[0] >= 3.0 * line_height, "{heights:?}");
+        assert_eq!(heights[1], line_height);
+        // Wide enough for every line: one line each.
+        let (heights, _) = harness.measured_row_heights([1000.0, 1000.0]);
+        assert_eq!(heights, [line_height; 2]);
+    }
+
+    #[test]
+    fn trailing_ghost_text_wraps_after_the_text() {
+        let source = "let x = 1;\n";
+        let target = "let x = 1; // a long trailing comment that the left side shows as a ghost\n";
+        let harness = CopyHarness::new(source, target, &DiffBuilderOptions::default());
+        let LineContent::Code { tokens, .. } = &harness.rows()[0].left else {
+            panic!("expected a code row: {:?}", harness.rows());
+        };
+        assert!(tokens.iter().any(|(_, _, is_ghost)| *is_ghost));
+        let width = 20.0 * char_width();
+
+        // The right side is one line, so the row is as tall as the left: its text and the ghost
+        // continuing after it wrap like the right side's identical line.
+        let (heights, line_height) = harness.measured_row_heights([width, 1000.0]);
+
+        assert_eq!(heights[0], egui_wrapped_height(target.trim_end(), width));
+        assert!(heights[0] >= 3.0 * line_height, "{heights:?}");
+    }
+
+    /// Lays out `text` with one inline ghost at `offset`, wrapped at `width_chars` columns.
+    /// Returns the ghost's position, the char width and the line height.
+    fn inline_ghost_position(
+        text: &str,
+        offset: usize,
+        ghost: &str,
+        width_chars: f32,
+    ) -> (eframe::egui::Vec2, f32, f32) {
+        measure_in_fresh_context(|fonts, font_id| {
+            let char_width = fonts.glyph_width(font_id, 'x');
+            let job = eframe::egui::text::LayoutJob::single_section(
+                text.to_owned(),
+                eframe::egui::TextFormat::simple(font_id.clone(), eframe::egui::Color32::WHITE),
+            );
+            let ghosts = [GhostInsertion {
+                byte_offset: offset,
+                text: ghost.to_owned(),
+                color: zdiff::diff_builder::Color32([255; 4]),
+            }];
+            let side_text =
+                layout_side_text(fonts, job, &ghosts, font_id, width_chars * char_width);
+            let [(pos, _)] = side_text.ghosts[..] else {
+                panic!("expected one ghost");
+            };
+            (pos, char_width, fonts.row_height(font_id))
+        })
+    }
+
+    fn assert_near(actual: eframe::egui::Vec2, expected: eframe::egui::Vec2) {
+        assert!(
+            (actual - expected).length() < 0.5,
+            "{actual:?} vs {expected:?}"
+        );
+    }
+
+    #[test]
+    fn an_inline_ghost_on_a_wrapped_row_sits_before_its_glyph_on_that_row() {
+        // "aaaa bbbb " fills the first row; "cc " then the ghost, then "dd" on the second.
+        let (pos, char_width, line_height) =
+            inline_ghost_position("aaaa bbbb cc dd", 13, "X", 10.5);
+
+        assert_near(pos, eframe::egui::vec2(3.0 * char_width, line_height));
+    }
+
+    #[test]
+    fn an_inline_ghost_where_the_text_wraps_goes_at_the_end_of_the_row_before() {
+        // The gap pushes "cccc" to the next row, which starts at its first glyph, gap gone.
+        let (pos, char_width, _) = inline_ghost_position("aaaa bbbb cccc", 10, "XYZW", 10.5);
+
+        assert_near(pos, eframe::egui::vec2(10.0 * char_width, 0.0));
+    }
+
+    const LONG_LINE: &str = "let words = [alpha, beta, gamma, delta, epsilon, zeta, eta, theta];";
+
+    /// A column that wraps `LONG_LINE` onto at least three rows.
+    fn narrow_column() -> f32 {
+        GUTTER_WIDTH + GUTTER_GAP + 20.0 * char_width()
+    }
+
+    #[test]
+    fn a_wrapped_line_copies_as_the_one_file_line() {
+        let text = format!("{LONG_LINE}\nnext\n");
+        let mut harness = CopyHarness::new(&text, &text, &DiffBuilderOptions::default());
+        harness.set_wrap([narrow_column(); 2]);
+
+        let copied = harness.drag_and_copy(Side::Left, (0, 0), (1, 4));
+        assert_eq!(copied, Some(format!("{LONG_LINE}\nnext")));
+        // From the first visual row of the line into its last one.
+        let copied = harness.drag_and_copy(Side::Right, (0, 4), (0, 60));
+        assert_eq!(copied.as_deref(), Some(&LONG_LINE[4..60]));
+    }
+
+    #[test]
+    fn a_short_side_in_a_tall_row_copies_without_a_blank_line() {
+        let text = format!("{LONG_LINE}\nnext\n");
+        let mut harness = CopyHarness::new(&text, &text, &DiffBuilderOptions::default());
+        // The left wraps and makes row 0 tall; the right's copy of it is one line.
+        harness.set_wrap([narrow_column(), 1000.0]);
+
+        let copied = harness.drag_and_copy(Side::Right, (0, 0), (1, 4));
+        assert_eq!(copied, Some(format!("{LONG_LINE}\nnext")));
+    }
+
+    #[test]
+    fn a_void_side_in_a_tall_row_copies_nothing() {
+        let options = DiffBuilderOptions {
+            ghost_rows: false,
+            ..Default::default()
+        };
+        let target = format!("top\n{LONG_LINE}\nbottom\n");
+        let mut harness = CopyHarness::new("top\nbottom\n", &target, &options);
+        assert!(matches!(harness.rows()[1].left, LineContent::Void));
+        harness.set_wrap([narrow_column(); 2]);
+
+        let copied = harness.drag_and_copy(Side::Left, (0, 0), (2, 6));
+        assert_eq!(copied.as_deref(), Some("top\nbottom"));
+        let copied = harness.drag_and_copy(Side::Right, (0, 0), (2, 6));
+        assert_eq!(copied, Some(target.trim_end().to_owned()));
+    }
+
+    #[test]
+    fn copy_with_wrap_on_gives_each_files_exact_text() {
+        for (name, options) in options_variants() {
+            let mut harness = CopyHarness::new(REAL_SOURCE, REAL_TARGET, &options);
+            harness.set_wrap([GUTTER_WIDTH + GUTTER_GAP + 12.0 * char_width(); 2]);
+            let last = harness.rows().len() - 1;
+
+            let copied = harness.drag_and_copy(Side::Left, (0, 0), (last, 1));
+            assert_eq!(
+                copied.as_deref(),
+                Some(REAL_SOURCE.trim_end()),
+                "left, {name}"
+            );
+            let copied = harness.drag_and_copy(Side::Right, (0, 0), (last, 1));
+            assert_eq!(
+                copied.as_deref(),
+                Some(REAL_TARGET.trim_end()),
+                "right, {name}"
+            );
+        }
+    }
+
+    /// Top of the table body and the rect of row `target` after jumping to it, as the pane jumps
+    /// to a conflict, find result or line.
+    fn jump_to_row(
+        wrapped_heights: Option<&[f32]>,
+        num_rows: usize,
+        target: usize,
+    ) -> (f32, eframe::egui::Rect) {
+        use eframe::egui;
+        let ctx = egui::Context::default();
+        let mut body_top = f32::NAN;
+        let mut target_rect = egui::Rect::NOTHING;
+        // The first frame lays out and asks for the scroll; the next ones apply it.
+        for frame in 0..3 {
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 400.0),
+                )),
+                time: Some(frame as f64),
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    body_top = ui.cursor().top();
+                    egui_extras::TableBuilder::new(ui)
+                        .column(egui_extras::Column::remainder())
+                        .scroll_to_row(target, Some(egui::Align::Min))
+                        .animate_scrolling(false)
+                        .body(|body| {
+                            super::text_rows(body, wrapped_heights, 15.0, num_rows, |mut row| {
+                                let index = row.index();
+                                row.col(|ui| {
+                                    if index == target {
+                                        target_rect = ui.max_rect();
+                                    }
+                                });
+                            });
+                        });
+                });
+            });
+        }
+        (body_top, target_rect)
+    }
+
+    #[test]
+    fn jumping_to_a_row_lands_on_it_with_wrap_on() {
+        // Every third row wraps onto three lines.
+        let heights: Vec<f32> = (0..200)
+            .map(|i| if i % 3 == 0 { 45.0 } else { 15.0 })
+            .collect();
+
+        for target in [1, 30, 100, 151] {
+            let (top, rect) = jump_to_row(Some(&heights), heights.len(), target);
+            assert!(
+                (rect.top() - top).abs() < 1.0,
+                "row {target}: {rect:?} vs top {top}"
+            );
+            assert_eq!(rect.height(), heights[target], "row {target}");
+        }
+        // Wrap off: one line per row.
+        let (top, rect) = jump_to_row(None, 200, 100);
+        assert!((rect.top() - top).abs() < 1.0, "{rect:?} vs top {top}");
+        assert_eq!(rect.height(), 15.0);
     }
 
     #[test]

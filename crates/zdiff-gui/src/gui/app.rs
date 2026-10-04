@@ -83,6 +83,8 @@ pub struct AppStateCtx {
     // Saves from before the setting load linked, like a fresh state.
     #[cfg_attr(feature = "serde", serde(default = "default_h_scroll_linked"))]
     pub h_scroll_linked: bool,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub word_wrap: bool,
 
     #[cfg_attr(feature = "serde", serde(skip))]
     pub goto_open: bool,
@@ -115,6 +117,7 @@ impl Default for AppStateCtx {
             scroll_left: Default::default(),
             scroll_right: Default::default(),
             h_scroll_linked: default_h_scroll_linked(),
+            word_wrap: false,
             goto_open: Default::default(),
             find_open: Default::default(),
             goto_input: Default::default(),
@@ -660,6 +663,7 @@ impl<'a> ZApp {
                 scroll_left,
                 scroll_right,
                 h_scroll_linked,
+                word_wrap,
                 diff_options,
                 file_1,
                 file_2,
@@ -789,6 +793,7 @@ impl<'a> ZApp {
                     scroll_left: scroll_left,
                     scroll_right: scroll_right,
                     h_scroll_linked,
+                    word_wrap,
                     diff_options: diff_options,
                     scroll_to_row_span: &scroll_to_rows,
                     load_file_1_request: &mut None,
@@ -1448,6 +1453,25 @@ mod tests {
             .unwrap();
         let restored: AppStateCtx = serde_json::from_value(json).unwrap();
         assert!(restored.h_scroll_linked);
+    }
+
+    #[test]
+    fn word_wrap_defaults_off_and_survives_a_restart() {
+        assert!(!AppStateCtx::default().word_wrap);
+
+        let mut ctx = AppStateCtx::default();
+        ctx.word_wrap = true;
+        let json = serde_json::to_string(&ctx).unwrap();
+        let restored: AppStateCtx = serde_json::from_str(&json).unwrap();
+        assert!(restored.word_wrap);
+    }
+
+    #[test]
+    fn a_save_without_word_wrap_loads_unwrapped() {
+        let mut json = serde_json::to_value(AppStateCtx::default()).unwrap();
+        json.as_object_mut().unwrap().remove("word_wrap").unwrap();
+        let restored: AppStateCtx = serde_json::from_value(json).unwrap();
+        assert!(!restored.word_wrap);
     }
 
     #[test]
