@@ -17,7 +17,7 @@ use eframe::egui::{
 use serde::{Deserialize, Serialize};
 use zdiff::{
     cached_file::CachedFile,
-    diff_builder::{DiffBuilderOptions, LineContent},
+    diff_builder::{DIMMED, DiffBuilderOptions, LineContent},
     diff_ir::{DiffOp, DiffResult},
     ignore::IgnorePatterns,
     lexer::RawTokenTrait,
@@ -805,6 +805,16 @@ impl FileDiffPane {
                             &row_text.text,
                             code_language,
                         );
+                        // Text matched by an ignore pattern is dimmed over the syntax colors.
+                        let dimmed: Vec<_> = row_text
+                            .color_overrides
+                            .iter()
+                            .filter(|(_, color)| *color == DIMMED)
+                            .map(|(range, _)| range.clone())
+                            .collect();
+                        let [r, g, b, a] = DIMMED.0;
+                        let dim = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
+                        recolor_ranges(&mut layout_job, &dimmed, dim);
 
                         let font_id = egui::TextStyle::Monospace.resolve(ui.style());
                         let ghost_galleys: Vec<(usize, Arc<egui::Galley>)> = row_text
@@ -1086,6 +1096,38 @@ fn insert_ghost_gaps(job: &mut egui::text::LayoutJob, ghosts: &[(usize, f32)]) {
     }
 }
 
+/// Sets the color of `ranges` (byte ranges into the job's text), splitting sections at their ends.
+fn recolor_ranges(
+    job: &mut egui::text::LayoutJob,
+    ranges: &[std::ops::Range<usize>],
+    color: egui::Color32,
+) {
+    let mut split_at = |offset: usize| {
+        if let Some(i) = job
+            .sections
+            .iter()
+            .position(|s| s.byte_range.start < offset && offset < s.byte_range.end)
+        {
+            let section = &mut job.sections[i];
+            let mut tail = section.clone();
+            tail.leading_space = 0.0;
+            tail.byte_range.start = offset;
+            section.byte_range.end = offset;
+            job.sections.insert(i + 1, tail);
+        }
+    };
+    for range in ranges {
+        split_at(range.start);
+        split_at(range.end);
+    }
+    for section in &mut job.sections {
+        let r = &section.byte_range;
+        if ranges.iter().any(|range| range.start <= r.start && r.end <= range.end) {
+            section.format.color = color;
+        }
+    }
+}
+
 /// X of each ghost relative to the galley origin: inside its gap, or past the end of the text for
 /// trailing ghosts. Ghosts sharing an offset sit side by side in one gap.
 fn ghost_x_offsets(galley: &egui::Galley, text: &str, ghosts: &[(usize, f32)]) -> Vec<f32> {
@@ -1165,7 +1207,7 @@ mod tests {
 
     use super::{
         COPY_MARKER_BLANK_LINE, COPY_MARKER_NO_LINE, diff_status_text, insert_ghost_gaps,
-        strip_copy_markers,
+        recolor_ranges, strip_copy_markers,
     };
 
     #[cfg(feature = "serde")]
@@ -1246,6 +1288,45 @@ mod tests {
             .map(|s| (s.byte_range.clone(), s.leading_space))
             .collect();
         assert_eq!(sections, [(0..2, 0.0), (2..4, 7.0)]);
+    }
+
+    #[test]
+    fn recolor_splits_sections_at_the_range_ends_without_changing_the_text() {
+        use eframe::egui::Color32;
+        let dim = Color32::from_rgba_unmultiplied(1, 2, 3, 4);
+        let colors = |job: &eframe::egui::text::LayoutJob| -> Vec<_> {
+            job.sections
+                .iter()
+                .map(|s| (s.byte_range.clone(), s.format.color))
+                .collect()
+        };
+
+        let mut job = job_with_one_section("abcdef");
+        recolor_ranges(&mut job, &[1..3, 5..6], dim);
+        assert_eq!(job.text, "abcdef");
+        assert_eq!(
+            colors(&job),
+            [
+                (0..1, Color32::WHITE),
+                (1..3, dim),
+                (3..5, Color32::WHITE),
+                (5..6, dim)
+            ]
+        );
+
+        // A range across a section boundary recolors both parts.
+        let mut job = job_with_one_section("abc");
+        job.append("def", 0.0, job.sections[0].format.clone());
+        recolor_ranges(&mut job, &[2..4], dim);
+        assert_eq!(
+            colors(&job),
+            [
+                (0..2, Color32::WHITE),
+                (2..3, dim),
+                (3..4, dim),
+                (4..6, Color32::WHITE)
+            ]
+        );
     }
 
     #[test]

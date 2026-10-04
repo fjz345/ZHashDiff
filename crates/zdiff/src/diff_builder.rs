@@ -84,6 +84,10 @@ impl DiffBuilderOptions {
     }
 }
 
+/// Color of tokens an ignore pattern matched. Public so the GUI can find them among the row colors
+/// and paint them over its syntax highlighting.
+pub const DIMMED: Color32 = Color32([128, 128, 128, 110]);
+
 struct DiffTheme {
     ghost: Color32,
     kw: Color32,
@@ -103,7 +107,7 @@ impl Default for DiffTheme {
             ins: [100, 255, 100, 255].into(),
             del_bg: [255, 0, 0, 20].into(),
             ins_bg: [0, 255, 0, 20].into(),
-            dimmed: [128, 128, 128, 110].into(),
+            dimmed: DIMMED,
         }
     }
 }
