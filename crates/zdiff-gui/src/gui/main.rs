@@ -12,6 +12,7 @@ mod file;
 mod keybindings;
 mod p4;
 mod revert;
+mod scope;
 pub mod ui_egui;
 mod viewer;
 

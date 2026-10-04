@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::BTreeMap,
     ops::{Range, RangeInclusive},
     sync::{
         Arc,
@@ -21,9 +21,10 @@ use zdiff::{
         MyersDiffAlgorithm, MyersNumAddDelete, MyersPath, line_diff, myers_count_add_deletes,
         token_diff,
     },
+    row_text::build_row_text,
 };
 
-use crate::{clamped_cursor::ClampedCursor, ui_egui::active_side::ActiveSide};
+use crate::{clamped_cursor::ClampedCursor, scope, ui_egui::active_side::ActiveSide};
 
 #[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -139,9 +140,19 @@ pub type CollapsedBlocks = Vec<CollapsedBlock>;
 pub struct RowBlock {
     /// `CollapsedBlock::row` of the block.
     pub key: usize,
-    /// The block's `Collapsed` row, or its hidden rows when expanded.
+    /// The block's `Collapsed` row while any of its rows is hidden, then its revealed rows. Rows
+    /// are revealed from the block's bottom up.
     pub rows: Range<usize>,
+    /// Every hidden row is revealed, so the block has no `Collapsed` row.
     pub expanded: bool,
+}
+
+/// What a collapsed block's buttons ask for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockToggle {
+    Expand,
+    ExpandToScope,
+    Collapse,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -924,10 +935,33 @@ impl DiffProcessor {
         Some(ctx)
     }
 
-    /// Expands or re-collapses the block whose `RowBlock::key` is `key`. Row indices held across
-    /// frames (find hits, highlights, the last scroll targets) follow their rows, so the view
-    /// doesn't jump.
+    pub fn toggle_block(&mut self, key: usize, toggle: BlockToggle) {
+        match toggle {
+            BlockToggle::Expand => self.set_block_expanded(key, true),
+            BlockToggle::ExpandToScope => self.expand_block_to_scope(key),
+            BlockToggle::Collapse => self.set_block_expanded(key, false),
+        }
+    }
+
+    /// Expands or re-collapses the whole block whose `RowBlock::key` is `key`.
     pub fn set_block_expanded(&mut self, key: usize, expanded: bool) {
+        self.set_block_revealed_from(key, expanded.then_some(0));
+    }
+
+    /// Reveals the block's rows from the line opening the scope that encloses the change below
+    /// the block. The whole block when that line isn't hidden in it.
+    pub fn expand_block_to_scope(&mut self, key: usize) {
+        let from = self
+            .get_minimal_diff_ctx()
+            .and_then(|ctx| scope_reveal_from(&ctx, key))
+            .unwrap_or(0);
+        self.set_block_revealed_from(key, Some(from));
+    }
+
+    /// Reveals the block's hidden rows from index `from` down, or none of them. Row indices held
+    /// across frames (find hits, highlights, the last scroll targets) follow their rows, so the
+    /// view doesn't jump.
+    fn set_block_revealed_from(&mut self, key: usize, from: Option<usize>) {
         let Some(old) = self.get_minimal_diff_ctx() else {
             log::warn!("No diff shown to expand a block in");
             return;
@@ -942,11 +976,10 @@ impl DiffProcessor {
             .take()
             .map(|expansion| expansion.expanded)
             .unwrap_or_default();
-        if expanded {
-            keys.insert(key);
-        } else {
-            keys.remove(&key);
-        }
+        match from {
+            Some(from) => keys.insert(key, from),
+            None => keys.remove(&key),
+        };
         if !keys.is_empty() {
             let base = self.get_minimal_diff_ctx().expect("diff shown above");
             self.expansion = Some(RowExpansion::new(&base, keys));
@@ -974,19 +1007,55 @@ impl DiffProcessor {
     }
 }
 
+/// Index of the first hidden row of block `key` that a scope expansion reveals. `None` when no
+/// scope opens inside the block, or no change follows it.
+fn scope_reveal_from(ctx: &MinimalDiffCtx, key: usize) -> Option<usize> {
+    let block = ctx.row_blocks.iter().find(|block| block.key == key)?;
+    let hidden = &ctx
+        .collapsed_blocks
+        .iter()
+        .find(|block| block.row == key)?
+        .hidden;
+    // Blocks lie between changes, so the rows down to the next change are shown context.
+    let change = ctx
+        .precomputed_diffs
+        .iter()
+        .find(|span| span.start >= block.rows.end)?
+        .start;
+    // Context rows show the same line on both sides (up to ignore options), so either will do.
+    let text = |row: &DiffRow| match (&row.left, &row.right) {
+        (LineContent::Code { tokens, .. }, _) | (_, LineContent::Code { tokens, .. }) => {
+            build_row_text(
+                tokens,
+                ctx.input.file_1.as_deref(),
+                ctx.input.file_2.as_deref(),
+            )
+            .text
+        }
+        _ => String::new(),
+    };
+    let hidden: Vec<String> = hidden.iter().map(text).collect();
+    let below: Vec<String> = ctx.diff_rows[block.rows.end..change]
+        .iter()
+        .map(text)
+        .collect();
+    scope::scope_opening(&hidden, &below)
+}
+
 /// The rows shown with some collapsed blocks expanded, built once per change.
 #[derive(Debug)]
 struct RowExpansion {
     /// The unexpanded rows the keys refer to. Rebuilt rows invalidate the keys.
     base: Arc<DiffRows>,
-    expanded: BTreeSet<usize>,
+    /// Block key to the index of its first revealed hidden row.
+    expanded: BTreeMap<usize, usize>,
     diff_rows: Arc<DiffRows>,
     precomputed_diffs: Arc<PrecomputedDiffs>,
     precomputed_file_rows: Arc<PrecomputedFileRows>,
     row_blocks: Arc<Vec<RowBlock>>,
 }
 impl RowExpansion {
-    fn new(base: &MinimalDiffCtx, expanded: BTreeSet<usize>) -> Self {
+    fn new(base: &MinimalDiffCtx, expanded: BTreeMap<usize, usize>) -> Self {
         let (rows, row_blocks) = expand_rows(&base.diff_rows, &base.collapsed_blocks, &expanded);
         let (c1, c2, _) = resolve_files(&base.input.file_1, &base.input.file_2);
         let precomputed_file_rows = precompute_file_rows(
@@ -1354,17 +1423,21 @@ pub(crate) fn finalize_diff_rows(
     Some((diff_rows, precomputed_diffs, collapsed_blocks))
 }
 
-/// `rows` (the unexpanded rows) with the hidden rows of every block in `expanded` put back in
-/// place of its `Collapsed` row, and where each block ends up.
+/// `rows` (the unexpanded rows) with the hidden rows of every block in `expanded` put back,
+/// and where each block ends up. `expanded` maps a block's key to the index of its first
+/// revealed hidden row. The rows above it stay behind the `Collapsed` row; from 0 the whole
+/// block replaces it.
 pub(crate) fn expand_rows(
     rows: &[DiffRow],
     blocks: &[CollapsedBlock],
-    expanded: &BTreeSet<usize>,
+    expanded: &BTreeMap<usize, usize>,
 ) -> (DiffRows, Vec<RowBlock>) {
     let extra: usize = blocks
         .iter()
-        .filter(|block| expanded.contains(&block.row))
-        .map(|block| block.hidden.len() - 1)
+        .filter_map(|block| {
+            let from = *expanded.get(&block.row)?;
+            Some(block.hidden.len() - from - usize::from(from == 0))
+        })
         .sum();
     let mut shown = Vec::with_capacity(rows.len() + extra);
     let mut row_blocks = Vec::with_capacity(blocks.len());
@@ -1377,16 +1450,26 @@ pub(crate) fn expand_rows(
         );
         shown.extend_from_slice(&rows[next..block.row]);
         let start = shown.len();
-        let is_expanded = expanded.contains(&block.row);
-        if is_expanded {
-            shown.extend_from_slice(&block.hidden);
-        } else {
-            shown.push(rows[block.row].clone());
+        let from = expanded.get(&block.row).copied();
+        match from {
+            None => shown.push(rows[block.row].clone()),
+            Some(from) => {
+                assert!(
+                    from < block.hidden.len(),
+                    "block key {} reveals from {from} of {} hidden rows",
+                    block.row,
+                    block.hidden.len()
+                );
+                if from > 0 {
+                    shown.push(rows[block.row].clone());
+                }
+                shown.extend_from_slice(&block.hidden[from..]);
+            }
         }
         row_blocks.push(RowBlock {
             key: block.row,
             rows: start..shown.len(),
-            expanded: is_expanded,
+            expanded: from == Some(0),
         });
         next = block.row + 1;
     }
@@ -1407,33 +1490,40 @@ fn unexpanded_row_blocks(blocks: &[CollapsedBlock]) -> Vec<RowBlock> {
 }
 
 /// The shown row `row` of a view laid out as `from`, in a view of the same rows laid out as
-/// `to`. A row inside a block that `to` collapses maps to its `Collapsed` row.
+/// `to`. A row inside a block that `to` hides maps to its `Collapsed` row.
 fn remap_row(from: &[RowBlock], to: &[RowBlock], row: usize) -> usize {
     // Shown rows minus unexpanded rows, after a block.
     let shift = |block: &RowBlock| block.rows.end - (block.key + 1);
 
-    let mut unexpanded = (row, 0);
+    // A block's hidden rows are revealed from its bottom up, so a revealed row is identified by
+    // how far above the block's last row it is. `None` for rows outside blocks and Collapsed rows.
+    let mut unexpanded = (row, None);
     for block in from {
         if row < block.rows.start {
             break;
         }
         if block.rows.contains(&row) {
-            unexpanded = (block.key, row - block.rows.start);
+            let is_collapsed_row = !block.expanded && row == block.rows.start;
+            unexpanded = (
+                block.key,
+                (!is_collapsed_row).then(|| block.rows.end - 1 - row),
+            );
             break;
         }
-        unexpanded = (row - shift(block), 0);
+        unexpanded = (row - shift(block), None);
     }
 
-    let (row, offset) = unexpanded;
+    let (row, above_bottom) = unexpanded;
     let mut shown = row;
     for block in to {
         if row < block.key {
             break;
         }
         if row == block.key {
-            return match block.expanded {
-                true => block.rows.start + offset.min(block.rows.len() - 1),
-                false => block.rows.start,
+            let revealed = block.rows.len() - usize::from(!block.expanded);
+            return match above_bottom {
+                Some(above) if above < revealed => block.rows.end - 1 - above,
+                _ => block.rows.start,
             };
         }
         shown = row + shift(block);
@@ -1494,6 +1584,33 @@ mod tests {
             .map(|row| remap_row(&expanded, &collapsed, row))
             .collect();
         assert_eq!(back, [0, 1, 2, 2, 2, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn remap_keeps_rows_revealed_from_the_bottom_of_a_partly_expanded_block() {
+        let block = |key, rows, expanded| RowBlock {
+            key,
+            rows,
+            expanded,
+        };
+        // The first block hides 6 rows. Partly expanded, its last 3 show below its Collapsed row.
+        let collapsed = [block(2, 2..3, false), block(5, 5..6, false)];
+        let partial = [block(2, 2..6, false), block(5, 8..9, false)];
+        let full = [block(2, 2..8, true), block(5, 10..11, false)];
+        let remap = |from: &[RowBlock], to: &[RowBlock], rows: usize| -> Vec<usize> {
+            (0..rows).map(|row| remap_row(from, to, row)).collect()
+        };
+
+        assert_eq!(remap(&collapsed, &partial, 7), [0, 1, 2, 6, 7, 8, 9]);
+        assert_eq!(
+            remap(&partial, &collapsed, 10),
+            [0, 1, 2, 2, 2, 2, 3, 4, 5, 6]
+        );
+        assert_eq!(remap(&partial, &full, 10), [0, 1, 2, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(
+            remap(&full, &partial, 12),
+            [0, 1, 2, 2, 2, 3, 4, 5, 6, 7, 8, 9]
+        );
     }
 
     mod pipeline {
@@ -1992,6 +2109,108 @@ mod tests {
                 assert_eq!(ctx.precomputed_file_rows.0[9], goto.start);
 
                 assert_eq!(plan_hunk_revert(&ctx, revert), Ok(planned));
+            }
+
+            /// `gap_pair` where a function opens on line 8, inside the block of lines 6..=15, and
+            /// holds the line 18 change. Its inner `if` closes before the change.
+            fn scope_pair(dir: &Path) -> Pair {
+                let write = |name: &str, edit: bool| {
+                    let contents: String = (1..=20)
+                        .map(|n| match n {
+                            8 => "fn scoped() {\n".to_string(),
+                            9 => "    if a {\n".to_string(),
+                            11 => "    }\n".to_string(),
+                            19 => "}\n".to_string(),
+                            3 | 18 if edit => format!("    edit_{n}\n"),
+                            _ => format!("    keep_{n}\n"),
+                        })
+                        .collect();
+                    let path = dir.join(name);
+                    std::fs::write(&path, contents).unwrap();
+                    load(&UniversalPath::from(path))
+                };
+                (write("left.rs", false), write("right.rs", true))
+            }
+
+            #[test]
+            fn expanding_to_scope_reveals_the_lines_from_the_scope_opening_to_the_block_bottom() {
+                let dir = tempfile::tempdir().unwrap();
+                let pair = scope_pair(dir.path());
+                let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
+                let key = only_block(&collapsed);
+
+                processor.expand_block_to_scope(key);
+                let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
+
+                // Lines 6 and 7 stay behind the Collapsed row.
+                assert_eq!(collapsed_rows(&ctx.diff_rows), vec![key]);
+                let shown: Vec<_> = ctx.diff_rows[key + 1..key + 9]
+                    .iter()
+                    .map(line_nums)
+                    .collect();
+                let expected: Vec<_> = (8..=15).map(|n| (n, n)).collect();
+                assert_eq!(shown, expected);
+                assert_eq!(
+                    *ctx.row_blocks,
+                    vec![RowBlock {
+                        key,
+                        rows: key..key + 9,
+                        expanded: false
+                    }]
+                );
+                assert_eq!(
+                    format!("{:?}", &ctx.diff_rows[..=key]),
+                    format!("{:?}", &collapsed.diff_rows[..=key])
+                );
+                assert_eq!(
+                    format!("{:?}", &ctx.diff_rows[key + 9..]),
+                    format!("{:?}", &collapsed.diff_rows[key + 1..])
+                );
+                assert_eq!(ctx.precomputed_file_rows.0[7], key + 1);
+                assert_eq!(ctx.precomputed_file_rows.1[14], key + 8);
+            }
+
+            #[test]
+            fn a_scope_expansion_expands_fully_and_re_collapses() {
+                let dir = tempfile::tempdir().unwrap();
+                let pair = scope_pair(dir.path());
+                let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
+                let key = only_block(&collapsed);
+                let (_, full) = opened(&input(&pair.0, &pair.1));
+
+                processor.expand_block_to_scope(key);
+                processor.set_block_expanded(key, true);
+                let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
+                assert_eq!(
+                    format!("{:?}", ctx.diff_rows),
+                    format!("{:?}", full.diff_rows)
+                );
+
+                processor.expand_block_to_scope(key);
+                processor.set_block_expanded(key, false);
+                let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
+                assert_eq!(
+                    format!("{:?}", ctx.diff_rows),
+                    format!("{:?}", collapsed.diff_rows)
+                );
+                assert_eq!(ctx.row_blocks, collapsed.row_blocks);
+            }
+
+            #[test]
+            fn expanding_to_scope_with_no_scope_in_the_block_expands_all_of_it() {
+                let dir = tempfile::tempdir().unwrap();
+                let pair = gap_pair(dir.path());
+                let (mut processor, collapsed) = opened(&diff_only(&pair, 2));
+                let key = only_block(&collapsed);
+                let (_, full) = opened(&input(&pair.0, &pair.1));
+
+                processor.expand_block_to_scope(key);
+                let ctx = processor.get_minimal_diff_ctx().expect("diff still shown");
+                assert_eq!(
+                    format!("{:?}", ctx.diff_rows),
+                    format!("{:?}", full.diff_rows)
+                );
+                assert!(ctx.row_blocks[0].expanded);
             }
 
             #[test]

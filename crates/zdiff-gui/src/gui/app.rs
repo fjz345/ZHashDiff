@@ -774,8 +774,8 @@ impl<'a> ZApp {
             diff_processor.find_cursor = clone_find;
             diff_processor.active_side = clone_active_side;
             diff_processor.conflict_cursor = clone_conflict;
-            if let Some((key, expand)) = block_toggle_request {
-                diff_processor.set_block_expanded(key, expand);
+            if let Some((key, toggle)) = block_toggle_request {
+                diff_processor.toggle_block(key, toggle);
                 ctx.request_repaint();
             }
 

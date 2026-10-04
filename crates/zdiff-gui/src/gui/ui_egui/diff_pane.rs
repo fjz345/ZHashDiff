@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     clamped_cursor::ClampedCursor,
-    diff_ctx::{DiffStageTimes, MinimalDiffCtx, ScrollSpan},
+    diff_ctx::{BlockToggle, DiffStageTimes, MinimalDiffCtx, ScrollSpan},
     revert::{self, RevertRefusal, RevertRequest, RevertTarget},
     ui_egui::{
         active_side::{ActiveSide, ActiveSideState, outline_stroke},
@@ -59,8 +59,8 @@ pub struct FileDiffPaneCtx<'a> {
     pub set_file_2_root_request: &'a mut Option<UniversalPath>,
     pub pivot: &'a mut (Option<usize>, Option<usize>),
     pub revert_request: &'a mut Option<RevertRequest>,
-    /// `(RowBlock::key, expand)` of a clicked expand or re-collapse button.
-    pub block_toggle_request: &'a mut Option<(usize, bool)>,
+    /// `RowBlock::key` of the block whose button was clicked, and what the button asks for.
+    pub block_toggle_request: &'a mut Option<(usize, BlockToggle)>,
     /// Set when the pair resolved to the Hex viewer; the table then shows hex rows.
     pub hex_view: Option<HexViewCtx<'a>>,
 }
@@ -644,12 +644,20 @@ impl FileDiffPane {
                                                                     .map(|i| &d.row_blocks[i])
                                                             });
                                                             if let Some(block) = block {
-                                                                let (label, hover) = match block.expanded {
-                                                                    true => ("-", "Collapse these rows again"),
-                                                                    false => ("+", "Expand the collapsed rows"),
+                                                                let mut toggle_button = |label: &str, hover: &str, toggle: BlockToggle| {
+                                                                    if ui.button(label).on_hover_text(hover).clicked() {
+                                                                        *ctx.block_toggle_request = Some((block.key, toggle));
+                                                                    }
                                                                 };
-                                                                if ui.button(label).on_hover_text(hover).clicked() {
-                                                                    *ctx.block_toggle_request = Some((block.key, !block.expanded));
+                                                                if !block.expanded {
+                                                                    toggle_button("+", "Expand the collapsed rows", BlockToggle::Expand);
+                                                                }
+                                                                // Only on a fully collapsed block: once rows are revealed, the
+                                                                // scope expansion has been done or wouldn't add anything.
+                                                                if !block.expanded && block.rows.len() == 1 {
+                                                                    toggle_button("{", "Expand up to the line opening the scope of the change below", BlockToggle::ExpandToScope);
+                                                                } else {
+                                                                    toggle_button("-", "Collapse these rows again", BlockToggle::Collapse);
                                                                 }
                                                             }
                                                             revert_button(ui, RevertTarget::Left, "<", "Replace this hunk in the left file with the right side");
@@ -1486,7 +1494,7 @@ mod tests {
     #[test]
     fn copy_skips_a_collapsed_block_and_includes_it_once_expanded() {
         use std::{
-            collections::BTreeSet,
+            collections::BTreeMap,
             sync::{Arc, atomic::AtomicBool},
         };
 
@@ -1521,7 +1529,7 @@ mod tests {
         let without_newlines: String = copied.chars().filter(|c| *c != '\n').collect();
         assert_eq!(without_newlines, "line 2line 11");
 
-        let (expanded, _) = expand_rows(&collapsed, &blocks, &BTreeSet::from([block.row]));
+        let (expanded, _) = expand_rows(&collapsed, &blocks, &BTreeMap::from([(block.row, 0)]));
         harness.set_rows(expanded);
         let expected: Vec<String> = (2..=11).map(|n| format!("line {n}")).collect();
         let copied = harness.drag_and_copy(Side::Left, (1, 0), (10, 7));
