@@ -508,6 +508,14 @@ pub fn draw_ui_two_folder_tree_with_diff(
 
     let visible_rows = visible_rows.as_ref().unwrap();
 
+    // Every frame rather than at each rebuild or collapse: filter, rescan, the collapse
+    // buttons and the expander arrows all change the rows, and this sees all of them.
+    *cursor = cursor.resolve(&two_folder_cursor_rows(
+        file_system_1_view.as_ref(),
+        file_system_2_view.as_ref(),
+        visible_rows,
+    ));
+
     // Scroll only when the keys moved the cursor, so manual scrolling isn't fought.
     let mut scroll_to_cursor = false;
     if !keyboard_taken {

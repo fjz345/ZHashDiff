@@ -138,6 +138,24 @@ impl TreeCursor {
         (Self::at(target.rel_path), expand)
     }
 
+    /// After a row rebuild: the same entry if it is still drawn, else its nearest drawn
+    /// ancestor, else no cursor.
+    pub fn resolve(&self, rows: &[CursorRow]) -> Self {
+        let Some(rel_path) = self.rel_path() else {
+            return Self::default();
+        };
+        // The root row is always hidden, so it is never the fallback.
+        let is_self_or_ancestor = |row: &CursorRow| {
+            rel_path
+                .strip_prefix(row.rel_path)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        };
+        rows.iter()
+            .filter(|row| !row.hidden && is_self_or_ancestor(row))
+            .max_by_key(|row| row.rel_path.len())
+            .map_or_else(Self::default, |row| Self::at(row.rel_path))
+    }
+
     /// The cursor's row if it is drawn. Acting on a row the user can't see would be a
     /// surprise.
     fn drawn_row<'a>(&self, rows: &'a [CursorRow<'a>]) -> Option<&'a CursorRow<'a>> {
@@ -280,6 +298,65 @@ mod tests {
 
         assert_eq!(TreeCursor::default().next_diff(&rows), None);
         assert_eq!(TreeCursor::default().prev_diff(&rows), None);
+    }
+
+    #[test]
+    fn resolve_keeps_a_cursor_whose_row_is_still_drawn() {
+        let rows = rows(FOLDERS);
+
+        for rel_path in ["e", "e/f", "e/h", "m"] {
+            assert_eq!(
+                TreeCursor::at(rel_path).resolve(&rows),
+                TreeCursor::at(rel_path)
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_moves_a_removed_row_to_its_nearest_drawn_ancestor() {
+        let rows = rows(&["-/", "x/", "x/a", "y"]);
+
+        assert_eq!(TreeCursor::at("x/b").resolve(&rows), TreeCursor::at("x"));
+        assert_eq!(
+            TreeCursor::at("x/y/z").resolve(&rows),
+            TreeCursor::at("x"),
+            "x/y is gone too"
+        );
+    }
+
+    #[test]
+    fn resolve_moves_a_hidden_row_to_its_nearest_drawn_ancestor() {
+        assert_eq!(
+            TreeCursor::at("e/f/g").resolve(&rows(FOLDERS)),
+            TreeCursor::at("e/f")
+        );
+        assert_eq!(
+            TreeCursor::at("k/l").resolve(&rows(FOLDERS)),
+            TreeCursor::at("k")
+        );
+
+        // e/f is present but hidden inside the collapsed e.
+        let rows = rows(&["-/", "e>", "-e/f>", "-e/f/g"]);
+        assert_eq!(TreeCursor::at("e/f/g").resolve(&rows), TreeCursor::at("e"));
+    }
+
+    #[test]
+    fn resolve_clears_the_cursor_when_no_ancestor_is_drawn() {
+        let rows = rows(FOLDERS);
+
+        assert_eq!(TreeCursor::at("gone").resolve(&rows), TreeCursor::default());
+        assert_eq!(
+            TreeCursor::at("gone/x").resolve(&rows),
+            TreeCursor::default()
+        );
+        // A prefix that isn't a whole path component is no ancestor.
+        assert_eq!(TreeCursor::at("mm/x").resolve(&rows), TreeCursor::default());
+        assert_eq!(
+            TreeCursor::at("a").resolve(&self::rows(&["-/", "-a"])),
+            TreeCursor::default(),
+            "hidden with no ancestor"
+        );
+        assert_eq!(TreeCursor::default().resolve(&rows), TreeCursor::default());
     }
 
     const TREE: &[&str] = &["-/", "a", "b>", "-b/x", "-b/y", "c", "-d"];
