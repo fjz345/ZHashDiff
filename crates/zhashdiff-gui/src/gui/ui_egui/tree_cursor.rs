@@ -8,6 +8,15 @@ pub struct CursorRow<'a> {
     pub is_dir: bool,
     /// A folder collapsed on a side it exists on, so some of its rows are hidden.
     pub collapsed: bool,
+    /// Different, Partial, or only on one side.
+    pub differs: bool,
+}
+
+impl CursorRow<'_> {
+    /// Only files: a differing folder just says something below it differs.
+    fn is_diff_stop(&self) -> bool {
+        self.differs && !self.is_dir
+    }
 }
 
 /// What a cursor operation asks the GUI to do to a row, by relative path.
@@ -98,6 +107,37 @@ impl TreeCursor {
         })
     }
 
+    /// The next differing file in display order, hidden rows included, with the requests that
+    /// expand its collapsed ancestors. Without a cursor, the first one. `None` is the "no more
+    /// diffs" notice: there is no wraparound, so the cursor stays put.
+    pub fn next_diff(&self, rows: &[CursorRow]) -> Option<(Self, Vec<CursorRequest>)> {
+        let start = self.index_in(rows).map_or(0, |index| index + 1);
+        let target = rows[start..].iter().find(|row| row.is_diff_stop())?;
+        Some(Self::jump_to(rows, target))
+    }
+
+    /// The previous differing file, as `next_diff`. Without a cursor, the last one.
+    pub fn prev_diff(&self, rows: &[CursorRow]) -> Option<(Self, Vec<CursorRequest>)> {
+        let end = self.index_in(rows).unwrap_or(rows.len());
+        let target = rows[..end].iter().rev().find(|row| row.is_diff_stop())?;
+        Some(Self::jump_to(rows, target))
+    }
+
+    /// The target with expand requests for its collapsed ancestors, outermost first.
+    fn jump_to(rows: &[CursorRow], target: &CursorRow) -> (Self, Vec<CursorRequest>) {
+        let expand = target
+            .rel_path
+            .match_indices('/')
+            .map(|(end, _)| &target.rel_path[..end])
+            .filter(|ancestor| {
+                rows.iter()
+                    .any(|row| row.rel_path == *ancestor && row.collapsed)
+            })
+            .map(|ancestor| CursorRequest::Expand(ancestor.into()))
+            .collect();
+        (Self::at(target.rel_path), expand)
+    }
+
     /// The cursor's row if it is drawn. Acting on a row the user can't see would be a
     /// surprise.
     fn drawn_row<'a>(&self, rows: &'a [CursorRow<'a>]) -> Option<&'a CursorRow<'a>> {
@@ -121,12 +161,13 @@ impl TreeCursor {
 mod tests {
     use super::{CursorRequest, CursorRow, TreeCursor};
 
-    /// A `-` prefix marks a row hidden by collapse. A `/` suffix marks an expanded folder and
-    /// a `>` suffix a collapsed one.
+    /// A `-` prefix marks a row hidden by collapse, then a `*` prefix a differing entry. A `/`
+    /// suffix marks an expanded folder and a `>` suffix a collapsed one.
     fn rows<'a>(spec: &[&'a str]) -> Vec<CursorRow<'a>> {
         spec.iter()
             .map(|s| {
                 let (hidden, s) = s.strip_prefix('-').map_or((false, *s), |s| (true, s));
+                let (differs, s) = s.strip_prefix('*').map_or((false, s), |s| (true, s));
                 let (is_dir, collapsed, rel_path) = if let Some(s) = s.strip_suffix('/') {
                     (true, false, s)
                 } else if let Some(s) = s.strip_suffix('>') {
@@ -139,9 +180,106 @@ mod tests {
                     hidden,
                     is_dir,
                     collapsed,
+                    differs,
                 }
             })
             .collect()
+    }
+
+    /// `b` is a differing folder, `e` and `e/f` are collapsed differing folders, and `e/f/g`
+    /// is a differing file inside both.
+    const DIFFS: &[&str] = &[
+        "-/", "a", "*b/", "*b/c", "b/d", "*e>", "-*e/f>", "-*e/f/g", "-e/h", "*i", "j",
+    ];
+
+    fn jump_to(rel_path: &str, expand: &[&str]) -> Option<(TreeCursor, Vec<CursorRequest>)> {
+        let expand = expand
+            .iter()
+            .map(|rel_path| CursorRequest::Expand(rel_path.to_string()))
+            .collect();
+        Some((TreeCursor::at(rel_path), expand))
+    }
+
+    fn jumped_to(jump: Option<(TreeCursor, Vec<CursorRequest>)>) -> Option<String> {
+        jump.and_then(|(cursor, _)| cursor.rel_path().map(str::to_string))
+    }
+
+    #[test]
+    fn next_and_prev_diff_skip_same_files_and_all_folders() {
+        let rows = rows(DIFFS);
+
+        let next = |at| jumped_to(TreeCursor::at(at).next_diff(&rows));
+        assert_eq!(
+            next("a").as_deref(),
+            Some("b/c"),
+            "differing folder b skipped"
+        );
+        assert_eq!(next("b/c").as_deref(), Some("e/f/g"));
+        assert_eq!(next("e/f/g").as_deref(), Some("i"));
+
+        let prev = |at| jumped_to(TreeCursor::at(at).prev_diff(&rows));
+        assert_eq!(prev("j").as_deref(), Some("i"));
+        assert_eq!(prev("i").as_deref(), Some("e/f/g"));
+        assert_eq!(prev("e/f/g").as_deref(), Some("b/c"));
+    }
+
+    #[test]
+    fn a_diff_jump_expands_only_the_targets_collapsed_ancestors_outermost_first() {
+        let rows = rows(DIFFS);
+
+        assert_eq!(
+            TreeCursor::at("b/c").next_diff(&rows),
+            jump_to("e/f/g", &["e", "e/f"])
+        );
+        assert_eq!(
+            TreeCursor::at("i").prev_diff(&rows),
+            jump_to("e/f/g", &["e", "e/f"])
+        );
+        assert_eq!(
+            TreeCursor::at("a").next_diff(&rows),
+            jump_to("b/c", &[]),
+            "b is expanded"
+        );
+    }
+
+    #[test]
+    fn there_is_no_wraparound_past_the_first_or_last_diff() {
+        let rows = rows(DIFFS);
+
+        assert_eq!(TreeCursor::at("i").next_diff(&rows), None);
+        assert_eq!(TreeCursor::at("j").next_diff(&rows), None);
+        assert_eq!(TreeCursor::at("b/c").prev_diff(&rows), None);
+        assert_eq!(TreeCursor::at("a").prev_diff(&rows), None);
+    }
+
+    #[test]
+    fn without_a_cursor_next_diff_goes_to_the_first_diff_and_prev_diff_to_the_last() {
+        let rows = rows(DIFFS);
+
+        // A cursor whose row is gone has no position, as for up and down.
+        for cursor in [TreeCursor::default(), TreeCursor::at("gone")] {
+            assert_eq!(cursor.next_diff(&rows), jump_to("b/c", &[]), "{cursor:?}");
+            assert_eq!(cursor.prev_diff(&rows), jump_to("i", &[]), "{cursor:?}");
+        }
+    }
+
+    #[test]
+    fn a_diff_jump_from_a_hidden_row_starts_at_that_row() {
+        let rows = rows(DIFFS);
+
+        assert_eq!(TreeCursor::at("e/h").next_diff(&rows), jump_to("i", &[]));
+        assert_eq!(
+            TreeCursor::at("e/h").prev_diff(&rows),
+            jump_to("e/f/g", &["e", "e/f"])
+        );
+    }
+
+    #[test]
+    fn with_no_differing_files_there_is_no_diff_to_jump_to() {
+        let rows = rows(TREE);
+
+        assert_eq!(TreeCursor::default().next_diff(&rows), None);
+        assert_eq!(TreeCursor::default().prev_diff(&rows), None);
     }
 
     const TREE: &[&str] = &["-/", "a", "b>", "-b/x", "-b/y", "c", "-d"];

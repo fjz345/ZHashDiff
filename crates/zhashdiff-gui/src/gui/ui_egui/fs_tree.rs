@@ -369,6 +369,7 @@ pub fn two_folder_cursor_rows<'a>(
                 || on_either_side(row, FileSystemView::is_parent_chain_collapsed),
             is_dir: row.is_dir,
             collapsed: row.is_dir && on_either_side(row, FileSystemView::is_collapsed),
+            differs: !matches!(row.diff_state, DiffState::Same(..)),
         })
         .collect()
 }
@@ -536,6 +537,32 @@ pub fn draw_ui_two_folder_tree_with_diff(
                     diff_tool_config,
                 );
             }
+        }
+        for jump in ui.input(diff_jump_keys) {
+            let cursor_rows = two_folder_cursor_rows(
+                file_system_1_view.as_ref(),
+                file_system_2_view.as_ref(),
+                visible_rows,
+            );
+            let target = match jump {
+                DiffJump::Next => cursor.next_diff(&cursor_rows),
+                DiffJump::Prev => cursor.prev_diff(&cursor_rows),
+            };
+            let Some((moved, expand)) = target else {
+                log::info!("No more diffs");
+                continue;
+            };
+            for request in &expand {
+                apply_cursor_request(
+                    file_system_1_view.as_mut(),
+                    file_system_2_view.as_mut(),
+                    visible_rows,
+                    request,
+                    diff_tool_config,
+                );
+            }
+            scroll_to_cursor |= moved != *cursor;
+            *cursor = moved;
         }
     }
 
@@ -1142,6 +1169,40 @@ fn cursor_keys(input: &egui::InputState) -> Vec<egui::Key> {
         .collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffJump {
+    Next,
+    Prev,
+}
+
+/// Command+2 or Alt+Down for the next differing file, Command+1 or Alt+Up for the previous
+/// one, in press order, repeats included. Command is Ctrl except on macOS.
+fn diff_jump_keys(input: &egui::InputState) -> Vec<DiffJump> {
+    input
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } => {
+                let command = modifiers.matches_exact(egui::Modifiers::COMMAND);
+                let alt = modifiers.matches_exact(egui::Modifiers::ALT);
+                match key {
+                    egui::Key::Num2 if command => Some(DiffJump::Next),
+                    egui::Key::ArrowDown if alt => Some(DiffJump::Next),
+                    egui::Key::Num1 if command => Some(DiffJump::Prev),
+                    egui::Key::ArrowUp if alt => Some(DiffJump::Prev),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 fn render_row_folder_tree_with_checkbox(
     hash_service: &mut HashService,
     file_system_view: &mut FileSystemView,
@@ -1319,8 +1380,8 @@ fn get_folder_selection_state(
 #[cfg(test)]
 mod tests {
     use crate::ui_egui::fs_tree::{
-        DiffState, FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff, apply_cursor_request,
-        cursor_keys, two_folder_cursor_rows,
+        DiffJump, DiffState, FileCompareCache, FileSystemView, VisibleRowTwoFolderDiff,
+        apply_cursor_request, cursor_keys, diff_jump_keys, two_folder_cursor_rows,
     };
     use crate::ui_egui::tree_cursor::CursorRequest;
     use zhashdiff::external_diff_tool::DiffToolConfig;
@@ -1864,6 +1925,26 @@ mod tests {
     }
 
     #[test]
+    fn cursor_rows_mark_every_entry_that_is_not_same_as_differing() {
+        let (left_dir, right_dir) = two_folder_trees();
+        let left = load_view(left_dir.path());
+        let right = load_view(right_dir.path());
+        let rows = build_counting(
+            &left,
+            &right,
+            &mut FileCompareCache::default(),
+            &Cell::new(0),
+        );
+
+        let differing: Vec<&str> = two_folder_cursor_rows(Some(&left), Some(&right), &rows)
+            .iter()
+            .filter(|r| r.differs)
+            .map(|r| r.rel_path)
+            .collect();
+        assert_eq!(differing, ["", "b.txt", "left_only.txt", "right_only.txt"]);
+    }
+
+    #[test]
     fn cursor_keys_keep_arrow_repeats_and_press_order_but_drop_enter_repeats() {
         use eframe::egui::{Event, InputState, Key, Modifiers};
         let press = |key, repeat| Event::Key {
@@ -1892,6 +1973,54 @@ mod tests {
                 Key::Enter,
                 Key::ArrowLeft,
                 Key::ArrowUp
+            ]
+        );
+    }
+
+    #[test]
+    fn diff_jump_keys_read_command_digits_and_alt_arrows_in_press_order() {
+        use eframe::egui::{Event, InputState, Key, Modifiers};
+        let press = |key, modifiers, pressed, repeat| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers,
+        };
+        let mut input = InputState::default();
+        input.events = vec![
+            press(Key::Num2, Modifiers::COMMAND, true, false),
+            press(Key::ArrowUp, Modifiers::ALT, true, false),
+            // Held, like the arrows, to step through diffs.
+            press(Key::ArrowDown, Modifiers::ALT, true, true),
+            press(Key::Num1, Modifiers::COMMAND, true, false),
+            // Not diff jumps: no or other modifiers, other keys, releases.
+            press(Key::ArrowDown, Modifiers::NONE, true, false),
+            press(Key::Num2, Modifiers::NONE, true, false),
+            press(
+                Key::ArrowDown,
+                Modifiers::ALT | Modifiers::SHIFT,
+                true,
+                false,
+            ),
+            press(
+                Key::Num1,
+                Modifiers::COMMAND | Modifiers::SHIFT,
+                true,
+                false,
+            ),
+            press(Key::ArrowUp, Modifiers::COMMAND, true, false),
+            press(Key::Num3, Modifiers::COMMAND, true, false),
+            press(Key::Num2, Modifiers::COMMAND, false, false),
+        ];
+
+        assert_eq!(
+            diff_jump_keys(&input),
+            [
+                DiffJump::Next,
+                DiffJump::Prev,
+                DiffJump::Next,
+                DiffJump::Prev
             ]
         );
     }
