@@ -1466,5 +1466,27 @@ mod tests {
             let ctx = settle(&mut processor).expect("ignore toggle never completed");
             assert!(ctx.input == current, "diff shows {:?}", ctx.input);
         }
+
+        #[test]
+        fn toggling_ignore_comments_recomputes_the_diff_stage() {
+            let dir = tempfile::tempdir().unwrap();
+            let a = (
+                load(&write_source(&dir.path().join("a1.rs"), 300, 1)),
+                load(&write_source(&dir.path().join("a2.rs"), 300, 2)),
+            );
+            let mut processor = DiffProcessor::default();
+            let mut current = input(&a.0, &a.1);
+            open(&mut processor, &current);
+            settle(&mut processor).expect("first diff never completed");
+
+            current.options.ignore.comments = !current.options.ignore.comments;
+            open(&mut processor, &current);
+            assert!(
+                processor.ctx.myers_inflight_input.is_some(),
+                "ignore-comments must recompute the diff stage"
+            );
+            let ctx = settle(&mut processor).expect("ignore toggle never completed");
+            assert!(ctx.input == current, "diff shows {:?}", ctx.input);
+        }
     }
 }

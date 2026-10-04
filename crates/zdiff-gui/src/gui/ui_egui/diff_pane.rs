@@ -130,6 +130,12 @@ impl FileDiffPane {
                 );
                 toggle_btn(
                     ui,
+                    &mut ctx.diff_options.ignore.comments,
+                    egui::RichText::new("C").strong().into(),
+                    "Ignore Comments",
+                );
+                toggle_btn(
+                    ui,
                     &mut ctx.diff_options.highlight_rows,
                     egui::RichText::new("H").strong().into(),
                     "Highlight Rows",
@@ -1133,6 +1139,28 @@ mod tests {
         strip_copy_markers,
     };
 
+    #[cfg(feature = "serde")]
+    #[test]
+    fn ignore_comments_is_persisted_with_the_diff_options() {
+        let options = DiffBuilderOptions {
+            ignore: IgnoreOptions {
+                comments: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&options).unwrap();
+        assert_eq!(json["ignore_comments"], true);
+        let loaded: DiffBuilderOptions = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(loaded, options);
+
+        // State saved before the option existed still loads, with the option off.
+        let mut old = json;
+        old.as_object_mut().unwrap().remove("ignore_comments");
+        let loaded: DiffBuilderOptions = serde_json::from_value(old).unwrap();
+        assert_eq!(loaded, DiffBuilderOptions::default());
+    }
+
     #[test]
     fn copy_markers_drop_non_file_rows_and_keep_blank_lines() {
         let (no_line, blank) = (COPY_MARKER_NO_LINE.to_string(), COPY_MARKER_BLANK_LINE.to_string());
@@ -1320,7 +1348,10 @@ mod tests {
             (
                 "ignore_whitespace",
                 DiffBuilderOptions {
-                    ignore: IgnoreOptions { whitespace: true },
+                    ignore: IgnoreOptions {
+                        whitespace: true,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             ),
@@ -1374,7 +1405,10 @@ mod tests {
     #[test]
     fn hidden_whitespace_tokens_are_copied_in_ignore_whitespace_mode() {
         let options = DiffBuilderOptions {
-            ignore: IgnoreOptions { whitespace: true },
+            ignore: IgnoreOptions {
+                whitespace: true,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut harness = CopyHarness::new("a  b\nc\n", "a b\nc\n", &options);

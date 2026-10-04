@@ -3,7 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use crate::lexer::RawTokenTrait;
+use crate::ignore::IgnoreMask;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiffOp {
@@ -26,55 +26,26 @@ pub struct DiffIR {
     pub entries: Vec<DiffResult>,
     pub distance: i32,
 }
-type DiffIRNoWs = DiffIR;
-pub fn diff_ir_to_no_ws<T: RawTokenTrait>(
-    mut diff_ir: DiffIR,
-    tokens_source: Option<&'_ [T]>,
-    tokens_target: Option<&'_ [T]>,
-) -> DiffIRNoWs {
+/// Hides every entry whose token, on either side, is ignored. Uses the same mask as the line
+/// key, so what the key ignores is exactly what the rows hide.
+pub fn diff_ir_hide_ignored(mut diff_ir: DiffIR, ignore: &IgnoreMask) -> DiffIR {
+    if ignore.is_empty() {
+        return diff_ir;
+    }
     for entry in &mut diff_ir.entries {
-        let should_hide = |token: &T| -> bool {
-            if token.as_ref().kind.is_whitespace() {
-                true
-            } else {
-                false
-            }
-        };
-        match (entry.token_source_idx, entry.token_target_idx) {
-            (None, None) => panic!("Unreacahble"),
-            (Some(t_src), None) => {
-                if let Some(tokens) = tokens_source {
-                    if should_hide(&tokens[t_src as usize]) {
-                        entry.hide_in_diff = true;
-                    }
-                }
-            }
-            (None, Some(t_tgt)) => {
-                if let Some(tokens) = tokens_target {
-                    if should_hide(&tokens[t_tgt as usize]) {
-                        entry.hide_in_diff = true;
-                    }
-                }
-            }
-            (Some(t_src), Some(t_tgt)) => {
-                if let Some(tokens) = tokens_source {
-                    if should_hide(&tokens[t_src as usize]) {
-                        entry.hide_in_diff = true;
-                    }
-                }
-                if let Some(tokens) = tokens_target {
-                    if should_hide(&tokens[t_tgt as usize]) {
-                        entry.hide_in_diff = true;
-                    }
-                }
-            }
-        }
+        assert!(
+            entry.token_source_idx.is_some() || entry.token_target_idx.is_some(),
+            "entry without a token"
+        );
+        let source = entry
+            .token_source_idx
+            .is_some_and(|i| ignore.source[i as usize]);
+        let target = entry
+            .token_target_idx
+            .is_some_and(|i| ignore.target[i as usize]);
+        entry.hide_in_diff |= source || target;
     }
-
-    DiffIRNoWs {
-        entries: diff_ir.entries,
-        distance: diff_ir.distance,
-    }
+    diff_ir
 }
 impl DiffIR {
     pub fn new(

@@ -1,5 +1,5 @@
 use crate::{
-    diff_ir::{DiffIR, DiffOp, DiffResult, diff_ir_to_no_ws},
+    diff_ir::{DiffIR, DiffOp, DiffResult, diff_ir_hide_ignored},
     ignore::IgnoreOptions,
     lexer::{RawTokenTrait, TokenKind},
 };
@@ -345,9 +345,11 @@ pub fn build_diff_rows<'a, T: RawTokenTrait>(
     options: &DiffBuilderOptions,
     estimated_num_rows: usize,
 ) -> Vec<DiffRow> {
-    if options.ignore.whitespace {
-        diff_ir = diff_ir_to_no_ws(diff_ir, tokens_source, tokens_target);
-    }
+    let ignore = options.ignore.mask(
+        tokens_source.unwrap_or_default(),
+        tokens_target.unwrap_or_default(),
+    );
+    diff_ir = diff_ir_hide_ignored(diff_ir, &ignore);
 
     let mut builder =
         DiffBuilder::with_capacity(tokens_source, tokens_target, options, estimated_num_rows);
@@ -402,7 +404,6 @@ mod tests {
 
         use super::*;
         use crate::{
-            ignore::IgnoreMask,
             lexer::{LexerDefault, RawToken},
             myers::{MyersDiffAlgorithm, myers_diff_path},
             test_harness::DiffTestHarness,
@@ -421,6 +422,20 @@ mod tests {
             s2: &'a str,
             ghost_rows: bool,
         ) -> DiffTestHarness<'a> {
+            let options = DiffBuilderOptions {
+                ghost_rows,
+                ..Default::default()
+            };
+            harness_with(algorithm, s1, s2, options)
+        }
+
+        /// Like `harness`, with the diff ignoring what `options.ignore` ignores.
+        fn harness_with<'a>(
+            algorithm: MyersDiffAlgorithm,
+            s1: &'a str,
+            s2: &'a str,
+            options: DiffBuilderOptions,
+        ) -> DiffTestHarness<'a> {
             let t1: Vec<RawToken> = LexerDefault::<RawToken>::new(s1).collect();
             let t2: Vec<RawToken> = LexerDefault::<RawToken>::new(s2).collect();
             let cmp = |a: &RawToken, b: &RawToken| {
@@ -431,20 +446,11 @@ mod tests {
                 &t1,
                 &t2,
                 cmp,
-                &IgnoreMask::default(),
+                &options.ignore.mask(&t1, &t2),
                 Arc::new(AtomicBool::new(false)),
             )
             .expect("not cancelled");
-            DiffTestHarness::new(
-                s1,
-                s2,
-                path,
-                DiffBuilderOptions {
-                    ghost_rows,
-                    ..Default::default()
-                },
-                8,
-            )
+            DiffTestHarness::new(s1, s2, path, options, 8)
         }
 
         #[test]
@@ -486,6 +492,75 @@ mod tests {
                     h.assert_row(3, -1, 4, ghost_added, "added\n");
                     h.assert_row(4, 4, 5, "four\n", "four\n");
                     h.assert_row(5, 5, -1, "five", ghost_five);
+                }
+            }
+        }
+
+        #[test]
+        fn ignored_comment_changes_are_hidden_and_form_no_diff_span() {
+            let s1 = "fn f() {\n    let a = 1; // old\n    /* note */ b();\n    c();\n}\n";
+            let s2 = "fn f() {\n    let a = 1; // new text\n    /* a longer note */ b();\n    c(); // added\n}\n";
+            // A row is a diff span when it shows a change that isn't hidden (precompute_diff_spans
+            // in zdiff-gui).
+            let has_visible_change = |content: &LineContent| match content {
+                LineContent::Code { tokens, .. } => tokens.iter().any(|(res, _, _)| {
+                    !res.hide_in_diff && !matches!(res.operation, DiffOp::Equal(_))
+                }),
+                _ => false,
+            };
+            for algorithm in ALGORITHMS {
+                for ghost_rows in [false, true] {
+                    let options = DiffBuilderOptions {
+                        ignore: IgnoreOptions {
+                            comments: true,
+                            ..Default::default()
+                        },
+                        ghost_rows,
+                        ..Default::default()
+                    };
+                    let h = harness_with(algorithm, s1, s2, options);
+                    h.assert_row(0, 1, 1, "fn f() {\n", "fn f() {\n");
+                    // Hidden edits still carry ghosts, as hidden whitespace does.
+                    let (l1, r1, l2, r2, l3, r3) = match ghost_rows {
+                        false => (
+                            "    let a = 1; // old\n",
+                            "    let a = 1; // new text\n",
+                            "    /* note */ b();\n",
+                            "    /* a longer note */ b();\n",
+                            "    c();\n",
+                            "    c(); // added\n",
+                        ),
+                        true => (
+                            "    let a = 1; // old// new text\n",
+                            "    let a = 1; // old// new text\n",
+                            "    /* a longer note */ b();\n",
+                            "    /* a longer note */ b();\n",
+                            "    c(); // added\n",
+                            "    c(); // added\n",
+                        ),
+                    };
+                    h.assert_row(1, 2, 2, l1, r1);
+                    h.assert_row(2, 3, 3, l2, r2);
+                    h.assert_row(3, 4, 4, l3, r3);
+                    h.assert_row(4, 5, 5, "}\n", "}\n");
+                    assert_eq!(h.rows().len(), 5, "{algorithm:?}, ghosts {ghost_rows}");
+                    for (idx, row) in h.rows().iter().enumerate() {
+                        assert!(
+                            !has_visible_change(&row.left) && !has_visible_change(&row.right),
+                            "{algorithm:?}, ghosts {ghost_rows}: row {idx} is a diff span"
+                        );
+                    }
+
+                    // With the option off the same rows are diff spans.
+                    let h = harness(algorithm, s1, s2, ghost_rows);
+                    let spans = h
+                        .rows()
+                        .iter()
+                        .filter(|row| {
+                            has_visible_change(&row.left) || has_visible_change(&row.right)
+                        })
+                        .count();
+                    assert_eq!(spans, 3, "{algorithm:?}, ghosts {ghost_rows}");
                 }
             }
         }
@@ -558,7 +633,7 @@ mod integration_tests {
             Some(&f1.tokens),
             Some(&f2.tokens),
             &DiffBuilderOptions {
-                ignore: IgnoreOptions { whitespace: false },
+                ignore: IgnoreOptions::default(),
                 ghost_rows: false,
                 ..Default::default()
             },

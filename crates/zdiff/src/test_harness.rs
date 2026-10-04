@@ -53,6 +53,10 @@ impl<'a> DiffTestHarness<'a> {
         &self.diff_ir
     }
 
+    pub fn rows(&self) -> &[DiffRow] {
+        &self.rows
+    }
+
     pub fn assert_row(&self, idx: usize, l_num: i32, r_num: i32, l_text: &str, r_text: &str) {
         let row = self.rows.get(idx).unwrap_or_else(|| {
             panic!(

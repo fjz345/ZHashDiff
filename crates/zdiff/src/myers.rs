@@ -1930,11 +1930,14 @@ mod tests {
             use super::*;
 
             fn on() -> IgnoreOptions {
-                IgnoreOptions { whitespace: true }
+                IgnoreOptions {
+                    whitespace: true,
+                    ..Default::default()
+                }
             }
 
             /// The line phase's hunks, as (source text, target text).
-            fn hunks(
+            pub(super) fn hunks(
                 algorithm: MyersDiffAlgorithm,
                 source: &str,
                 target: &str,
@@ -2036,6 +2039,155 @@ mod tests {
                         let mut changed = [non_blank(&deleted), non_blank(&inserted)];
                         changed.sort();
                         assert_eq!(changed, ["2", "20"], "{algorithm:?}: {s:?} -> {t:?}");
+                    }
+                }
+            }
+        }
+
+        mod ignore_comments {
+            use super::{ignore_whitespace::hunks, *};
+            use crate::lexer::TokenKind;
+
+            fn on() -> IgnoreOptions {
+                IgnoreOptions {
+                    comments: true,
+                    ..Default::default()
+                }
+            }
+
+            fn with_whitespace() -> IgnoreOptions {
+                IgnoreOptions {
+                    whitespace: true,
+                    comments: true,
+                }
+            }
+
+            /// Lines that differ only in comments: a line comment, words added inside a block
+            /// comment (its blanks are part of it), an inline block comment, and comments added
+            /// after code (the blanks before them go with them).
+            const COMMENT_ONLY: [(&str, &str); 4] = [
+                ("let a = 1; // old\n", "let a = 1; // new text\n"),
+                ("/*\n * foo bar\n */\nx();\n", "/*\n * foo\n */\nx();\n"),
+                (
+                    "call(a, /* first */ b);\n",
+                    "call(a, /* the first one */ b);\n",
+                ),
+                ("x();\ny();\n", "x(); // note\ny();  /* more */\n"),
+            ];
+
+            /// The (kind, text) of every deleted and inserted token.
+            fn edited(source: &str, target: &str, script: &Script) -> Vec<(TokenKind, String)> {
+                let (ts, tt) = (lex(source), lex(target));
+                let (mut si, mut ti) = (0, 0);
+                let mut edited = Vec::new();
+                for (op, _, _) in script {
+                    match op {
+                        Op::Equal => (si, ti) = (si + 1, ti + 1),
+                        Op::Delete => {
+                            edited.push((ts[si].kind, source[ts[si].span.clone()].to_string()));
+                            si += 1;
+                        }
+                        Op::Insert => {
+                            edited.push((tt[ti].kind, target[tt[ti].span.clone()].to_string()));
+                            ti += 1;
+                        }
+                    }
+                }
+                edited
+            }
+
+            fn is_comment_or_blank(kind: TokenKind) -> bool {
+                kind.is_comment() || matches!(kind, TokenKind::Whitespace | TokenKind::Tab)
+            }
+
+            #[test]
+            fn comment_only_line_changes_form_a_hunk_only_with_the_option_off() {
+                for algorithm in ALGORITHMS {
+                    for (source, target) in COMMENT_ONLY {
+                        for (s, t) in [(source, target), (target, source)] {
+                            assert_eq!(
+                                hunks(algorithm, s, t, &on()),
+                                vec![],
+                                "{algorithm:?}: {s:?} -> {t:?}"
+                            );
+                            assert_ne!(
+                                hunks(algorithm, s, t, &IgnoreOptions::default()),
+                                vec![],
+                                "{algorithm:?}: {s:?} -> {t:?}"
+                            );
+                        }
+                    }
+                }
+            }
+
+            #[test]
+            fn comment_only_changes_edit_only_comments_and_their_blanks() {
+                for algorithm in ALGORITHMS {
+                    for (source, target) in COMMENT_ONLY {
+                        for (s, t) in [(source, target), (target, source)] {
+                            let script = diff_with(algorithm, s, t, &on(), false).unwrap();
+                            let edited = edited(s, t, &script);
+                            assert!(
+                                edited.iter().all(|(kind, _)| is_comment_or_blank(*kind)),
+                                "{algorithm:?}: {s:?} -> {t:?}: {edited:?}"
+                            );
+                        }
+                    }
+                }
+            }
+
+            #[test]
+            fn a_code_change_next_to_a_comment_change_is_still_a_hunk() {
+                let source = "a();\nlet a = 1; // old\nb();\n";
+                let target = "a();\nlet a = 2; // new\nb();\n";
+                for algorithm in ALGORITHMS {
+                    for ignore in [on(), with_whitespace()] {
+                        assert_eq!(
+                            hunks(algorithm, source, target, &ignore),
+                            vec![("let a = 1; // old\n".into(), "let a = 2; // new\n".into())],
+                            "{algorithm:?}, {ignore:?}"
+                        );
+                        let script = diff_with(algorithm, source, target, &ignore, false).unwrap();
+                        let code: Vec<_> = edited(source, target, &script)
+                            .into_iter()
+                            .filter(|(kind, _)| !is_comment_or_blank(*kind))
+                            .map(|(_, text)| text)
+                            .collect();
+                        assert_eq!(code, ["1", "2"], "{algorithm:?}, {ignore:?}");
+                    }
+                }
+            }
+
+            #[test]
+            fn whitespace_and_comment_changes_need_both_options() {
+                let source = "fn f() {\n    let a = 1; // old\n    let b = 2;\n}\n";
+                let target = "fn f() {\n\tlet a = 1;   /* new */\n\tlet b = 2; // added\n}";
+                for algorithm in ALGORITHMS {
+                    for (s, t) in [(source, target), (target, source)] {
+                        let whitespace_only = IgnoreOptions {
+                            whitespace: true,
+                            ..Default::default()
+                        };
+                        assert_ne!(hunks(algorithm, s, t, &on()), vec![], "{algorithm:?}");
+                        assert_ne!(
+                            hunks(algorithm, s, t, &whitespace_only),
+                            vec![],
+                            "{algorithm:?}"
+                        );
+                        assert_eq!(
+                            hunks(algorithm, s, t, &with_whitespace()),
+                            vec![],
+                            "{algorithm:?}: {s:?} -> {t:?}"
+                        );
+
+                        let script = diff_with(algorithm, s, t, &with_whitespace(), false).unwrap();
+                        let edited = edited(s, t, &script);
+                        assert!(
+                            edited
+                                .iter()
+                                .all(|(kind, _)| kind.is_comment() || kind.is_whitespace()),
+                            "{algorithm:?}: {s:?} -> {t:?}: {edited:?}"
+                        );
                     }
                 }
             }
