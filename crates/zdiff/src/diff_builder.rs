@@ -458,6 +458,27 @@ mod tests {
                 h.assert_row(4, 4, 5, "let d = 440;\n", "let d = 440;\n");
             }
         }
+
+        #[test]
+        fn equal_lines_between_a_pure_insert_and_a_delete_at_eof() {
+            let s1 = "one\ntwo\nthree\nfour\nfive";
+            let s2 = "one\ntwo\nthree\nadded\nfour\n";
+            for algorithm in ALGORITHMS {
+                for ghost_rows in [false, true] {
+                    let h = harness(algorithm, s1, s2, ghost_rows);
+                    let (ghost_added, ghost_five) = match ghost_rows {
+                        false => ("VOID", "VOID"),
+                        true => ("added\n", "five"),
+                    };
+                    h.assert_row(0, 1, 1, "one\n", "one\n");
+                    h.assert_row(1, 2, 2, "two\n", "two\n");
+                    h.assert_row(2, 3, 3, "three\n", "three\n");
+                    h.assert_row(3, -1, 4, ghost_added, "added\n");
+                    h.assert_row(4, 4, 5, "four\n", "four\n");
+                    h.assert_row(5, 5, -1, "five", ghost_five);
+                }
+            }
+        }
     }
 }
 
